@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.providers_api import router as providers_router
 from app.api.settings_api import router as settings_router
 from app.logging_setup import configure_logging
 
@@ -35,4 +36,5 @@ def create_app() -> FastAPI:
     app = FastAPI(title="PaperMind", lifespan=lifespan)
     app.include_router(health_router, prefix="/api")
     app.include_router(settings_router, prefix="/api")
+    app.include_router(providers_router, prefix="/api")
     return app
