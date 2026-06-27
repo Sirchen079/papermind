@@ -162,7 +162,7 @@
 
 ### 4.5 技能
 
-- **Skill**：`id`, `name`(unique), `description`, `type`(instruction/template/tool/persona), `trigger`(auto/keyword/manual/pipeline), `trigger_keywords`(JSON), `body`(Markdown 或模块描述), `enabled`, `source`(builtin/user), `file_path`(用户技能源文件), `version`, `updated_at`
+- **Skill**：`id`, `name`(unique), `description`, `type`(instruction/template/tool/persona), `trigger`(auto/keyword/manual/pipeline), `keywords`(JSON，与 frontmatter 一致), `model_role`(nullable，建议路由角色 §5.4), `body`(Markdown 或模块描述), `enabled`, `source`(builtin/user), `file_path`(用户技能源文件), `version`, `updated_at`
   - 用户技能从 `user_skills/` 目录实时读取 + DB 缓存元数据；启用文件监听自动重载
 
 ### 4.6 Provider 与模型
@@ -248,6 +248,7 @@
   - `chat`（对话，需强模型）
   - `deep`（深度评审/综述，用最强模型）
   - `embedding`（嵌入，本地或 API）
+- **任务→角色映射**：入库摘要=summary、概念抽取=extraction、对话=chat、深度评审/综述=deep、向量化=embedding。
 - Agent/流水线按任务类型取对应模型；未配置则用 provider 默认模型。
 
 ### 5.5 Token 记账（F8 → 观测）
@@ -310,7 +311,8 @@ agent 可调用的工具（每个是 AI Operations Service 或知识层之上的
 - `resolve_concepts(raw_concepts) → [Concept]`（归一化 + 消解, G1）
 - `embed(texts) → [vector]`（本地或 API，带指纹）
 - `analyze_relations(paper, library) → [PaperLink + Suggestion]`
-- `chat(messages, tools, skills) → stream`（对话入口）
+
+> 对话（chat）由 Agent Runtime 编排（§6.1），**不在 AI Ops 内** —— AI Ops 只提供原子能力，agent 组合调用它们完成任务。
 
 依赖方向：Agent Runtime → AI Ops Service ← Ingestion Pipeline（单向，无循环）。
 
@@ -358,7 +360,7 @@ model_role: deep             # 建议用哪个路由模型
 
 - **PDF 上传**：保存到 `data/pdfs/`，交统一解析器。
 - **ArXiv**：`arxiv` 库取元数据 + PDF → **PDF 交同一解析器**（F14，不重复造解析路径）。
-- **BibTeX**：`bibtexparser` 解析条目 → 每条按 DOI/标题经 OpenAlex/CrossRef 补全元数据 → 可选抓全文 PDF（若有 OA 链接）。
+- **BibTeX**：`bibtexparser` 解析条目 → 每条按 DOI/标题经 OpenAlex/CrossRef 补全元数据 → 可选抓全文 PDF（经 Unpaywall/OpenAlex 取 OA 全文链接）。
 
 ### 7.2 去重（G2）
 
@@ -395,6 +397,7 @@ parse → analyze → embed → link
 - AI 抽出原始概念（name/type/evidence）。
 - **归一化**：小写 + 词形还原 + 同义表 → `normalized_key`。
 - **消解**：与库内已有 Concept 按 `normalized_key` 匹配 → 命中则合并（复用概念，新增 PaperConcept）；未命中则新建 Concept。
+- **层级（is-a）**：抽取概念间上下位关系（如 "注意力机制" is-a "序列建模"），赋值 `parent_concept_id`；同一 AnalysisRun 内完成 —— 这是 §8.2 概念图层级边的来源。
 - 这是概念图可用的前提（否则碎片化）。
 
 ### 7.6 分块与嵌入（G6/F7）
@@ -441,6 +444,7 @@ parse → analyze → embed → link
 ### 8.4 图查询
 
 - 邻居（一阶/多阶）、最短路径、子图提取、按概念/作者/年份过滤、聚类社区发现（可选）。
+- **规模化可读性**：概念图按出现频次/权重过滤（默认仅显示出现在 ≥N 篇论文中的概念，N 可调），避免概念爆炸不可读；论文图支持聚焦子图。
 - 供 Chat/RAG 与前端共用。
 
 ---
@@ -460,6 +464,8 @@ parse → analyze → embed → link
   → 图上下文：相关概念、邻近论文、引用链
   → 组装进 agent 上下文
 ```
+
+- **引用接地（citation grounding）**：助手回复只能引用本次检索命中的论文/chunk，引用芯片绑定检索源 ID；禁止引用未检索到的论文（系统提示约束 + 输出后校验芯片合法性），避免幻觉引用。
 
 ### 9.3 相关论文推荐
 
@@ -522,8 +528,11 @@ parse → analyze → embed → link
 POST /api/ingest                 # 入库（PDF/ArXiv/BibTeX），返回 job_id
 GET  /api/papers                 # 列表（筛选/分页）
 GET  /api/papers/{id}            # 详情
-PATCH/api/papers/{id}            # 改标签/合集
+PATCH/api/papers/{id}            # 改标签/合集关联
 DELETE /api/papers/{id}          # 软删除
+GET/POST/DELETE /api/tags             # 标签 CRUD
+GET/POST/DELETE /api/collections       # 合集 CRUD
+POST/DELETE  /api/collections/{id}/papers  # 合集成员管理
 GET  /api/graph/{type}           # 图数据（paper/concept），支持子图/过滤
 GET  /api/graph/{type}/query     # 邻居/路径查询
 POST /api/chat/conversations      # 新建对话
@@ -563,6 +572,7 @@ GET /api/events                           # 全局事件（主动提示、任务
 - 分层处理：Provider 错误（重试/降级）→ 流水线错误（记 Job + 状态 failed + 可重试）→ API 错误（用户友好消息）。
 - 解析置信度低 → UI 标记 + AI 降级提示。
 - 全程结构化日志。
+- **无 Provider 降级**：未配置 provider 或 API 不可用时，仍可入库/解析/手填元数据/打标签；AI 阶段入队等待，provider 恢复后自动续跑（R11）。
 
 ### 12.2 安全
 
@@ -585,6 +595,12 @@ GET /api/events                           # 全局事件（主动提示、任务
 
 - 入库 worker 并发上限（Setting 可配，默认 2）。
 - SQLite WAL + 单写者锁（F1）。
+
+### 12.6 备份与导出（R7）
+
+- 库导出：JSON（元数据/AI 产物/标签/合集）与 BibTeX（元数据）。
+- DB 备份：一键复制 SQLite 文件（WAL checkpoint 后）。
+- 研究者数据不可丢 —— 导出/备份为生产基本能力。
 
 ---
 
@@ -655,8 +671,8 @@ GET /api/events                           # 全局事件（主动提示、任务
 | 阶段 | 交付 |
 |---|---|
 | **P0 脚手架** | 后端/前端骨架、SQLite+sqlite-vec、Alembic、Provider 层（LiteLLM）、设置页、加密 |
-| **P1 入库与解析** | PDF/ArXiv/BibTeX 源适配器、统一解析器（OCR 兜底）、去重、Paper 存储、四阶段状态机、可恢复 Job |
-| **P2 Provider 与 Agent** | 模型自动拉取、模型路由、Agent 循环、工具协议归一化、Token 记账、用量面板 |
+| **P1 入库与解析** | PDF/ArXiv/BibTeX 源适配器、统一解析器（OCR 兜底）、去重、Paper 存储、四阶段状态机、可恢复 Job、Token 记账（Provider 层，随首次 LLM 调用） |
+| **P2 Provider 与 Agent** | 模型自动拉取、模型路由、Agent 循环、工具协议归一化、用量面板（前端） |
 | **P3 概念与知识图** | 概念抽取+消解、分块嵌入、论文图+概念图构建、增量更新、双图可视化 |
 | **P4 对话与推荐** | RAG 检索、对话万能入口、库内+库外推荐、主动提示中心 |
 | **P5 技能系统** | instruction/template/persona 技能、加载与激活（auto/keyword/manual/pipeline）、技能管理 UI |
@@ -673,6 +689,7 @@ GET /api/events                           # 全局事件（主动提示、任务
 
 - **架构层（F1–F14）**：见 §3、§5、§6、§7、§12。
 - **数据模型（G1–G14）**：见 §4。
+- **全文审查（R1–R11，成稿后第三轮）**：概念层级构建（§7.5）、AI Ops 边界（§6.4）、引用接地（§9.2）、概念图规模化过滤（§8.4）、Token 记账时序（§15）、标签/合集 CRUD（§11.1）、备份导出（§12.6）、技能字段对齐（§4.5）、模型角色映射（§5.4）、BibTeX OA 来源（§7.1）、无 Provider 降级（§12.1）。
 
 关键决策：
 - F8（成本控制）→ 用户决定改为 Token 用量统计（§5.5、§4.9）。
