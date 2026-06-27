@@ -34,6 +34,12 @@
 - 代码型技能（type C）的完整沙箱执行（v1 提供 A/B/D，C 作为后续阶段加沙箱）。
 - 全文 PDF 编辑/标注（聚焦管理与知识结构）。
 
+### 1.3 设计原则：优先使用模型原生能力，不重复造轮子
+
+凡 LLM provider 已提供原生能力的（web 搜索、代码执行、文件检索、computer use 等），**优先让模型直接使用其原生工具**，而非自建等价实现。自建工具仅用于原生能力覆盖不到的领域（论文库语义检索、图查询、OpenAlex/Semantic Scholar 论文发现）。agent 工具层区分两类：
+- **原生工具（pass-through）**：经 LiteLLM 透传给 provider，由模型内置实现（如 Anthropic web search、OpenAI web_search / code_interpreter）。
+- **自定义工具**：我们的领域工具（库检索/图/标签等），需自建。
+
 ---
 
 ## 2. 使用形态与技术栈
@@ -233,6 +239,7 @@
 - 统一调用接口：`complete(provider, model, messages, tools, stream)` → 归一化的 `Response`（content + tool_calls + usage）。
 - 流式：统一 `async for delta in stream_complete(...)`，delta 归一化为 `{content?, tool_call_delta?}`。
 - 失败处理：超时重试、限流退避、provider 不可达降级。
+- **原生工具透传**：`tools` 同时支持自定义工具与 provider 原生工具（web 搜索、代码执行等），原生工具经 LiteLLM 直接透传，不自建等价实现（§1.3）。
 
 ### 5.3 模型列表自动拉取
 
@@ -302,6 +309,8 @@ agent 可调用的工具（每个是 AI Operations Service 或知识层之上的
 | `create_suggestion` | 生成主动提示记录 |
 | `reanalyze_paper` | 触发某篇重新分析（经 Job） |
 
+> **原生工具（pass-through）**：通用 web 搜索 / 代码执行等**不**自建 —— 优先透传 provider 原生工具（Anthropic web search、OpenAI web_search / code_interpreter 等，§1.3）。自定义工具仅用于领域逻辑（库检索 / 图 / 论文 API）。
+
 ### 6.4 AI Operations Service（F11 解耦）
 
 集中所有"调用 LLM 完成原子任务"的能力，Agent 与 Ingestion 共用：
@@ -350,7 +359,7 @@ model_role: deep             # 建议用哪个路由模型
 - `manual`：用户/agent 显式 `apply_skill`。
 - `pipeline`：入库流水线阶段自动应用（如某个 template 定义入库抽取字段）。
 
-**代码型技能（C）沙箱**：v1 不启用；设计上预留独立子进程执行器 + 受限能力（文件/网络白名单），后续阶段实现。
+**代码型技能（C）执行**：优先复用 provider 原生代码执行（Claude code execution、OpenAI code interpreter，§1.3）；仅当原生不可用或需特定能力时才设计独立子进程沙箱（文件/网络白名单）。v1 不启用，后续阶段实现。
 
 ---
 
