@@ -1,4 +1,12 @@
 from dataclasses import dataclass
+from enum import StrEnum
+
+
+class ProviderType(StrEnum):
+    openai_chat = "openai_chat"
+    openai_responses = "openai_responses"
+    anthropic = "anthropic"
+    openai_compat = "openai_compat"
 
 
 @dataclass(frozen=True)

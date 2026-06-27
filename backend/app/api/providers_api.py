@@ -1,11 +1,13 @@
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
 from app.models import Model, Provider
 from app.models.base import utcnow
 from app.providers.client import ProviderClient
+from app.providers.routing import ProviderType
 from app.security.crypto import get_crypto
 
 router = APIRouter()
@@ -13,10 +15,16 @@ router = APIRouter()
 
 class ProviderIn(BaseModel):
     name: str
-    type: str
+    type: ProviderType
     base_url: str | None = None
     api_key: str | None = None
     enabled: bool = True
+
+    @model_validator(mode="after")
+    def _compat_requires_base_url(self) -> "ProviderIn":
+        if self.type == ProviderType.openai_compat and not self.base_url:
+            raise ValueError("openai_compat provider requires base_url")
+        return self
 
 
 class ProviderPatch(BaseModel):
@@ -99,7 +107,10 @@ def refresh_models(pid: int, session: Session = Depends(get_session)) -> dict:
     p = session.get(Provider, pid)
     if p is None:
         raise HTTPException(404, "provider not found")
-    fetched = _client(session).list_models(p)
+    try:
+        fetched = _client(session).list_models(p)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(502, f"failed to fetch models: {exc}") from exc
     for existing in session.exec(select(Model).where(Model.provider_id == pid)).all():
         session.delete(existing)
     now = utcnow()

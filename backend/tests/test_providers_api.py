@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import httpx
+
 from app.providers.client import ModelInfo
 
 
@@ -71,3 +73,23 @@ def test_delete_provider_cascades_models(client):
     assert len(client.get(f"/api/providers/{pid}/models").json()) == 1
     assert client.delete(f"/api/providers/{pid}").status_code == 204
     assert client.get(f"/api/providers/{pid}/models").json() == []
+
+
+def test_invalid_provider_type_rejected(client):
+    res = client.post("/api/providers", json={"name": "bad", "type": "garbage"})
+    assert res.status_code == 422
+
+
+def test_compat_requires_base_url(client):
+    res = client.post("/api/providers", json={"name": "c", "type": "openai_compat"})
+    assert res.status_code == 422
+
+
+def test_refresh_failure_returns_502(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    with patch(
+        "app.api.providers_api.ProviderClient.list_models",
+        side_effect=httpx.ConnectError("unreachable"),
+    ):
+        res = client.post(f"/api/providers/{pid}/models/refresh")
+    assert res.status_code == 502

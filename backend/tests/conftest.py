@@ -6,6 +6,9 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
+# Avoid litellm's remote model-cost-map fetch on import (network dep + latency).
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 import pytest
 from fastapi.testclient import TestClient
 

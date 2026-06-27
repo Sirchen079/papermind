@@ -1,9 +1,16 @@
-from contextlib import asynccontextmanager
-from pathlib import Path
+import os
 
-from fastapi import FastAPI
+# Force litellm to use its bundled local model-cost map instead of fetching a
+# remote JSON on import. Must run before any `import litellm` (triggered by the
+# router imports below) so startup has no network dependency or latency spike.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-from app.api.health import router as health_router
+from contextlib import asynccontextmanager  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from fastapi import FastAPI  # noqa: E402
+
+from app.api.health import router as health_router  # noqa: E402
 from app.api.models_api import router as models_router
 from app.api.providers_api import router as providers_router
 from app.api.settings_api import router as settings_router
