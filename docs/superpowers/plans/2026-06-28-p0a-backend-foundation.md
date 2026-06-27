@@ -430,25 +430,26 @@ def make_engine(db_path: Path) -> Engine:
     return engine
 
 
-# Module-level engine bound lazily on first request.
-_engine: Engine | None = None
+# Path-keyed cache: each distinct DB path gets its own engine. This keeps
+# tests (which use a unique temp path per case) isolated without an explicit
+# reset, while production reuses one engine for its single path.
+_engines: dict[str, Engine] = {}
 
 
 def get_engine() -> Engine:
-    global _engine
-    if _engine is None:
-        from app.config import get_settings
+    from app.config import get_settings
 
-        settings = get_settings()
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
-        _engine = make_engine(settings.resolved_db_path)
-    return _engine
+    settings = get_settings()
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    key = str(settings.resolved_db_path)
+    if key not in _engines:
+        _engines[key] = make_engine(settings.resolved_db_path)
+    return _engines[key]
 
 
 def reset_engine_for_tests() -> None:
-    """Tests call this to drop the cached engine between cases."""
-    global _engine
-    _engine = None
+    """Drop all cached engines. Optional with the path-keyed cache."""
+    _engines.clear()
 
 
 def get_session() -> Iterator[Session]:
@@ -1109,6 +1110,7 @@ from app.db.engine import make_engine
 from app.models import Provider, TokenUsage
 from app.providers.client import ProviderClient, CompletionResult, ModelInfo
 from app.security.crypto import Crypto
+from cryptography.fernet import Fernet
 
 
 def _fake_litellm_completion(**kwargs):
@@ -1121,7 +1123,7 @@ def _fake_litellm_completion(**kwargs):
 def test_complete_records_usage(tmp_path, monkeypatch):
     eng = make_engine(tmp_path / "c.sqlite")
     SQLModel.metadata.create_all(eng)
-    crypto = Crypto(__import__("cryptography.fernet", fromlist=["Fernet"]).Fernet.generate_key())
+    crypto = Crypto(Fernet.generate_key())
 
     monkeypatch.setattr("app.providers.client.litellm.completion", _fake_litellm_completion)
 
@@ -1145,7 +1147,7 @@ def test_complete_records_usage(tmp_path, monkeypatch):
 def test_list_models_openai_compat(tmp_path):
     eng = make_engine(tmp_path / "c.sqlite")
     SQLModel.metadata.create_all(eng)
-    crypto = Crypto(__import__("cryptography.fernet", fromlist=["Fernet"]).Fernet.generate_key())
+    crypto = Crypto(Fernet.generate_key())
     respx.get("https://api.deepseek.com/v1/models").mock(
         return_value=httpx.Response(200, json={"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]})
     )
@@ -1452,6 +1454,8 @@ git commit -m "feat(api): settings key-value CRUD"
 ```python
 from unittest.mock import patch
 
+from app.providers.client import ModelInfo
+
 
 def test_create_provider_encrypts_key_and_hides_it(client):
     res = client.post("/api/providers", json={
@@ -1479,8 +1483,8 @@ def test_refresh_models_upserts(client):
     }).json()["id"]
 
     fake_models = [
-        type("M", (), {"model_id": "deepseek-chat", "display_name": "deepseek-chat", "context_window": None})(),
-        type("M", (), {"model_id": "deepseek-reasoner", "display_name": "deepseek-reasoner", "context_window": None})(),
+        ModelInfo(model_id="deepseek-chat", display_name="deepseek-chat"),
+        ModelInfo(model_id="deepseek-reasoner", display_name="deepseek-reasoner"),
     ]
     with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
         res = client.post(f"/api/providers/{pid}/models/refresh")
@@ -1788,18 +1792,19 @@ git commit -m "feat(api): global models list + role assignment"
 
 `backend/tests/test_usage_api.py`:
 ```python
-from datetime import date, timedelta
+from datetime import date
+from sqlmodel import Session
+
 from app.db.engine import get_engine
 from app.models import TokenUsage, Provider
-from sqlmodel import Session
 
 
 def _seed(client):
     with Session(get_engine()) as s:
-        s.add(Provider(name="oai", type="openai_chat"))
+        p = Provider(name="oai", type="openai_chat")
+        s.add(p)
         s.commit()
-        s.refresh(s.exec(__import__("sqlmodel").select(Provider)).first())
-        p = s.exec(__import__("sqlmodel").select(Provider)).first()
+        s.refresh(p)
         today = date.today()
         s.add(TokenUsage(provider_id=p.id, model="gpt-4o", prompt_tokens=100, completion_tokens=50,
                          total_tokens=150, request_kind="chat", day=today))
