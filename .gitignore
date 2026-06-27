@@ -26,3 +26,6 @@ backend/data/
 .DS_Store
 .idea/
 .vscode/
+
+# SDD scratch (progress ledger, task briefs)
+.superpowers/

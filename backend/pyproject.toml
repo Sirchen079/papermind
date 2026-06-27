@@ -1,0 +1,38 @@
+[project]
+name = "papermind-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlmodel>=0.0.22",
+  "alembic>=1.13",
+  "litellm>=1.50",
+  "cryptography>=43",
+  "pydantic-settings>=2.5",
+  "httpx>=0.27",
+  "sqlite-vec>=0.1.6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.21"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Use a project-local basetemp instead of the system per-user pytest dir,
+# which can get into an inaccessible state on Windows (locked handles).
+addopts = "--basetemp=.pytest_basetemp"
+filterwarnings = [
+  # Third-party: fastapi/starlette's testclient emits a
+  # StarletteDeprecationWarning (a UserWarning subclass) at import time,
+  # recommending httpx2. Not actionable from this project; suppress for
+  # pristine test output.
+  "ignore::UserWarning:fastapi.testclient",
+]
