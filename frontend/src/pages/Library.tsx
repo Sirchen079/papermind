@@ -73,76 +73,88 @@ export default function Library() {
 
   return (
     <div className="max-w-5xl">
-      <h2 className="text-2xl font-bold mb-4">Library</h2>
-
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold mb-2">Add from BibTeX</h3>
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+        <div className="card">
+          <h3 className="mb-3 font-semibold">Add from BibTeX</h3>
           <textarea
-            className="w-full border rounded p-2 text-sm font-mono h-24"
+            className="input h-24 font-mono resize-none"
             placeholder="@article{...}"
             value={bibtex}
             onChange={(e) => setBibtex(e.target.value)}
           />
-          <button
-            onClick={ingestBibtex}
-            disabled={loading}
-            className="mt-2 bg-slate-900 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50"
-          >
+          <button onClick={ingestBibtex} disabled={loading} className="btn-primary mt-3">
             Ingest
           </button>
         </div>
-        <div className="bg-white rounded-lg shadow p-4">
-          <h3 className="font-semibold mb-2">Add from ArXiv</h3>
+        <div className="card">
+          <h3 className="mb-3 font-semibold">Add from ArXiv</h3>
           <input
-            className="w-full border rounded p-2 text-sm"
+            className="input"
             placeholder="e.g. 1706.03762"
             value={arxivId}
             onChange={(e) => setArxivId(e.target.value)}
           />
-          <button
-            onClick={ingestArxiv}
-            disabled={loading}
-            className="mt-2 bg-slate-900 text-white px-3 py-1.5 rounded text-sm disabled:opacity-50"
-          >
+          <button onClick={ingestArxiv} disabled={loading} className="btn-primary mt-3">
             Fetch &amp; ingest
           </button>
         </div>
       </div>
 
-      {error && <div className="text-red-600 text-sm mb-4">{error}</div>}
+      {error && (
+        <div
+          className="mb-4 rounded-lg px-3 py-2 text-sm"
+          style={{ backgroundColor: "color-mix(in srgb, var(--danger) 12%, transparent)", color: "var(--danger)" }}
+        >
+          {error}
+        </div>
+      )}
 
       <div className="space-y-2">
         {papers.length === 0 && !loading && (
-          <p className="text-slate-500">No papers yet. Add one above.</p>
+          <div className="card text-center" style={{ color: "var(--muted)" }}>
+            No papers yet — add one above to let the agent parse, summarize, and graph it.
+          </div>
         )}
         {papers.map((p) => (
           <button
             key={p.id}
             onClick={() => open(p)}
-            className="block w-full text-left bg-white rounded-lg shadow p-3 hover:shadow-md transition"
+            className="card-tight block w-full text-left transition hover:translate-y-[-1px]"
+            style={{ boxShadow: "var(--shadow)" }}
           >
-            <div className="font-medium">{p.title ?? "(untitled)"}</div>
-            <div className="text-sm text-slate-500">
+            <div className="flex items-start justify-between gap-3">
+              <div className="font-medium">{p.title ?? "(untitled)"}</div>
+              {p.has_summary && <span className="chip shrink-0">summarized</span>}
+            </div>
+            <div className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
               {p.authors.slice(0, 3).join(", ")}
               {p.authors.length > 3 ? " et al." : ""} {p.year ? `· ${p.year}` : ""}
-              {p.has_summary ? " · ✓ summarized" : ""}
             </div>
           </button>
         ))}
       </div>
 
       {selected && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-6" onClick={() => setSelected(null)}>
-          <div className="bg-white rounded-lg max-w-2xl w-full max-h-[80vh] overflow-auto p-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-start mb-2">
-              <h3 className="text-xl font-bold">{selected.title}</h3>
-              <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-700">✕</button>
+        <div
+          className="fixed inset-0 flex items-center justify-center p-6"
+          style={{ backgroundColor: "rgb(0 0 0 / 0.5)" }}
+          onClick={() => setSelected(null)}
+        >
+          <div
+            className="max-h-[82vh] w-full max-w-2xl overflow-auto rounded-xl p-6"
+            style={{ backgroundColor: "var(--surface)", boxShadow: "var(--shadow-md)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 flex items-start justify-between gap-4">
+              <h3 className="text-xl font-bold leading-snug">{selected.title}</h3>
+              <button onClick={() => setSelected(null)} className="btn-subtle shrink-0 px-2">
+                ✕
+              </button>
             </div>
-            <p className="text-sm text-slate-500 mb-4">
+            <p className="mb-4 text-sm" style={{ color: "var(--muted)" }}>
               {selected.authors.join(", ")} {selected.year ? `· ${selected.year}` : ""}
             </p>
-            {selected.abstract && <p className="text-sm mb-4">{selected.abstract}</p>}
+            {selected.abstract && <p className="mb-4 text-sm leading-relaxed">{selected.abstract}</p>}
             {selected.summary ? (
               <div className="space-y-2">
                 <h4 className="font-semibold">AI Summary</h4>
@@ -154,37 +166,42 @@ export default function Library() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-slate-400">No AI summary (configure a provider in Settings).</p>
+              <p className="text-sm" style={{ color: "var(--faint)" }}>
+                No AI summary (configure a provider in Settings).
+              </p>
             )}
 
-            <div className="mt-6 border-t pt-4">
-              <div className="flex items-center gap-3 mb-2">
+            <div className="mt-6 border-t pt-4" style={{ borderColor: "var(--border)" }}>
+              <div className="mb-2 flex items-center gap-3">
                 <h4 className="font-semibold">Related works</h4>
-                <button
-                  onClick={() => findRelated(selected.id)}
-                  disabled={relatedLoading}
-                  className="text-sm bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded disabled:opacity-50"
-                >
+                <button onClick={() => findRelated(selected.id)} disabled={relatedLoading} className="btn-ghost">
                   {relatedLoading ? "Searching…" : "Find related (external)"}
                 </button>
               </div>
-              <p className="text-xs text-slate-400 mb-2">
+              <p className="mb-2 text-xs" style={{ color: "var(--faint)" }}>
                 Discovery via OpenAlex — searches outside your library. Network errors degrade to an empty list.
               </p>
               {related !== null && related.length === 0 && !relatedLoading && (
-                <p className="text-sm text-slate-400">No related works found.</p>
+                <p className="text-sm" style={{ color: "var(--faint)" }}>
+                  No related works found.
+                </p>
               )}
               {related && related.length > 0 && (
                 <ul className="space-y-2">
                   {related.map((r) => (
-                    <li key={r.openalex_id ?? r.title ?? Math.random()} className="text-sm bg-slate-50 rounded p-2">
+                    <li
+                      key={r.openalex_id ?? r.title ?? Math.random()}
+                      className="rounded-lg p-2.5 text-sm"
+                      style={{ backgroundColor: "var(--surface-2)" }}
+                    >
                       <div className="font-medium">
                         {r.doi ? (
                           <a
                             href={`https://doi.org/${r.doi}`}
                             target="_blank"
                             rel="noreferrer"
-                            className="text-blue-600 hover:underline"
+                            style={{ color: "var(--accent)" }}
+                            className="hover:underline"
                           >
                             {r.title ?? "(untitled)"}
                           </a>
@@ -192,7 +209,7 @@ export default function Library() {
                           r.title ?? "(untitled)"
                         )}
                       </div>
-                      <div className="text-xs text-slate-500">
+                      <div className="mt-0.5 text-xs" style={{ color: "var(--muted)" }}>
                         {r.authors.slice(0, 3).join(", ")}
                         {r.authors.length > 3 ? " et al." : ""} {r.year ? `· ${r.year}` : ""}
                         {r.cited_by_count ? ` · cited by ${r.cited_by_count}` : ""}

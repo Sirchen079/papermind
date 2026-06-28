@@ -75,7 +75,6 @@ export default function Chat() {
           });
         } else if (event === "error") {
           setError(data.message ?? "stream error");
-          // drop the empty placeholder
           setMessages((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
         }
       }
@@ -88,63 +87,88 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex gap-4 h-[80vh]">
-      <aside className="w-52 shrink-0 bg-white rounded-lg shadow p-3 overflow-auto">
-        <button onClick={newConv} className="w-full bg-slate-900 text-white rounded px-3 py-1.5 text-sm mb-3">
-          + New
-        </button>
-        <div className="space-y-1">
-          {convs.map((c) => (
-            <button
-              key={c.id}
-              onClick={() => openConv(c.id)}
-              className={`block w-full text-left text-sm px-2 py-1.5 rounded truncate ${
-                active === c.id ? "bg-slate-200" : "hover:bg-slate-100"
-              }`}
-            >
-              {c.title} #{c.id}
-            </button>
-          ))}
+    <div className="flex h-[78vh] gap-4">
+      <aside className="card-tight flex w-56 shrink-0 flex-col overflow-hidden p-0">
+        <div className="p-3" style={{ borderBottom: "1px solid var(--border)" }}>
+          <button onClick={newConv} className="btn-primary w-full">
+            + New conversation
+          </button>
+        </div>
+        <div className="flex-1 space-y-1 overflow-auto p-2">
+          {convs.length === 0 && (
+            <p className="px-2 py-4 text-center text-xs" style={{ color: "var(--faint)" }}>
+              No conversations yet.
+            </p>
+          )}
+          {convs.map((c) => {
+            const isActive = active === c.id;
+            return (
+              <button
+                key={c.id}
+                onClick={() => openConv(c.id)}
+                className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors"
+                style={
+                  isActive
+                    ? { backgroundColor: "var(--accent-soft)", color: "var(--text)" }
+                    : { color: "var(--muted)" }
+                }
+                onMouseEnter={(e) => {
+                  if (!isActive) e.currentTarget.style.backgroundColor = "var(--surface-2)";
+                }}
+                onMouseLeave={(e) => {
+                  if (!isActive) e.currentTarget.style.backgroundColor = "transparent";
+                }}
+              >
+                {c.title} <span style={{ color: "var(--faint)" }}>#{c.id}</span>
+              </button>
+            );
+          })}
         </div>
       </aside>
 
-      <section className="flex-1 flex flex-col bg-white rounded-lg shadow">
+      <section className="card flex flex-1 flex-col overflow-hidden p-0">
         {!active ? (
-          <div className="flex-1 flex items-center justify-center text-slate-400">
+          <div className="flex flex-1 items-center justify-center" style={{ color: "var(--faint)" }}>
             Start a new conversation
           </div>
         ) : (
           <>
-            <div className="flex-1 overflow-auto p-4 space-y-3">
+            <div className="flex-1 space-y-3 overflow-auto p-4">
               {messages.map((m, i) => (
                 <div key={i} className={m.role === "user" ? "text-right" : ""}>
                   <div
-                    className={`inline-block max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
-                      m.role === "user" ? "bg-slate-900 text-white" : "bg-slate-100"
-                    }`}
+                    className="inline-block max-w-[80%] whitespace-pre-wrap rounded-xl px-3.5 py-2 text-sm leading-relaxed"
+                    style={
+                      m.role === "user"
+                        ? { backgroundColor: "var(--accent)", color: "var(--accent-contrast)" }
+                        : { backgroundColor: "var(--surface-2)" }
+                    }
                   >
-                    {m.content || (busy && m.role === "assistant" ? (
-                      <span className="text-slate-400">thinking…</span>
-                    ) : "")}
+                    {m.content ||
+                      (busy && m.role === "assistant" ? (
+                        <span style={{ color: "var(--faint)" }}>thinking…</span>
+                      ) : (
+                        ""
+                      ))}
                   </div>
                 </div>
               ))}
               <div ref={endRef} />
             </div>
-            {error && <div className="text-red-600 text-sm px-4">{error}</div>}
-            <div className="border-t p-3 flex gap-2">
+            {error && (
+              <div className="px-4 py-2 text-sm" style={{ color: "var(--danger)" }}>
+                {error}
+              </div>
+            )}
+            <div className="flex gap-2 p-3" style={{ borderTop: "1px solid var(--border)" }}>
               <input
-                className="flex-1 border rounded px-3 py-1.5 text-sm"
+                className="input"
                 placeholder="Ask about your library…"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && send()}
               />
-              <button
-                onClick={send}
-                disabled={busy}
-                className="bg-slate-900 text-white px-4 py-1.5 rounded text-sm disabled:opacity-50"
-              >
+              <button onClick={send} disabled={busy} className="btn-primary shrink-0 px-5">
                 Send
               </button>
             </div>

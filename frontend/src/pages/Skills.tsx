@@ -64,43 +64,97 @@ export default function Skills() {
 
   return (
     <div className="max-w-3xl space-y-6">
-      <div className="flex items-center gap-3">
-        <h2 className="text-2xl font-bold">Skills</h2>
-        <button onClick={reload} className="text-sm text-slate-600 underline">
-          reload from folder
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm" style={{ color: "var(--muted)" }}>
+          Declarative capabilities injected into the assistant.
+        </p>
+        <button onClick={reload} className="btn-ghost">
+          ↻ Reload from folder
         </button>
       </div>
-      {msg && <div className="text-green-700 text-sm">{msg}</div>}
-      {err && <div className="text-red-600 text-sm">{err}</div>}
+      {msg && (
+        <div
+          className="rounded-lg px-3 py-2 text-sm"
+          style={{ backgroundColor: "color-mix(in srgb, var(--success) 14%, transparent)", color: "var(--success)" }}
+        >
+          {msg}
+        </div>
+      )}
+      {err && (
+        <div
+          className="rounded-lg px-3 py-2 text-sm"
+          style={{ backgroundColor: "color-mix(in srgb, var(--danger) 12%, transparent)", color: "var(--danger)" }}
+        >
+          {err}
+        </div>
+      )}
 
-      <section className="bg-white rounded-lg shadow p-4">
-        <h3 className="font-semibold mb-3">New Skill</h3>
-        <div className="grid grid-cols-3 gap-3 mb-3">
-          <input className="border rounded px-2 py-1.5 text-sm col-span-1" placeholder="name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <select className="border rounded px-2 py-1.5 text-sm" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            {["instruction", "template", "persona"].map((t) => <option key={t}>{t}</option>)}
+      <section className="card">
+        <h3 className="mb-3 font-semibold">New skill</h3>
+        <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <input
+            className="input"
+            placeholder="name"
+            value={form.name}
+            onChange={(e) => setForm({ ...form, name: e.target.value })}
+          />
+          <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+            {["instruction", "template", "persona"].map((t) => (
+              <option key={t}>{t}</option>
+            ))}
           </select>
-          <select className="border rounded px-2 py-1.5 text-sm" value={form.trigger} onChange={(e) => setForm({ ...form, trigger: e.target.value })}>
-            {["manual", "auto", "keyword", "pipeline"].map((t) => <option key={t}>{t}</option>)}
+          <select className="input" value={form.trigger} onChange={(e) => setForm({ ...form, trigger: e.target.value })}>
+            {["manual", "auto", "keyword", "pipeline"].map((t) => (
+              <option key={t}>{t}</option>
+            ))}
           </select>
         </div>
-        <textarea className="w-full border rounded p-2 text-sm font-mono h-28" placeholder="skill instructions (markdown)…" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
-        <button onClick={add} className="mt-2 bg-slate-900 text-white px-3 py-1.5 rounded text-sm">Save</button>
+        <textarea
+          className="input h-28 resize-none font-mono"
+          placeholder="skill instructions (markdown)…"
+          value={form.body}
+          onChange={(e) => setForm({ ...form, body: e.target.value })}
+        />
+        <button onClick={add} className="btn-primary mt-3">
+          Save skill
+        </button>
       </section>
 
       <section className="space-y-2">
-        {skills.length === 0 && <p className="text-slate-400 text-sm">No skills yet.</p>}
+        {skills.length === 0 && (
+          <div className="card text-center text-sm" style={{ color: "var(--muted)" }}>
+            No skills yet.
+          </div>
+        )}
         {skills.map((s) => (
-          <div key={s.id} className="bg-white rounded-lg shadow p-3">
+          <div key={s.id} className="card-tight" style={{ boxShadow: "var(--shadow)" }}>
             <div className="flex items-center gap-2">
               <span className="font-medium">{s.name}</span>
-              <span className="text-xs bg-slate-100 px-2 py-0.5 rounded">{s.type}</span>
-              <span className="text-xs text-slate-400">{s.trigger}</span>
-              <span className="text-xs text-slate-400 ml-auto">{s.source}</span>
-              <button onClick={() => remove(s.id)} className="text-sm text-red-500">delete</button>
+              <span className="chip">{s.type}</span>
+              <span className="text-xs" style={{ color: "var(--faint)" }}>
+                {s.trigger}
+              </span>
+              <span className="ml-auto text-xs" style={{ color: "var(--faint)" }}>
+                {s.source}
+              </span>
+              <button onClick={() => remove(s.id)} className="btn-subtle px-2 text-sm" style={{ color: "var(--danger)" }}>
+                delete
+              </button>
             </div>
-            {s.description && <p className="text-sm text-slate-500 mt-1">{s.description}</p>}
-            {s.body && <pre className="text-xs text-slate-600 mt-2 whitespace-pre-wrap font-mono">{s.body.slice(0, 200)}{s.body.length > 200 ? "…" : ""}</pre>}
+            {s.description && (
+              <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+                {s.description}
+              </p>
+            )}
+            {s.body && (
+              <pre
+                className="mt-2 whitespace-pre-wrap font-mono text-xs"
+                style={{ color: "var(--muted)" }}
+              >
+                {s.body.slice(0, 200)}
+                {s.body.length > 200 ? "…" : ""}
+              </pre>
+            )}
           </div>
         ))}
       </section>
