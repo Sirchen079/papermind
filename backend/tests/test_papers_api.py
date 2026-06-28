@@ -234,3 +234,21 @@ def test_reanalyze_requires_provider(client):
 
 def test_reanalyze_404_for_missing(client):
     assert client.post("/api/papers/9999/analyze").status_code == 404
+
+
+def test_failed_analysis_records_error_and_surfaces_it(client):
+    """A failed AI analysis must record WHY and the detail view must show
+    status=failed+error, not a silent 'no summary'."""
+    _seed_summary_provider()
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+
+    def boom(provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
+        raise RuntimeError("upstream returned 500")
+
+    with patch("app.providers.client.ProviderClient.complete", side_effect=boom):
+        res = client.post(f"/api/papers/{pid}/analyze")
+    assert res.status_code == 200  # analysis failure is recorded, not raised
+    detail = client.get(f"/api/papers/{pid}").json()
+    assert detail["summary"] is None
+    assert detail["analysis"]["status"] == "failed"
+    assert "upstream returned 500" in detail["analysis"]["error"]

@@ -38,7 +38,18 @@ def patch_model(mid: int, body: ModelPatch, session: Session = Depends(get_sessi
     if m is None:
         raise HTTPException(404, "model not found")
     if body.role_default is not None:
-        m.role_default = body.role_default
+        new_role = body.role_default
+        if new_role:
+            # Enforce ONE model per role: assigning role R to this model clears R
+            # from every other model. Otherwise pick_llm (which takes the first
+            # match) is nondeterministic, and you can end up with two "embedding"
+            # models — e.g. bge-m3 AND a reranker both tagged embedding.
+            for other in session.exec(
+                select(Model).where(Model.role_default == new_role, Model.id != mid)
+            ).all():
+                other.role_default = None
+                session.add(other)
+        m.role_default = new_role
     if body.display_name is not None:
         m.display_name = body.display_name
     session.add(m)

@@ -36,6 +36,7 @@ class AnalysisRun(SQLModel, table=True):
     finished_at: datetime | None = None
     status: str = "running"  # running | done | failed
     is_current: bool = True
+    error: str | None = None  # failure reason when status == "failed" (diagnosability)
 
 
 class Summary(SQLModel, table=True):

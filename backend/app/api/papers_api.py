@@ -8,7 +8,7 @@ from app.api.deps import get_session
 from app.config import get_settings
 from app.ingestion.service import analyze_paper, persist_fetched
 from app.ingestion.sources import FetchedPaper, fetch_arxiv, parse_bibtex
-from app.models import Concept, Paper, PaperChunk, PaperConcept, Provider, Summary
+from app.models import AnalysisRun, Concept, Paper, PaperChunk, PaperConcept, Provider, Summary
 from app.providers.client import ProviderClient
 
 router = APIRouter()
@@ -68,6 +68,17 @@ def _concepts_for(session: Session, paper_id: int) -> list[dict]:
     ]
 
 
+def _analysis_for(session: Session, paper_id: int) -> dict | None:
+    """Latest analysis run for a paper, so the detail view can distinguish
+    "never analyzed" from "analysis failed: <reason>" instead of a blank summary."""
+    row = session.exec(
+        select(AnalysisRun).where(AnalysisRun.paper_id == paper_id).order_by(AnalysisRun.id.desc())
+    ).first()
+    if row is None:
+        return None
+    return {"status": row.status, "error": row.error, "model": row.model}
+
+
 def _analysis_ctx(session: Session) -> tuple[ProviderClient, Provider, str] | None:
     """Pick the provider + model for ingestion analysis (summarize + extract).
 
@@ -99,6 +110,7 @@ def get_paper(pid: int, session: Session = Depends(get_session)) -> dict:
     d = _public(p)
     d["summary"] = _summary_for(session, p.id)
     d["concepts"] = _concepts_for(session, p.id)
+    d["analysis"] = _analysis_for(session, p.id)
     d["full_text"] = p.full_text
     return d
 
@@ -171,12 +183,13 @@ def reindex_papers(session: Session = Depends(get_session)) -> dict:
     """Re-chunk + re-embed every paper for retrieval (RAG).
 
     Run this after configuring (or changing) the embedding-role model, or to
-    pick up improved full-text parses. Returns the number of chunks stored;
-    0 means no embedding model is configured.
+    pick up improved full-text parses. Returns a structured result so the UI can
+    tell the user the *real* reason for a no-op (not configured vs. empty library
+    vs. embed call failed), instead of reporting a false "未配置 embedding 模型".
     """
     from app.rag.index import reindex_library
 
-    return {"chunks": reindex_library(session)}
+    return reindex_library(session).as_dict()
 
 
 @router.post("/papers/arxiv")

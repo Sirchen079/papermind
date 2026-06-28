@@ -171,9 +171,20 @@ export default function Settings() {
     setErr(null);
     try {
       const r = await api.reindexLibrary();
-      setIndexMsg(
-        r.chunks > 0 ? `已索引 ${r.chunks} 个片段。` : "未配置 embedding 模型。",
-      );
+      // 按真实结果给提示，不再把所有 0 片段的情况一律说成"未配置"
+      let m: string;
+      if (!r.configured) {
+        m = "未配置 embedding 模型——请在某个 OpenAI 格式的提供商上，把一个 embedding 模型（如 BAAI/bge-m3）的角色设为 embedding。";
+      } else if (r.error) {
+        m = `索引失败：${r.error}（请检查 embedding 模型名称、地址与密钥）`;
+      } else if (r.papers === 0) {
+        m = "向量模型已就绪，但论文库为空——添加论文后再重建索引。";
+      } else if (r.chunks === 0) {
+        m = `已处理 ${r.papers} 篇论文，但都没有可提取的摘要/全文。`;
+      } else {
+        m = `已索引 ${r.chunks} 个片段（来自 ${r.indexed_papers}/${r.papers} 篇论文）。`;
+      }
+      setIndexMsg(m);
     } catch (e: any) {
       setErr(e.message);
     } finally {

@@ -110,7 +110,10 @@ def test_index_paper_replaces_existing(tmp_path):
 
 
 def test_index_paper_keeps_chunks_when_embed_fails(tmp_path):
-    """A failed embed must not wipe a paper's existing chunks (delete-after-confirm)."""
+    """A failed embed must RAISE (not silently return 0) and not wipe existing
+    chunks (delete-after-confirm). Swallowing here is what made reindex lie."""
+    import pytest
+
     eng = make_engine(tmp_path / "fail.sqlite")
     SQLModel.metadata.create_all(eng)
     with Session(eng) as s:
@@ -132,7 +135,8 @@ def test_index_paper_keeps_chunks_when_embed_fails(tmp_path):
 
         from app.rag.index import index_paper
 
-        assert index_paper(s, paper, FailingClient(), object(), "emb") == 0
+        with pytest.raises(RuntimeError):
+            index_paper(s, paper, FailingClient(), object(), "emb")
         s.commit()  # mimic the caller committing afterwards
 
         remaining = s.exec(select(PaperChunk).where(PaperChunk.paper_id == paper.id)).all()
@@ -202,6 +206,65 @@ def test_retrieve_empty_without_embedding_model(tmp_path, monkeypatch):
     with Session(eng) as s:
         assert index_mod.retrieve(s, "query") == []
         assert index_mod.retrieve(s, "") == []
+
+
+# --- reindex_library structured result --------------------------------------
+
+def test_reindex_not_configured(tmp_path, monkeypatch):
+    """No embedding model -> configured=False, but papers still counted so the
+    UI can say 'library empty' vs 'not configured'."""
+    eng = make_engine(tmp_path / "r0.sqlite")
+    SQLModel.metadata.create_all(eng)
+    from app.rag import index as index_mod
+
+    monkeypatch.setattr(index_mod, "pick_llm", lambda *a, **k: None)
+    with Session(eng) as s:
+        s.add(Paper(source="pdf", title="T", abstract="A"))
+        s.commit()
+        r = index_mod.reindex_library(s)
+    assert r.configured is False
+    assert r.papers == 1
+    assert r.chunks == 0
+    assert r.error is None
+
+
+def test_reindex_success_counts_chunks(tmp_path, monkeypatch):
+    eng = make_engine(tmp_path / "r1.sqlite")
+    SQLModel.metadata.create_all(eng)
+    from app.rag import index as index_mod
+
+    monkeypatch.setattr(index_mod, "pick_llm", lambda *a, **k: (_FakeEmbedClient(), object(), "emb"))
+    with Session(eng) as s:
+        s.add(Paper(source="pdf", title="T", abstract="A", full_text="body one\ntwo"))
+        s.commit()
+        r = index_mod.reindex_library(s)
+    assert r.configured is True
+    assert r.papers == 1
+    assert r.indexed_papers == 1
+    assert r.chunks >= 1
+    assert r.error is None
+
+
+def test_reindex_surfaces_embed_error_and_stops(tmp_path, monkeypatch):
+    """An embed failure must be reported (not collapsed to 'not configured'),
+    and the run stops at the first error rather than hammering the endpoint."""
+    eng = make_engine(tmp_path / "r2.sqlite")
+    SQLModel.metadata.create_all(eng)
+    from app.rag import index as index_mod
+
+    class Boom:
+        def embed(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+            raise RuntimeError("401 unauthorized")
+
+    monkeypatch.setattr(index_mod, "pick_llm", lambda *a, **k: (Boom(), object(), "emb"))
+    with Session(eng) as s:
+        s.add(Paper(source="pdf", title="T", abstract="A", full_text="body"))
+        s.commit()
+        r = index_mod.reindex_library(s)
+    assert r.configured is True
+    assert r.chunks == 0
+    assert r.error is not None
+    assert "401" in r.error
 
 
 # --- role-aware provider selection ------------------------------------------

@@ -76,6 +76,7 @@ export interface Paper {
   summary?: Record<string, string> | null;
   full_text?: string | null;
   concepts?: { name: string; type: string | null }[];
+  analysis?: { status: string; error: string | null; model: string | null } | null;
 }
 
 export interface GraphData {
@@ -137,7 +138,15 @@ export const api = {
       { method: "POST" },
     ),
   relatedPapers: (id: number) => req<RelatedPaper[]>(`/papers/${id}/related`),
-  reindexLibrary: () => req<{ chunks: number }>("/papers/reindex", { method: "POST" }),
+  reindexLibrary: () =>
+    req<{
+      configured: boolean;
+      papers: number;
+      indexed_papers: number;
+      chunks: number;
+      skipped_no_text: number;
+      error: string | null;
+    }>("/papers/reindex", { method: "POST" }),
   ingestPdf: (file: File) => {
     const form = new FormData();
     form.append("file", file);

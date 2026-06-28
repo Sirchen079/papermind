@@ -145,8 +145,9 @@ def _analyze(session: Session, paper: Paper, client, provider: Provider, model_i
         raw_concepts = extract_concepts(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
         resolve_and_attach_concepts(session, paper, run.id, raw_concepts)
         run.status = "done"
-    except Exception:  # noqa: BLE001 — analysis failure must not abort ingest
+    except Exception as exc:  # noqa: BLE001 — analysis failure must not abort ingest
         run.status = "failed"
+        run.error = f"{type(exc).__name__}: {exc}"
     run.finished_at = utcnow()
     session.add(run)
     session.commit()

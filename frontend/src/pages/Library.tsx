@@ -364,11 +364,21 @@ export default function Library({
             ) : (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm" style={{ color: "var(--faint)" }}>
-                    暂无 AI 摘要（请在「设置」中配置模型提供商）。
-                  </p>
+                  {selected.analysis?.status === "failed" ? (
+                    <p className="text-sm" style={{ color: "var(--danger)" }}>
+                      上次分析失败{selected.analysis.error ? `：${selected.analysis.error}` : ""}。
+                    </p>
+                  ) : (
+                    <p className="text-sm" style={{ color: "var(--faint)" }}>
+                      暂无 AI 摘要（请在「设置」中为某个模型分配 summary 或 chat 角色）。
+                    </p>
+                  )}
                   <button onClick={reanalyze} disabled={analyzing} className="btn-ghost px-2.5 py-1 text-xs">
-                    {analyzing ? "分析中…" : "↻ 立即分析"}
+                    {analyzing
+                      ? "分析中…"
+                      : selected.analysis?.status === "failed"
+                        ? "↻ 重试分析"
+                        : "↻ 立即分析"}
                   </button>
                 </div>
               </div>
