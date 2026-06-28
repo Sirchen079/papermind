@@ -52,13 +52,36 @@ export default function Chat() {
     const text = input;
     setInput("");
     setMessages((m) => [...m, { role: "user", content: text, model: "" }]);
+    // assistant placeholder streamed into incrementally
+    setMessages((m) => [...m, { role: "assistant", content: "", model: "" }]);
     setBusy(true);
     setError(null);
     try {
-      const res = await api.sendMessage(active, text);
-      setMessages((m) => [...m, { role: res.role, content: res.content, model: res.model }]);
+      let last = "";
+      for await (const { event, data } of api.streamMessage(active, text)) {
+        if (event === "delta") {
+          last += data.content;
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { ...copy[copy.length - 1], content: last };
+            return copy;
+          });
+        } else if (event === "done") {
+          // authoritative final content + model, persisted server-side
+          setMessages((m) => {
+            const copy = [...m];
+            copy[copy.length - 1] = { role: "assistant", content: data.content, model: data.model };
+            return copy;
+          });
+        } else if (event === "error") {
+          setError(data.message ?? "stream error");
+          // drop the empty placeholder
+          setMessages((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
+        }
+      }
     } catch (e: any) {
       setError(e.message);
+      setMessages((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
     } finally {
       setBusy(false);
     }
@@ -96,15 +119,16 @@ export default function Chat() {
               {messages.map((m, i) => (
                 <div key={i} className={m.role === "user" ? "text-right" : ""}>
                   <div
-                    className={`inline-block max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+                    className={`inline-block max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap ${
                       m.role === "user" ? "bg-slate-900 text-white" : "bg-slate-100"
                     }`}
                   >
-                    {m.content}
+                    {m.content || (busy && m.role === "assistant" ? (
+                      <span className="text-slate-400">thinking…</span>
+                    ) : "")}
                   </div>
                 </div>
               ))}
-              {busy && <div className="text-sm text-slate-400">thinking…</div>}
               <div ref={endRef} />
             </div>
             {error && <div className="text-red-600 text-sm px-4">{error}</div>}

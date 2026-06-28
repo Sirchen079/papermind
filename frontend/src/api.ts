@@ -10,6 +10,48 @@ async function req<T = any>(path: string, opts?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface SseEvent {
+  event: string;
+  data: any;
+}
+
+/** POST to an SSE endpoint and yield parsed {event, data} frames as they arrive. */
+export async function* sseStream(path: string, body: unknown): AsyncGenerator<SseEvent> {
+  const res = await fetch(BASE + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    throw new Error(`${res.status} ${await res.text()}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? ""; // keep the trailing partial frame
+    for (const frame of frames) {
+      let event = "message";
+      let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (data) {
+        try {
+          yield { event, data: JSON.parse(data) };
+        } catch {
+          /* skip malformed frame */
+        }
+      }
+    }
+  }
+}
+
 export interface Paper {
   id: number;
   source: string;
@@ -79,6 +121,8 @@ export const api = {
       `/chat/conversations/${id}/messages`,
       { method: "POST", body: JSON.stringify({ content }) }
     ),
+  streamMessage: (id: number, content: string) =>
+    sseStream(`/chat/conversations/${id}/messages/stream`, { content }),
   // providers / models
   listProviders: () => req<Provider[]>("/providers"),
   createProvider: (body: Record<string, unknown>) =>

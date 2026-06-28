@@ -55,8 +55,12 @@ def _summary_for(session: Session, paper_id: int) -> dict | None:
 def _analysis_ctx(session: Session) -> tuple[ProviderClient, Provider, str] | None:
     """Pick the first enabled provider + a summary-role (or first) model.
 
-    Returns None when no provider/model is configured (AI is skipped).
+    Returns None when no provider/model is configured (AI is skipped). The
+    client uses a fresh-session factory so token-usage recording never closes
+    the caller's request session (see app.providers.selection.pick_llm).
     """
+    from app.db.engine import get_engine as _get_engine
+
     provider = session.exec(select(Provider).where(Provider.enabled == True)).first()  # noqa: E712
     if provider is None:
         return None
@@ -65,7 +69,8 @@ def _analysis_ctx(session: Session) -> tuple[ProviderClient, Provider, str] | No
         model = session.exec(select(Model).where(Model.provider_id == provider.id)).first()
     if model is None:
         return None
-    client = ProviderClient(session_factory=lambda: session, crypto=get_crypto())
+    engine = _get_engine()
+    client = ProviderClient(session_factory=lambda: Session(engine), crypto=get_crypto())
     return client, provider, model.model_id
 
 

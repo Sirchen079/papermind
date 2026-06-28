@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any
@@ -21,6 +21,23 @@ class CompletionResult:
 
 
 @dataclass
+class StreamEvent:
+    """One chunk from a streaming completion.
+
+    For content deltas ``delta`` is set and ``done`` is False; the final event
+    has ``done=True`` with the full accumulated ``content`` and token totals.
+    ``delta`` may be ``None`` if a chunk carries only usage metadata.
+    """
+
+    delta: str | None
+    content: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    done: bool
+
+
+@dataclass
 class ModelInfo:
     model_id: str
     display_name: str | None = None
@@ -29,6 +46,11 @@ class ModelInfo:
 
 def _utc_date() -> date:
     return datetime.now(timezone.utc).date()
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token) for providers that omit usage."""
+    return max(1, len(text) // 4)
 
 
 class ProviderClient:
@@ -82,6 +104,68 @@ class ProviderClient:
 
         self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t)
         return CompletionResult(content, prompt_t, completion_t, total_t)
+
+    def stream_complete(
+        self,
+        provider: Provider,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        request_kind: str,
+        ref_id: str | None = None,
+    ) -> Iterator[StreamEvent]:
+        """Yield ``StreamEvent`` deltas, then a final ``done`` event.
+
+        Token usage is read from the provider's final stream chunk when
+        reported (``stream_usage=True``); otherwise it is estimated so the
+        usage ledger still records a row. The Responses API streaming shape
+        differs across LiteLLM versions, so that route degrades to a single
+        one-shot chunk (still correct, just not incremental).
+        """
+        route = route_completion(provider.type, model_id, provider.base_url)
+        kwargs: dict[str, Any] = {
+            "model": route.litellm_model,
+            "messages": messages,
+            "api_key": self._api_key(provider),
+        }
+        if route.api_base:
+            kwargs["api_base"] = route.api_base
+
+        if route.call == "responses":
+            result = self.complete(provider, model_id, messages, request_kind, ref_id)
+            yield StreamEvent(result.content, result.content, result.prompt_tokens,
+                              result.completion_tokens, result.total_tokens, done=True)
+            return
+
+        kwargs["stream"] = True
+        kwargs["stream_usage"] = True
+
+        collected: list[str] = []
+        prompt_t = completion_t = total_t = 0
+        reported = False
+        stream = litellm.completion(**kwargs)
+        for chunk in stream:
+            delta = None
+            try:
+                delta = chunk.choices[0].delta.content
+            except (AttributeError, IndexError, TypeError):
+                delta = None
+            if delta:
+                collected.append(delta)
+                yield StreamEvent(delta, "", 0, 0, 0, done=False)
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                prompt_t = getattr(usage, "prompt_tokens", 0) or 0
+                completion_t = getattr(usage, "completion_tokens", 0) or 0
+                total_t = getattr(usage, "total_tokens", None) or (prompt_t + completion_t)
+                reported = True
+
+        content = "".join(collected)
+        if not reported:
+            prompt_t = _estimate_tokens(" ".join(m.get("content", "") for m in messages))
+            completion_t = _estimate_tokens(content)
+            total_t = prompt_t + completion_t
+        self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t)
+        yield StreamEvent(None, content, prompt_t, completion_t, total_t, done=True)
 
     def _record_usage(
         self,
