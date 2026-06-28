@@ -81,7 +81,37 @@ def persist_fetched(
     return paper
 
 
+def resolve_and_attach_concepts(
+    session: Session, paper: Paper, run_id: int | None, raw_concepts: list[dict]
+) -> None:
+    """Normalize concept names, merge with existing concepts (G1), link to paper."""
+    from app.models import Concept, PaperConcept
+
+    for raw in raw_concepts:
+        nkey = normalize_title(raw.get("name"))
+        if not nkey:
+            continue
+        concept = session.exec(select(Concept).where(Concept.normalized_key == nkey)).first()
+        if concept is None:
+            concept = Concept(name=raw.get("name"), normalized_key=nkey, type=raw.get("type"))
+            session.add(concept)
+            session.commit()
+            session.refresh(concept)
+        if session.get(PaperConcept, (paper.id, concept.id)) is None:
+            session.add(
+                PaperConcept(
+                    paper_id=paper.id,
+                    concept_id=concept.id,
+                    weight=1.0,
+                    evidence=raw.get("evidence"),
+                    run_id=run_id,
+                )
+            )
+    session.commit()
+
+
 def _analyze(session: Session, paper: Paper, client, provider: Provider, model_id: str) -> None:
+    from app.ai_ops.concepts import extract_concepts
     from app.ai_ops.summarize import summarize_paper
 
     run = AnalysisRun(paper_id=paper.id, provider_id=provider.id, model=model_id)
@@ -91,6 +121,8 @@ def _analyze(session: Session, paper: Paper, client, provider: Provider, model_i
     try:
         content = summarize_paper(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
         session.add(Summary(paper_id=paper.id, run_id=run.id, content_json=json.dumps(content, ensure_ascii=False)))
+        raw_concepts = extract_concepts(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
+        resolve_and_attach_concepts(session, paper, run.id, raw_concepts)
         run.status = "done"
     except Exception:  # noqa: BLE001 — analysis failure must not abort ingest
         run.status = "failed"
