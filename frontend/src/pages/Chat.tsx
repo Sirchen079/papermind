@@ -6,9 +6,17 @@ interface Conv {
   title: string;
 }
 interface Msg {
+  id: number;
   role: string;
   content: string;
   model: string;
+}
+
+// Stable, monotonically-increasing key per message so React can reconcile the
+// streamed list correctly (index keys break when the tail is replaced/removed).
+let nextMsgId = 0;
+function mk(role: string, content: string, model = ""): Msg {
+  return { id: nextMsgId++, role, content, model };
 }
 
 export default function Chat() {
@@ -39,7 +47,7 @@ export default function Chat() {
     try {
       setActive(id);
       const c = await api.getConversation(id);
-      setMessages(c.messages);
+      setMessages(c.messages.map((m) => mk(m.role, m.content, m.model)));
     } catch (e: any) {
       setError(e.message);
     }
@@ -59,9 +67,9 @@ export default function Chat() {
     if (!active || !input.trim() || busy) return;
     const text = input;
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: text, model: "" }]);
+    setMessages((m) => [...m, mk("user", text)]);
     // assistant placeholder streamed into incrementally
-    setMessages((m) => [...m, { role: "assistant", content: "", model: "" }]);
+    setMessages((m) => [...m, mk("assistant", "")]);
     setBusy(true);
     setError(null);
     try {
@@ -78,7 +86,11 @@ export default function Chat() {
           // authoritative final content + model, persisted server-side
           setMessages((m) => {
             const copy = [...m];
-            copy[copy.length - 1] = { role: "assistant", content: data.content, model: data.model };
+            copy[copy.length - 1] = {
+              ...copy[copy.length - 1],
+              content: data.content,
+              model: data.model,
+            };
             return copy;
           });
         } else if (event === "error") {
@@ -142,8 +154,8 @@ export default function Chat() {
         ) : (
           <>
             <div className="flex-1 space-y-3 overflow-auto p-4">
-              {messages.map((m, i) => (
-                <div key={i} className={m.role === "user" ? "text-right" : ""}>
+              {messages.map((m) => (
+                <div key={m.id} className={m.role === "user" ? "text-right" : ""}>
                   <div
                     className="inline-block max-w-[80%] whitespace-pre-wrap rounded-xl px-3.5 py-2 text-sm leading-relaxed"
                     style={

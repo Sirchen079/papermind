@@ -28,6 +28,16 @@ export default function Library() {
     load();
   }, []);
 
+  // Close the detail modal on Escape (keyboard parity with the overlay click).
+  useEffect(() => {
+    if (!selected) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setSelected(null);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected]);
+
   async function ingestBibtex() {
     if (!bibtex.trim()) return;
     setLoading(true);
@@ -144,13 +154,20 @@ export default function Library() {
           onClick={() => setSelected(null)}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={selected.title ?? "Paper detail"}
             className="max-h-[82vh] w-full max-w-2xl overflow-auto rounded-xl p-6"
             style={{ backgroundColor: "var(--surface)", boxShadow: "var(--shadow-md)" }}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="mb-2 flex items-start justify-between gap-4">
               <h3 className="text-xl font-bold leading-snug">{selected.title}</h3>
-              <button onClick={() => setSelected(null)} className="btn-subtle shrink-0 px-2">
+              <button
+                onClick={() => setSelected(null)}
+                className="btn-subtle shrink-0 px-2"
+                aria-label="Close"
+              >
                 ✕
               </button>
             </div>

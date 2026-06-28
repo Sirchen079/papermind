@@ -1,12 +1,15 @@
-import { useEffect, useState } from "react";
-import Library from "./pages/Library";
-import Graph from "./pages/Graph";
-import Chat from "./pages/Chat";
-import Skills from "./pages/Skills";
-import Settings from "./pages/Settings";
-import Suggestions from "./pages/Suggestions";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { api } from "./api";
 import { useTheme, type Theme } from "./theme";
+
+// Route-level code splitting keeps the heavy graph lib (cytoscape) out of the
+// initial bundle — it only loads when the Graph page is opened.
+const Library = lazy(() => import("./pages/Library"));
+const Graph = lazy(() => import("./pages/Graph"));
+const Chat = lazy(() => import("./pages/Chat"));
+const Skills = lazy(() => import("./pages/Skills"));
+const Settings = lazy(() => import("./pages/Settings"));
+const Suggestions = lazy(() => import("./pages/Suggestions"));
 
 interface NavItem {
   key: string;
@@ -147,12 +150,23 @@ export default function App() {
           </div>
         </header>
         <div className="p-8">
-          {page === "library" && <Library />}
-          {page === "suggestions" && <Suggestions />}
-          {page === "graph" && <Graph theme={theme} />}
-          {page === "chat" && <Chat />}
-          {page === "skills" && <Skills />}
-          {page === "settings" && <Settings />}
+          <Suspense
+            fallback={
+              <div
+                className="flex h-64 items-center justify-center text-sm"
+                style={{ color: "var(--faint)" }}
+              >
+                Loading…
+              </div>
+            }
+          >
+            {page === "library" && <Library />}
+            {page === "suggestions" && <Suggestions />}
+            {page === "graph" && <Graph theme={theme} />}
+            {page === "chat" && <Chat />}
+            {page === "skills" && <Skills />}
+            {page === "settings" && <Settings />}
+          </Suspense>
         </div>
       </main>
     </div>
