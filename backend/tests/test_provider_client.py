@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+import pytest
 import httpx
 import respx
 from cryptography.fernet import Fernet
@@ -136,3 +137,86 @@ def test_list_models_anthropic_uses_base_url(tmp_path):
     )
     models = client.list_models(provider)
     assert {m.model_id for m in models} == {"claude-sonnet-4-5", "claude-opus-4-8"}
+
+
+# --- "两种 API 格式，任意厂商 + 任意模型" 契约测试 -------------------------------
+# 与本文件其它用例不同：这里不 mock litellm.completion，而是用 respx 拦在 HTTP 边界，
+# 跑真实的 LiteLLM 协议转换，从而证明一个不在任何模型注册表里的厂商自定义模型名，
+# 能按对应格式正确发到用户填的 base_url。这是「导入符合这两种格式的 API、想用啥模型
+# 用啥模型」这一核心诉求的回归守护。
+
+def _provider(tmp_path, ptype, base_url):
+    eng = make_engine(tmp_path / f"{ptype}.sqlite")
+    SQLModel.metadata.create_all(eng)
+    crypto = Crypto(Fernet.generate_key())
+    client = ProviderClient(session_factory=lambda: Session(eng), crypto=crypto)
+    provider = Provider(
+        name=f"{ptype}-vendor", type=ptype,
+        base_url=base_url, api_key_encrypted=crypto.encrypt("sk-vendor-key"),
+    )
+    # Persist so _record_usage's TokenUsage FK (provider_id) is satisfied.
+    with Session(eng) as s:
+        s.add(provider)
+        s.commit()
+        s.refresh(provider)
+    return client, provider
+
+
+@respx.mock
+def test_anthropic_format_accepts_arbitrary_vendor_and_model(tmp_path):
+    """Anthropic 格式：自定义 base_url + 厂商自定义模型名 -> /v1/messages，
+    body.model 原样透传，x-api-key + anthropic-version 契约齐全。"""
+    base = "http://fake-anthropic-vendor.example.com/v1"
+    client, provider = _provider(tmp_path, "anthropic", base)
+    custom_model = "acme-corp-ninja-70b"  # 不在 litellm 任何注册表里
+
+    respx.post("http://fake-anthropic-vendor.example.com/v1/messages").mock(
+        return_value=httpx.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": custom_model,
+            "content": [{"type": "text", "text": "任意厂商回复"}],
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+            "stop_reason": "end_turn",
+        })
+    )
+    result = client.complete(
+        provider, custom_model, [{"role": "user", "content": "ping"}], request_kind="chat"
+    )
+
+    req = respx.calls[0].request
+    assert str(req.url) == "http://fake-anthropic-vendor.example.com/v1/messages"  # /v1 未重复
+    headers = {k.lower(): v for k, v in req.headers.items()}
+    assert headers["x-api-key"] == "sk-vendor-key"
+    assert "anthropic-version" in headers
+    import json
+    body = json.loads(req.content.decode())
+    assert body["model"] == custom_model  # 厂商自定义模型名原样透传，未被注册表拒绝
+    assert "任意厂商回复" in result.content
+
+
+@respx.mock
+def test_openai_format_accepts_arbitrary_vendor_and_model(tmp_path):
+    """OpenAI 格式（openai_compat）：自定义 base_url + 厂商自定义模型名
+    -> /v1/chat/completions，body.model 原样透传，Authorization: Bearer 契约齐全。"""
+    base = "http://fake-openai-vendor.example.com/v1"
+    client, provider = _provider(tmp_path, "openai_compat", base)
+    custom_model = "acme-corp-ninja-70b"
+
+    respx.post("http://fake-openai-vendor.example.com/v1/chat/completions").mock(
+        return_value=httpx.Response(200, json={
+            "id": "chatcmpl-1", "object": "chat.completion",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "任意厂商回复"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        })
+    )
+    result = client.complete(
+        provider, custom_model, [{"role": "user", "content": "ping"}], request_kind="chat"
+    )
+
+    req = respx.calls[0].request
+    assert str(req.url) == "http://fake-openai-vendor.example.com/v1/chat/completions"
+    headers = {k.lower(): v for k, v in req.headers.items()}
+    assert headers["authorization"] == "Bearer sk-vendor-key"
+    import json
+    body = json.loads(req.content.decode())
+    assert body["model"] == custom_model
+    assert "任意厂商回复" in result.content
