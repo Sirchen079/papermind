@@ -10,7 +10,26 @@
 - **前端**（`frontend/`）：React 18 + TypeScript + Vite + Tailwind + Cytoscape.js。
 - 生产模式下后端托管前端构建产物，**一条命令启动整个应用**。
 
-## 首次运行
+## 快速启动（推荐）
+
+项目根目录提供了一键脚本（Windows / PowerShell）：
+
+```powershell
+.\start.ps1            # 首次会自动建 venv、装依赖、构建前端，然后启动
+.\start.bat            # 等价：双击即可
+.\start.ps1 -Rebuild   # 强制重建前端
+.\dev.ps1              # 开发模式：后端 --reload + 前端 vite 热更新（各开一个窗口）
+```
+
+启动后自动打开 http://127.0.0.1:8000 。脚本幂等：venv / 依赖 / `frontend/dist`
+已就绪时会跳过，直接启动。可选环境变量：`PAPERMIND_PORT`、`PAPERMIND_NPM_REGISTRY`
+（默认 npmmirror）、`PAPERMIND_PIP_INDEX`（国内可设清华源）。
+
+> 首次进入后，到 **Settings** 添加一个 LLM provider（OpenAI / Anthropic / 任意 OpenAI
+> 兼容如 DeepSeek、智谱），刷新模型并给模型设置 `summary` / `chat` 角色，之后入库论文
+> 即自动 AI 分析。
+
+## 手动步骤（等价于脚本所做的事）
 
 ```bash
 # 1. 后端
