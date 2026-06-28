@@ -109,6 +109,37 @@ def test_index_paper_replaces_existing(tmp_path):
         assert len(rows) == 2  # metadata + 1 text chunk, no duplicates
 
 
+def test_index_paper_keeps_chunks_when_embed_fails(tmp_path):
+    """A failed embed must not wipe a paper's existing chunks (delete-after-confirm)."""
+    eng = make_engine(tmp_path / "fail.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        paper = Paper(source="pdf", title="T", abstract="A", full_text="body")
+        s.add(paper)
+        s.commit()
+        s.refresh(paper)
+        s.add(
+            PaperChunk(
+                paper_id=paper.id, ordinal=0, text="existing",
+                embedding=serialize([1.0]), embedding_model="emb",
+            )
+        )
+        s.commit()
+
+        class FailingClient:
+            def embed(self, provider, model_id, inputs, request_kind="embedding", ref_id=None):  # noqa: ANN001
+                raise RuntimeError("embedding provider down")
+
+        from app.rag.index import index_paper
+
+        assert index_paper(s, paper, FailingClient(), object(), "emb") == 0
+        s.commit()  # mimic the caller committing afterwards
+
+        remaining = s.exec(select(PaperChunk).where(PaperChunk.paper_id == paper.id)).all()
+        assert len(remaining) == 1  # original chunk preserved, not deleted
+        assert remaining[0].text == "existing"
+
+
 def test_index_paper_noop_without_embedding_model(tmp_path, monkeypatch):
     eng = make_engine(tmp_path / "idx3.sqlite")
     SQLModel.metadata.create_all(eng)

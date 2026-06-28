@@ -56,16 +56,18 @@ def index_paper(
     if not texts:
         return 0
 
-    # Replace existing chunks so re-indexing never accumulates duplicates.
-    for old in session.exec(select(PaperChunk).where(PaperChunk.paper_id == paper.id)).all():
-        session.delete(old)
-
     try:
         embeddings = client.embed(provider, model_id, texts, request_kind="embedding")
     except Exception:  # noqa: BLE001 — embedding must never abort ingest
         return 0
     if len(embeddings) != len(texts):  # provider returned a partial / odd shape
         return 0
+
+    # Embedding succeeded — only NOW drop the old chunks. Deleting before the
+    # embed call left pending deletes that the caller's next commit would flush,
+    # wiping a paper's chunks whenever the embedding provider was down.
+    for old in session.exec(select(PaperChunk).where(PaperChunk.paper_id == paper.id)).all():
+        session.delete(old)
 
     for i, (text, vec) in enumerate(zip(texts, embeddings)):
         session.add(
