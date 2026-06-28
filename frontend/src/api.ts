@@ -21,11 +21,16 @@ export interface SseEvent {
 }
 
 /** POST to an SSE endpoint and yield parsed {event, data} frames as they arrive. */
-export async function* sseStream(path: string, body: unknown): AsyncGenerator<SseEvent> {
+export async function* sseStream(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): AsyncGenerator<SseEvent> {
   const res = await fetch(BASE + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok || !res.body) {
     throw new Error(`${res.status} ${await res.text()}`);
@@ -158,8 +163,8 @@ export const api = {
       `/chat/conversations/${id}/messages`,
       { method: "POST", body: JSON.stringify({ content }) }
     ),
-  streamMessage: (id: number, content: string) =>
-    sseStream(`/chat/conversations/${id}/messages/stream`, { content }),
+  streamMessage: (id: number, content: string, signal?: AbortSignal) =>
+    sseStream(`/chat/conversations/${id}/messages/stream`, { content }, signal),
   // providers / models
   listProviders: () => req<Provider[]>("/providers"),
   createProvider: (body: Record<string, unknown>) =>
