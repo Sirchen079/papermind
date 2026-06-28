@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Paper } from "../api";
+import { api, Paper, RelatedPaper } from "../api";
 
 export default function Library() {
   const [papers, setPapers] = useState<Paper[]>([]);
@@ -8,6 +8,8 @@ export default function Library() {
   const [bibtex, setBibtex] = useState("");
   const [arxivId, setArxivId] = useState("");
   const [selected, setSelected] = useState<Paper | null>(null);
+  const [related, setRelated] = useState<RelatedPaper[] | null>(null);
+  const [relatedLoading, setRelatedLoading] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -55,6 +57,18 @@ export default function Library() {
 
   async function open(p: Paper) {
     setSelected(await api.getPaper(p.id));
+    setRelated(null);
+  }
+
+  async function findRelated(id: number) {
+    setRelatedLoading(true);
+    try {
+      setRelated(await api.relatedPapers(id));
+    } catch {
+      setRelated([]);
+    } finally {
+      setRelatedLoading(false);
+    }
   }
 
   return (
@@ -142,6 +156,52 @@ export default function Library() {
             ) : (
               <p className="text-sm text-slate-400">No AI summary (configure a provider in Settings).</p>
             )}
+
+            <div className="mt-6 border-t pt-4">
+              <div className="flex items-center gap-3 mb-2">
+                <h4 className="font-semibold">Related works</h4>
+                <button
+                  onClick={() => findRelated(selected.id)}
+                  disabled={relatedLoading}
+                  className="text-sm bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded disabled:opacity-50"
+                >
+                  {relatedLoading ? "Searching…" : "Find related (external)"}
+                </button>
+              </div>
+              <p className="text-xs text-slate-400 mb-2">
+                Discovery via OpenAlex — searches outside your library. Network errors degrade to an empty list.
+              </p>
+              {related !== null && related.length === 0 && !relatedLoading && (
+                <p className="text-sm text-slate-400">No related works found.</p>
+              )}
+              {related && related.length > 0 && (
+                <ul className="space-y-2">
+                  {related.map((r) => (
+                    <li key={r.openalex_id ?? r.title ?? Math.random()} className="text-sm bg-slate-50 rounded p-2">
+                      <div className="font-medium">
+                        {r.doi ? (
+                          <a
+                            href={`https://doi.org/${r.doi}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-blue-600 hover:underline"
+                          >
+                            {r.title ?? "(untitled)"}
+                          </a>
+                        ) : (
+                          r.title ?? "(untitled)"
+                        )}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {r.authors.slice(0, 3).join(", ")}
+                        {r.authors.length > 3 ? " et al." : ""} {r.year ? `· ${r.year}` : ""}
+                        {r.cited_by_count ? ` · cited by ${r.cited_by_count}` : ""}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -90,6 +90,17 @@ def get_paper(pid: int, session: Session = Depends(get_session)) -> dict:
     return d
 
 
+@router.get("/papers/{pid}/related")
+def related_papers(pid: int, session: Session = Depends(get_session)) -> list[dict]:
+    """Discover related works outside the library via OpenAlex (free, no key)."""
+    from app.knowledge.recommend import search_related
+
+    p = session.get(Paper, pid)
+    if p is None or p.is_deleted:
+        raise HTTPException(404, "paper not found")
+    return search_related(p.title or "")
+
+
 @router.post("/papers/arxiv")
 def ingest_arxiv(body: ArxivIn, session: Session = Depends(get_session)) -> dict:
     try:

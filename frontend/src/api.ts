@@ -30,6 +30,15 @@ export interface GraphData {
   edges: { source: number; target: number; weight: number }[];
 }
 
+export interface RelatedPaper {
+  title: string | null;
+  authors: string[];
+  year: number | null;
+  doi: string | null;
+  cited_by_count: number;
+  openalex_id: string | null;
+}
+
 export interface Provider {
   id: number;
   name: string;
@@ -50,6 +59,7 @@ export const api = {
   // papers
   listPapers: () => req<Paper[]>("/papers"),
   getPaper: (id: number) => req<Paper>(`/papers/${id}`),
+  relatedPapers: (id: number) => req<RelatedPaper[]>(`/papers/${id}/related`),
   ingestBibtex: (bibtex: string) =>
     req<Paper[]>("/papers/bibtex", { method: "POST", body: JSON.stringify({ bibtex }) }),
   ingestArxiv: (arxiv_id: string) =>

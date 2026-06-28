@@ -2,9 +2,12 @@ from io import BytesIO
 from unittest.mock import patch
 
 import fitz
+import httpx
+import respx
 from sqlmodel import Session
 
 from app.db.engine import get_engine
+from app.knowledge.recommend import OPENALEX
 from app.models import Model, Provider
 from app.providers.client import CompletionResult
 
@@ -69,3 +72,44 @@ def test_pdf_upload(client):
     body = res.json()
     assert body["source"] == "pdf"
     assert body["parse_confidence"] is not None
+
+
+@respx.mock
+def test_related_papers_endpoint(client):
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    respx.get(OPENALEX).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "A Related Paper",
+                        "publication_year": 2021,
+                        "doi": "10.0/x",
+                        "cited_by_count": 42,
+                        "id": "https://openalex.org/W1",
+                        "authorships": [{"author": {"display_name": "Carol"}}],
+                    }
+                ]
+            },
+        )
+    )
+    res = client.get(f"/api/papers/{pid}/related")
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body) == 1
+    assert body[0]["title"] == "A Related Paper"
+    assert body[0]["authors"] == ["Carol"]
+
+
+def test_related_papers_404_for_missing(client):
+    assert client.get("/api/papers/9999/related").status_code == 404
+
+
+def test_related_papers_degrades_on_network_error(client):
+    """OpenAlex must never break the UI — a dead network returns []."""
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    with patch("app.knowledge.recommend.httpx.get", side_effect=httpx.ConnectError("offline")):
+        res = client.get(f"/api/papers/{pid}/related")
+    assert res.status_code == 200
+    assert res.json() == []
