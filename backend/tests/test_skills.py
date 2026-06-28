@@ -1,3 +1,4 @@
+import json
 from unittest.mock import patch
 
 from sqlmodel import Session, SQLModel, select
@@ -57,19 +58,119 @@ def test_load_skills_upsert(tmp_path):
 def test_skills_api_crud(client):
     res = client.post(
         "/api/skills",
-        json={"name": "s1", "type": "instruction", "body": "do X", "keywords": ["x"]},
+        json={"name": "s1", "type": "instruction", "body": "do X", "keywords": [" x ", "", "y"]},
     )
     assert res.status_code == 200
     body = res.json()
     assert body["name"] == "s1"
-    assert body["keywords"] == ["x"]
+    assert body["keywords"] == ["x", "y"]
     assert len(client.get("/api/skills").json()) == 1
     sid = body["id"]
     assert client.delete(f"/api/skills/{sid}").status_code == 204
     assert client.get("/api/skills").json() == []
 
 
-def test_chat_injects_active_skill(client):
+def test_skills_api_tolerates_malformed_keyword_json(client):
+    with Session(get_engine()) as s:
+        s.add(Skill(name="bad", type="instruction", keywords_json="not-json", body="x"))
+        s.commit()
+    res = client.get("/api/skills")
+    assert res.status_code == 200
+    assert res.json()[0]["keywords"] == []
+
+
+def test_skills_api_lists_in_creation_order(client):
+    client.post("/api/skills", json={"name": "first", "type": "instruction", "body": "1"})
+    client.post("/api/skills", json={"name": "second", "type": "instruction", "body": "2"})
+    assert [s["name"] for s in client.get("/api/skills").json()] == ["first", "second"]
+
+
+def test_skills_api_rejects_unknown_type_or_trigger(client):
+    assert client.post("/api/skills", json={"name": "bad-type", "type": "unknown"}).status_code == 422
+    assert client.post("/api/skills", json={"name": "bad-trigger", "trigger": "unknown"}).status_code == 422
+
+
+def test_select_for_chat_respects_skill_triggers(tmp_path):
+    from app.skills.activation import select_for_chat
+
+    eng = make_engine(tmp_path / "activation.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        s.add(Skill(name="auto", type="instruction", trigger="auto", body="Always active."))
+        s.add(
+            Skill(
+                name="keyword",
+                type="instruction",
+                trigger="keyword",
+                keywords_json=json.dumps(["review", "critique"]),
+                body="Triggered by keyword.",
+            )
+        )
+        s.add(Skill(name="manual", type="instruction", trigger="manual", body="Manual only."))
+        s.add(Skill(name="pipeline", type="instruction", trigger="pipeline", body="Pipeline only."))
+        s.add(Skill(name="disabled", type="instruction", trigger="auto", body="Disabled.", enabled=False))
+        s.add(Skill(name="template", type="template", trigger="auto", body="Templates are not injected."))
+        s.commit()
+
+        active = select_for_chat(s, "please review this paper")
+        bodies = [sk.body for sk in active]
+        assert bodies == ["Always active.", "Triggered by keyword."]
+
+        active = select_for_chat(s, "hello")
+        bodies = [sk.body for sk in active]
+        assert bodies == ["Always active."]
+
+
+def test_select_for_chat_ignores_malformed_keyword_json(tmp_path):
+    from app.skills.activation import select_for_chat
+
+    eng = make_engine(tmp_path / "bad_keywords.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        s.add(
+            Skill(
+                name="bad-keywords",
+                type="instruction",
+                trigger="keyword",
+                keywords_json="not-json",
+                body="Should not crash.",
+            )
+        )
+        s.commit()
+        assert select_for_chat(s, "not-json") == []
+
+
+def test_select_for_chat_keyword_boundary_matching(tmp_path):
+    from app.skills.activation import select_for_chat
+
+    eng = make_engine(tmp_path / "keyword_boundary.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        s.add(
+            Skill(
+                name="ai-keyword",
+                type="instruction",
+                trigger="keyword",
+                keywords_json=json.dumps(["ai"]),
+                body="AI keyword matched.",
+            )
+        )
+        s.add(
+            Skill(
+                name="zh-keyword",
+                type="instruction",
+                trigger="keyword",
+                keywords_json=json.dumps(["论文"]),
+                body="Chinese keyword matched.",
+            )
+        )
+        s.commit()
+        assert select_for_chat(s, "chain of thought") == []
+        assert [sk.name for sk in select_for_chat(s, "AI review")] == ["ai-keyword"]
+        assert [sk.name for sk in select_for_chat(s, "帮我分析论文")] == ["zh-keyword"]
+
+
+def test_chat_injects_auto_and_matching_keyword_skills_only(client):
     with Session(get_engine()) as s:
         p = Provider(name="oai", type="openai_chat")
         s.add(p)
@@ -79,7 +180,35 @@ def test_chat_injects_active_skill(client):
         s.commit()
     client.post(
         "/api/skills",
-        json={"name": "reviewer", "type": "instruction", "body": "Be critical.", "enabled": True},
+        json={
+            "name": "auto-reviewer",
+            "type": "instruction",
+            "trigger": "auto",
+            "body": "Always be critical.",
+            "enabled": True,
+        },
+    )
+    client.post(
+        "/api/skills",
+        json={
+            "name": "keyword-reviewer",
+            "type": "instruction",
+            "trigger": "keyword",
+            "keywords": ["review"],
+            "body": "Use review checklist.",
+            "enabled": True,
+        },
+    )
+    client.post(
+        "/api/skills",
+        json={
+            "name": "manual-reviewer",
+            "type": "instruction",
+            "trigger": "manual",
+            "keywords": ["review"],
+            "body": "Manual skill should not auto inject.",
+            "enabled": True,
+        },
     )
 
     captured: dict = {}
@@ -90,7 +219,9 @@ def test_chat_injects_active_skill(client):
 
     cid = client.post("/api/chat/conversations").json()["id"]
     with patch("app.providers.client.ProviderClient.complete", side_effect=fake_complete):
-        client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "hi"})
+        client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "please review this"})
 
     sys_msg = next(m["content"] for m in captured["messages"] if m["role"] == "system")
-    assert "Be critical." in sys_msg
+    assert "Always be critical." in sys_msg
+    assert "Use review checklist." in sys_msg
+    assert "Manual skill should not auto inject." not in sys_msg

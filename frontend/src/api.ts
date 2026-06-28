@@ -156,6 +156,7 @@ export const api = {
         name: string;
         type: string;
         trigger: string;
+        keywords: string[];
         description: string | null;
         body: string | null;
         enabled: boolean;

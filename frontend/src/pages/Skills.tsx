@@ -6,6 +6,7 @@ interface Skill {
   name: string;
   type: string;
   trigger: string;
+  keywords: string[];
   description: string | null;
   body: string | null;
   enabled: boolean;
@@ -16,7 +17,7 @@ export default function Skills() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: "", type: "instruction", trigger: "manual", body: "" });
+  const [form, setForm] = useState({ name: "", type: "instruction", trigger: "manual", keywords: "", body: "" });
 
   async function load() {
     try {
@@ -37,10 +38,11 @@ export default function Skills() {
         name: form.name,
         type: form.type,
         trigger: form.trigger,
+        keywords: form.keywords.split(",").map((k) => k.trim()).filter(Boolean),
         body: form.body,
         enabled: true,
       });
-      setForm({ name: "", type: "instruction", trigger: "manual", body: "" });
+      setForm({ name: "", type: "instruction", trigger: "manual", keywords: "", body: "" });
       await load();
     } catch (e: any) {
       setErr(e.message);
@@ -99,7 +101,7 @@ export default function Skills() {
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
           <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            {["instruction", "template", "persona"].map((t) => (
+            {["instruction", "template", "tool", "persona"].map((t) => (
               <option key={t}>{t}</option>
             ))}
           </select>
@@ -108,6 +110,12 @@ export default function Skills() {
               <option key={t}>{t}</option>
             ))}
           </select>
+          <input
+            className="input md:col-span-3"
+            placeholder="keywords for keyword trigger (comma-separated, e.g. review, critique)"
+            value={form.keywords}
+            onChange={(e) => setForm({ ...form, keywords: e.target.value })}
+          />
         </div>
         <textarea
           className="input h-28 resize-none font-mono"
@@ -134,6 +142,11 @@ export default function Skills() {
               <span className="text-xs" style={{ color: "var(--faint)" }}>
                 {s.trigger}
               </span>
+              {s.keywords.length > 0 && (
+                <span className="text-xs" style={{ color: "var(--faint)" }}>
+                  · {s.keywords.join(", ")}
+                </span>
+              )}
               <span className="ml-auto text-xs" style={{ color: "var(--faint)" }}>
                 {s.source}
               </span>

@@ -1,9 +1,10 @@
+import json
 from unittest.mock import patch
 
 from sqlmodel import Session
 
 from app.db.engine import get_engine
-from app.models import Model, Provider
+from app.models import Model, Provider, Skill
 from app.providers.client import CompletionResult, StreamEvent
 
 
@@ -91,3 +92,37 @@ def test_stream_message_emits_error_on_failure(client):
     # no assistant message persisted
     convo = client.get(f"/api/chat/conversations/{cid}").json()
     assert [m["role"] for m in convo["messages"]] == ["user"]
+
+
+def test_stream_message_activates_keyword_skill_for_current_turn(client):
+    _seed_chat_provider()
+    with Session(get_engine()) as s:
+        s.add(
+            Skill(
+                name="math-review",
+                type="instruction",
+                trigger="keyword",
+                keywords_json=json.dumps(["math"]),
+                body="Use mathematical rigor.",
+            )
+        )
+        s.commit()
+
+    captured: dict = {}
+
+    def fake_stream(provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
+        captured["messages"] = messages
+        return iter([
+            StreamEvent("ok", "", 0, 0, 0, False),
+            StreamEvent(None, "ok", 1, 1, 2, True),
+        ])
+
+    cid = client.post("/api/chat/conversations").json()["id"]
+    with patch("app.providers.client.ProviderClient.stream_complete", side_effect=fake_stream):
+        res = client.post(
+            f"/api/chat/conversations/{cid}/messages/stream",
+            json={"content": "please check the math"},
+        )
+    assert res.status_code == 200
+    sys_msg = next(m["content"] for m in captured["messages"] if m["role"] == "system")
+    assert "Use mathematical rigor." in sys_msg

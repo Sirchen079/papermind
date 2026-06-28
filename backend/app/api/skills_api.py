@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
@@ -21,12 +23,26 @@ def default_skills_dir() -> Path:
 class SkillIn(BaseModel):
     name: str
     description: str | None = None
-    type: str = "instruction"
-    trigger: str = "manual"
-    keywords: list[str] = []
+    type: Literal["instruction", "template", "tool", "persona"] = "instruction"
+    trigger: Literal["auto", "keyword", "manual", "pipeline"] = "manual"
+    keywords: list[str] = Field(default_factory=list)
     model_role: str | None = None
     body: str | None = None
     enabled: bool = True
+
+
+def _clean_keywords(values: list[str]) -> list[str]:
+    return [k.strip() for k in values if isinstance(k, str) and k.strip()]
+
+
+def _keywords(s: Skill) -> list[str]:
+    try:
+        raw = json.loads(s.keywords_json or "[]")
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    return _clean_keywords(raw)
 
 
 def _public(s: Skill) -> dict:
@@ -36,7 +52,7 @@ def _public(s: Skill) -> dict:
         "description": s.description,
         "type": s.type,
         "trigger": s.trigger,
-        "keywords": json.loads(s.keywords_json or "[]"),
+        "keywords": _keywords(s),
         "model_role": s.model_role,
         "body": s.body,
         "enabled": s.enabled,
@@ -46,7 +62,7 @@ def _public(s: Skill) -> dict:
 
 @router.get("/skills")
 def list_skills(session: Session = Depends(get_session)) -> list[dict]:
-    return [_public(s) for s in session.exec(select(Skill)).all()]
+    return [_public(s) for s in session.exec(select(Skill).order_by(Skill.id)).all()]
 
 
 @router.post("/skills")
@@ -56,7 +72,7 @@ def upsert_skill(body: SkillIn, session: Session = Depends(get_session)) -> dict
     s.description = body.description
     s.type = body.type
     s.trigger = body.trigger
-    s.keywords_json = json.dumps(body.keywords)
+    s.keywords_json = json.dumps(_clean_keywords(body.keywords), ensure_ascii=False)
     s.model_role = body.model_role
     s.body = body.body
     s.enabled = body.enabled

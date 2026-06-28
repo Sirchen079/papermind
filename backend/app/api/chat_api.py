@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
-from app.models import Concept, Conversation, Message, Paper, Skill
+from app.models import Concept, Conversation, Message, Paper
 from app.models.base import utcnow
 from app.providers.selection import pick_llm
 
@@ -22,13 +22,16 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _library_context(session: Session) -> str:
+def _library_context(session: Session, user_message: str = "") -> str:
     """A compact summary of the library injected as system context (RAG-lite).
 
     Full vector RAG over chunk embeddings arrives later; for now the assistant
     is grounded with paper/concept counts + recent titles (citation grounding
-    principle: it can only reference papers it's told about).
+    principle: it can only reference papers it's told about). Active skills are
+    selected by trigger rules (see app.skills.activation).
     """
+    from app.skills.activation import select_for_chat
+
     papers = session.exec(select(Paper).where(Paper.is_deleted == False)).all()  # noqa: E712
     concepts = session.exec(select(Concept)).all()
     concept_names = ", ".join(c.name for c in concepts[:30])
@@ -40,23 +43,19 @@ def _library_context(session: Session) -> str:
         f"Known concepts: {concept_names or '(none yet)'}.\n"
         f"Recent paper titles:\n{titles or '(none)'}"
     )
-    # Inject enabled declarative skills (instruction/persona) — §6.5.
-    skills = session.exec(select(Skill).where(Skill.enabled == True)).all()  # noqa: E712
-    blocks = [
-        f"[Active skill — {s.name}]\n{s.body}"
-        for s in skills
-        if s.type in ("instruction", "persona") and s.body
-    ]
+    # Inject skills active for THIS turn (auto always; keyword on match).
+    skills = select_for_chat(session, user_message)
+    blocks = [f"[Active skill — {s.name}]\n{s.body}" for s in skills]
     if blocks:
         base += "\n\n" + "\n\n".join(blocks)
     return base
 
 
-def _build_messages(session: Session, conversation: Conversation) -> list[dict]:
+def _build_messages(session: Session, conversation: Conversation, user_message: str = "") -> list[dict]:
     history = session.exec(
         select(Message).where(Message.conversation_id == conversation.id)
     ).all()
-    msgs: list[dict] = [{"role": "system", "content": _library_context(session)}]
+    msgs: list[dict] = [{"role": "system", "content": _library_context(session, user_message)}]
     for m in history[-10:]:
         msgs.append({"role": m.role, "content": m.content})
     return msgs
@@ -106,7 +105,7 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
     session.add(conv)
     session.commit()
 
-    messages = _build_messages(session, conv)
+    messages = _build_messages(session, conv, body.content)
     result = client.complete(provider, model_id, messages, request_kind="chat")
     msg = Message(
         conversation_id=cid,
@@ -143,7 +142,7 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
     session.add(conv)
     session.commit()
 
-    messages = _build_messages(session, conv)
+    messages = _build_messages(session, conv, body.content)
 
     def event_stream():
         collected: list[str] = []
