@@ -9,7 +9,7 @@ import litellm
 from sqlmodel import Session
 
 from app.models import Provider, TokenUsage
-from app.providers.routing import route_completion
+from app.providers.routing import anthropic_api_base, route_completion
 from app.security.crypto import Crypto
 
 
@@ -236,11 +236,13 @@ class ProviderClient:
             return
 
         kwargs["stream"] = True
-        # stream_usage is an OpenAI extension; conservative openai_compat
-        # gateways (DeepSeek/智谱/Moonshot self-host, etc.) may 400 on the
-        # unknown param, so only request it for first-party routes. Usage is
-        # estimated below when a provider doesn't report it in-stream.
-        if provider.type != "openai_compat":
+        # stream_usage is an OpenAI chat-completions extension. Conservative
+        # openai_compat gateways (DeepSeek/智谱/Moonshot self-host, etc.) and
+        # the Anthropic provider don't accept it (Anthropic reports usage via a
+        # separate stream block), so only request it on first-party OpenAI
+        # routes. Usage is estimated below when a provider doesn't report it
+        # in-stream.
+        if provider.type in {"openai_chat", "openai_responses"}:
             kwargs["stream_usage"] = True
 
         collected: list[str] = []
@@ -374,7 +376,13 @@ class ProviderClient:
             headers = {"Authorization": f"Bearer {key}"} if key else {}
             return f"{base}/models", headers
         if provider.type == "anthropic":
-            return "https://api.anthropic.com/v1/models", {
+            # Anthropic's List Models API: GET /v1/models -> {data:[{id,...}],
+            # has_more, first_id, last_id}. Honor a custom base_url (relay/网关)
+            # so a Claude-format proxy actually works; fall back to the official
+            # host only when none is set. ?limit=1000 pulls the full catalog in
+            # one page (default page size is 20).
+            base = anthropic_api_base(provider.base_url) or "https://api.anthropic.com"
+            return f"{base}/v1/models?limit=1000", {
                 "x-api-key": key or "",
                 "anthropic-version": "2023-06-01",
             }

@@ -22,10 +22,28 @@ def test_openai_compat_requires_base_url():
         route_completion("openai_compat", "deepseek-chat", None)
 
 
-def test_anthropic():
+def test_anthropic_without_base_url():
     r = route_completion("anthropic", "claude-opus-4-8", None)
     assert r.litellm_model == "anthropic/claude-opus-4-8"
+    assert r.api_base is None  # LiteLLM falls back to api.anthropic.com
     assert r.call == "completion"
+
+
+def test_anthropic_honors_base_url():
+    # A Claude-format relay/gateway must be used — never hardcoded to
+    # api.anthropic.com. LiteLLM appends /v1/messages itself, so api_base is
+    # the host root.
+    r = route_completion("anthropic", "claude-opus-4-8", "https://relay.example.com")
+    assert r.litellm_model == "anthropic/claude-opus-4-8"
+    assert r.api_base == "https://relay.example.com"
+    assert r.call == "completion"
+
+
+def test_anthropic_base_url_strips_trailing_v1():
+    # Users paste either form; a trailing /v1 must be dropped so LiteLLM does
+    # not build /v1/v1/messages.
+    r = route_completion("anthropic", "claude-opus-4-8", "https://relay.example.com/v1/")
+    assert r.api_base == "https://relay.example.com"
 
 
 def test_openai_responses():

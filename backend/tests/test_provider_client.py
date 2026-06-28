@@ -98,3 +98,41 @@ def test_list_models_raises_on_error_status(tmp_path):
     )
     with pytest.raises(httpx.HTTPStatusError):
         client.list_models(provider)
+
+
+@respx.mock
+def test_list_models_anthropic_uses_base_url(tmp_path):
+    """A Claude-format provider with a base_url (relay/网关) must hit THAT host,
+    not api.anthropic.com. Also confirms the trailing /v1 is stripped so the
+    request is /v1/models, not /v1/v1/models. The response is Anthropic's real
+    List Models shape: {data:[{id,...}], has_more}.
+    """
+    eng = make_engine(tmp_path / "anth.sqlite")
+    SQLModel.metadata.create_all(eng)
+    crypto = Crypto(Fernet.generate_key())
+    # Mock the RELAY only — if base_url were ignored this 404s (all mocked,
+    # unmatched -> no response) and the test fails.
+    respx.get("https://claude-relay.example.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "claude-sonnet-4-5", "type": "model", "display_name": "Claude Sonnet 4.5"},
+                    {"id": "claude-opus-4-8", "type": "model"},
+                ],
+                "has_more": False,
+                "first_id": "claude-sonnet-4-5",
+                "last_id": "claude-opus-4-8",
+            },
+        )
+    )
+    client = ProviderClient(session_factory=lambda: Session(eng), crypto=crypto)
+    provider = Provider(
+        id=1,
+        name="relay",
+        type="anthropic",
+        base_url="https://claude-relay.example.com/v1",
+        api_key_encrypted=crypto.encrypt("sk-ant-x"),
+    )
+    models = client.list_models(provider)
+    assert {m.model_id for m in models} == {"claude-sonnet-4-5", "claude-opus-4-8"}

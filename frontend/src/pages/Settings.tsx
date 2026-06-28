@@ -206,7 +206,7 @@ export default function Settings() {
           </select>
           <input
             className="input"
-            placeholder="base_url（openai_compat 必填）"
+            placeholder="base_url（openai_compat 必填；anthropic 可填 Claude 中转地址）"
             value={form.base_url}
             onChange={(e) => setForm({ ...form, base_url: e.target.value })}
           />
