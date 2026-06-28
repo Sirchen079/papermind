@@ -4,6 +4,16 @@ import { api, type Provider, type Model } from "../api";
 const TYPES = ["openai_chat", "openai_responses", "anthropic", "openai_compat"];
 const ROLES = ["summary", "extraction", "chat", "deep", "embedding"];
 
+// 业界主流就是两种 API 格式：OpenAI 格式 与 Anthropic(Claude) 格式。很多厂商按其中
+// 一种对外提供服务。这里把后端标识映射成「格式 + 是否支持自定义地址」的人话标签，
+// 让用户知道：想接入任意厂商，选「…自定义地址」那两项并填 base_url 即可。
+const TYPE_LABELS: Record<string, string> = {
+  openai_chat: "OpenAI 格式（官方地址）",
+  openai_responses: "OpenAI Responses 格式（官方地址）",
+  openai_compat: "OpenAI 格式（自定义地址 · 任意厂商）",
+  anthropic: "Anthropic / Claude 格式（可填自定义地址 · 任意厂商）",
+};
+
 /** Compact responsive SVG bar chart of daily token usage (no chart dependency). */
 function UsageBars({ data }: { data: { day: string; tokens: number }[] }) {
   const max = Math.max(1, ...data.map((d) => d.tokens));
@@ -201,7 +211,9 @@ export default function Settings() {
           />
           <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
             {TYPES.map((t) => (
-              <option key={t}>{t}</option>
+              <option key={t} value={t}>
+                {TYPE_LABELS[t] ?? t}
+              </option>
             ))}
           </select>
           <input
