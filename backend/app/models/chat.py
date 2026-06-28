@@ -21,4 +21,5 @@ class Message(SQLModel, table=True):
     content: str
     model: str | None = None
     tokens_used: int | None = None
+    sources_json: str | None = None  # RAG provenance: [{paper_id, title, snippet}]
     created_at: datetime = Field(default_factory=utcnow, nullable=False)

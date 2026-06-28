@@ -109,6 +109,12 @@ export interface Model {
   role_default: string | null;
 }
 
+export interface Source {
+  paper_id: number;
+  title: string;
+  snippet: string;
+}
+
 export const api = {
   // papers
   listPapers: () => req<Paper[]>("/papers"),
@@ -126,9 +132,11 @@ export const api = {
   listConversations: () => req<{ id: number; title: string }[]>("/chat/conversations"),
   createConversation: () => req<{ id: number; title: string }>("/chat/conversations", { method: "POST" }),
   getConversation: (id: number) =>
-    req<{ id: number; title: string; messages: { role: string; content: string; model: string }[] }>(
-      `/chat/conversations/${id}`
-    ),
+    req<{
+      id: number;
+      title: string;
+      messages: { role: string; content: string; model: string; sources: Source[] }[];
+    }>(`/chat/conversations/${id}`),
   sendMessage: (id: number, content: string) =>
     req<{ role: string; content: string; model: string; tokens: number }>(
       `/chat/conversations/${id}/messages`,

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, type Source } from "../api";
 
 interface Conv {
   id: number;
@@ -10,13 +10,14 @@ interface Msg {
   role: string;
   content: string;
   model: string;
+  sources?: Source[];
 }
 
 // Stable, monotonically-increasing key per message so React can reconcile the
 // streamed list correctly (index keys break when the tail is replaced/removed).
 let nextMsgId = 0;
-function mk(role: string, content: string, model = ""): Msg {
-  return { id: nextMsgId++, role, content, model };
+function mk(role: string, content: string, model = "", sources: Source[] = []): Msg {
+  return { id: nextMsgId++, role, content, model, sources };
 }
 
 export default function Chat() {
@@ -47,7 +48,7 @@ export default function Chat() {
     try {
       setActive(id);
       const c = await api.getConversation(id);
-      setMessages(c.messages.map((m) => mk(m.role, m.content, m.model)));
+      setMessages(c.messages.map((m) => mk(m.role, m.content, m.model, m.sources ?? [])));
     } catch (e: any) {
       setError(e.message);
     }
@@ -90,6 +91,7 @@ export default function Chat() {
               ...copy[copy.length - 1],
               content: data.content,
               model: data.model,
+              sources: data.sources ?? [],
             };
             return copy;
           });
@@ -171,6 +173,23 @@ export default function Chat() {
                         ""
                       ))}
                   </div>
+                  {m.role === "assistant" && m.sources && m.sources.length > 0 && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px]" style={{ color: "var(--faint)" }}>
+                        sources
+                      </span>
+                      {m.sources.map((s) => (
+                        <span
+                          key={s.paper_id}
+                          className="inline-block max-w-[260px] truncate rounded-full px-2 py-0.5 text-[11px]"
+                          style={{ backgroundColor: "var(--accent-soft)", color: "var(--accent)" }}
+                          title={s.snippet}
+                        >
+                          📚 {s.title}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
               <div ref={endRef} />

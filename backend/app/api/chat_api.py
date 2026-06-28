@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
-from app.models import Concept, Conversation, Message, Paper
+from app.models import Concept, Conversation, Message, Paper, PaperChunk
 from app.models.base import utcnow
 from app.providers.selection import pick_llm
 
@@ -22,16 +22,58 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _library_context(session: Session, user_message: str = "") -> str:
-    """Ground the assistant in the user's library (RAG).
+def _retrieve_hits(
+    session: Session, user_message: str
+) -> list[tuple[PaperChunk, float, Paper]]:
+    """RAG retrieval: ranked ``(chunk, score, paper)`` triples for the question.
 
-    When an embedding model is configured, the passages most relevant to the
-    user's question are retrieved from the paper chunks and injected with their
-    source titles (citation grounding — the assistant can only reference papers
-    it's shown). Otherwise it falls back to recent titles + concept counts.
-    Active skills are appended per the trigger rules (app.skills.activation).
+    Empty when no embedding model is configured or the query is blank.
     """
     from app.rag.index import retrieve
+
+    if not (user_message or "").strip():
+        return []
+    hits: list[tuple[PaperChunk, float, Paper]] = []
+    for chunk, score in retrieve(session, user_message):
+        hits.append((chunk, score, session.get(Paper, chunk.paper_id)))
+    return hits
+
+
+def _sources_from_hits(
+    hits: list[tuple[PaperChunk, float, Paper]], limit: int = 5
+) -> list[dict]:
+    """Deduplicated, capped source list for the UI (RAG provenance).
+
+    One entry per paper (highest-scoring chunk wins), each with a short snippet
+    surfaced as the chip tooltip.
+    """
+    sources: list[dict] = []
+    seen: set[int] = set()
+    for chunk, _score, paper in hits:
+        pid = chunk.paper_id
+        if pid in seen:
+            continue
+        seen.add(pid)
+        title = (paper.title if paper else None) or f"#{pid}"
+        snippet = " ".join(chunk.text.split())  # collapse whitespace/newlines
+        if len(snippet) > 160:
+            snippet = snippet[:157] + "…"
+        sources.append({"paper_id": pid, "title": title, "snippet": snippet})
+        if len(sources) >= limit:
+            break
+    return sources
+
+
+def _system_prompt(
+    session: Session, user_message: str, hits: list[tuple[PaperChunk, float, Paper]]
+) -> str:
+    """Ground the assistant in the library (RAG).
+
+    Injects retrieved passages with their source titles when available (citation
+    grounding — the assistant can only reference papers it's shown), else falls
+    back to recent titles + concept counts. Active skills are appended per the
+    trigger rules (app.skills.activation).
+    """
     from app.skills.activation import select_for_chat
 
     papers = session.exec(select(Paper).where(Paper.is_deleted == False)).all()  # noqa: E712
@@ -44,23 +86,17 @@ def _library_context(session: Session, user_message: str = "") -> str:
         f"Known concepts: {concept_names or '(none yet)'}."
     )
 
-    context_block = ""
-    if user_message:
-        hits = retrieve(session, user_message)
-        if hits:
-            lines = []
-            for chunk, _score in hits:
-                p = session.get(Paper, chunk.paper_id)
-                title = (p.title if p else None) or f"#{chunk.paper_id}"
-                lines.append(f"[{title}]\n{chunk.text}")
-            context_block = "\n\nRelevant passages from your library:\n" + "\n\n".join(lines)
-    if not context_block:
+    if hits:
+        lines = []
+        for chunk, _score, paper in hits:
+            title = (paper.title if paper else None) or f"#{chunk.paper_id}"
+            lines.append(f"[{title}]\n{chunk.text}")
+        base += "\n\nRelevant passages from your library:\n" + "\n\n".join(lines)
+    else:
         titles = "\n".join(f"- {p.title}" for p in papers[:20] if p.title)
         if titles:
-            context_block = f"\n\nRecent paper titles:\n{titles}"
-    base += context_block
+            base += f"\n\nRecent paper titles:\n{titles}"
 
-    # Inject skills active for THIS turn (auto always; keyword on match).
     skills = select_for_chat(session, user_message)
     blocks = [f"[Active skill — {s.name}]\n{s.body}" for s in skills]
     if blocks:
@@ -68,11 +104,16 @@ def _library_context(session: Session, user_message: str = "") -> str:
     return base
 
 
-def _build_messages(session: Session, conversation: Conversation, user_message: str = "") -> list[dict]:
+def _build_messages(
+    session: Session,
+    conversation: Conversation,
+    user_message: str,
+    hits: list[tuple[PaperChunk, float, Paper]],
+) -> list[dict]:
     history = session.exec(
         select(Message).where(Message.conversation_id == conversation.id)
     ).all()
-    msgs: list[dict] = [{"role": "system", "content": _library_context(session, user_message)}]
+    msgs: list[dict] = [{"role": "system", "content": _system_prompt(session, user_message, hits)}]
     for m in history[-10:]:
         msgs.append({"role": m.role, "content": m.content})
     return msgs
@@ -102,7 +143,13 @@ def get_conversation(cid: int, session: Session = Depends(get_session)) -> dict:
         "id": conv.id,
         "title": conv.title,
         "messages": [
-            {"role": m.role, "content": m.content, "model": m.model} for m in msgs
+            {
+                "role": m.role,
+                "content": m.content,
+                "model": m.model,
+                "sources": json.loads(m.sources_json) if m.sources_json else [],
+            }
+            for m in msgs
         ],
     }
 
@@ -122,7 +169,9 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
     session.add(conv)
     session.commit()
 
-    messages = _build_messages(session, conv, body.content)
+    hits = _retrieve_hits(session, body.content)
+    messages = _build_messages(session, conv, body.content, hits)
+    sources = _sources_from_hits(hits)
     result = client.complete(provider, model_id, messages, request_kind="chat")
     msg = Message(
         conversation_id=cid,
@@ -130,11 +179,18 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
         content=result.content,
         model=model_id,
         tokens_used=result.total_tokens,
+        sources_json=json.dumps(sources, ensure_ascii=False) if sources else None,
     )
     session.add(msg)
     session.commit()
     session.refresh(msg)
-    return {"role": "assistant", "content": msg.content, "model": model_id, "tokens": result.total_tokens}
+    return {
+        "role": "assistant",
+        "content": msg.content,
+        "model": model_id,
+        "tokens": result.total_tokens,
+        "sources": sources,
+    }
 
 
 @router.post("/chat/conversations/{cid}/messages/stream")
@@ -143,7 +199,7 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
 
     Frame protocol:
       event: delta  data: {"content": "..."}      — incremental token(s)
-      event: done   data: {"content","model","tokens"} — final, persisted
+      event: done   data: {"content","model","tokens","sources"} — final, persisted
       event: error  data: {"message": "..."}      — mid-stream failure
     """
     conv = session.get(Conversation, cid)
@@ -159,7 +215,9 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
     session.add(conv)
     session.commit()
 
-    messages = _build_messages(session, conv, body.content)
+    hits = _retrieve_hits(session, body.content)
+    messages = _build_messages(session, conv, body.content, hits)
+    sources = _sources_from_hits(hits)
 
     def event_stream():
         collected: list[str] = []
@@ -178,11 +236,15 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
                 content=content,
                 model=model_id,
                 tokens_used=total_tokens,
+                sources_json=json.dumps(sources, ensure_ascii=False) if sources else None,
             )
             session.add(msg)
             session.commit()
             session.refresh(msg)
-            yield _sse("done", {"content": content, "model": model_id, "tokens": total_tokens})
+            yield _sse(
+                "done",
+                {"content": content, "model": model_id, "tokens": total_tokens, "sources": sources},
+            )
         except Exception as exc:  # noqa: BLE001 — never leave the client hanging mid-stream
             yield _sse("error", {"message": str(exc)})
 
