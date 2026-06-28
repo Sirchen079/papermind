@@ -43,10 +43,6 @@ export default function Suggestions() {
     }
   }
 
-  const counts = {
-    new: items.filter((s) => s.status === "new").length,
-  };
-
   return (
     <div className="max-w-3xl space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">

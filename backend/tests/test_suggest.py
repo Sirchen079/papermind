@@ -91,6 +91,25 @@ def test_concept_links_no_concepts_returns_zero(tmp_path):
         assert concept_links_for_paper(s, a) == 0
 
 
+def test_concept_links_handles_missing_title(tmp_path):
+    """A paper with a null title must not render 'None' in the suggestion title."""
+    eng = _engine(tmp_path)
+    with Session(eng) as s:
+        titled = _mk_paper(s, "Titled Paper")
+        untitled = Paper(source="pdf")  # no title
+        s.add(untitled)
+        s.commit()
+        s.refresh(untitled)
+        c = _mk_concept(s, "shared")
+        _link(s, titled.id, c.id)
+        _link(s, untitled.id, c.id)
+        concept_links_for_paper(s, untitled)
+        rows = s.exec(select(Suggestion)).all()
+    titles = " ".join(r.title for r in rows)
+    assert "None" not in titles
+    assert "#1" in titles or "#2" in titles  # falls back to the id
+
+
 def test_concept_hubs_flags_central_themes(tmp_path):
     eng = _engine(tmp_path)
     with Session(eng) as s:

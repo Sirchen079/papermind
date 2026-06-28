@@ -66,15 +66,16 @@ def concept_links_for_paper(session: Session, paper: Paper) -> int:
     """
     shared = _shared_concepts(session, paper.id)
     created = 0
+    title = paper.title or f"#{paper.id}"
     for related_id, concepts in shared.items():
         related_paper = session.get(Paper, related_id)
-        related_title = related_paper.title if related_paper else f"#{related_id}"
+        related_title = (related_paper.title if related_paper else None) or f"#{related_id}"
         a, b = sorted((paper.id, related_id))
         dedup_key = f"concept_link:{a}:{b}"
         created += _add(
             session,
             kind="concept_link",
-            title=f"“{paper.title}” connects to “{related_title}”",
+            title=f"“{title}” connects to “{related_title}”",
             detail_json=json.dumps(
                 {"shared_concepts": concepts, "count": len(concepts)}, ensure_ascii=False
             ),
