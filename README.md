@@ -21,7 +21,7 @@
 .\dev.ps1              # 开发模式：后端 --reload + 前端 vite 热更新（各开一个窗口）
 ```
 
-启动后自动打开 http://127.0.0.1:8000 。脚本幂等：venv / 依赖 / `frontend/dist`
+启动后自动打开 http://127.0.0.1:4278 。脚本幂等：venv / 依赖 / `frontend/dist`
 已就绪时会跳过，直接启动。可选环境变量：`PAPERMIND_PORT`、`PAPERMIND_NPM_REGISTRY`
 （默认 npmmirror）、`PAPERMIND_PIP_INDEX`（国内可设清华源）。
 
@@ -46,10 +46,10 @@ npm run build                                            # 产物在 frontend/di
 
 # 3. 启动（后端会托管 frontend/dist）
 cd ../backend
-.venv/Scripts/python -m uvicorn app.main:create_app --factory --port 8000
+.venv/Scripts/python -m uvicorn app.main:create_app --factory --port 4278
 ```
 
-打开 http://127.0.0.1:8000 。先在 **Settings** 添加一个 LLM provider（OpenAI / Anthropic /
+打开 http://127.0.0.1:4278 。先在 **Settings** 添加一个 LLM provider（OpenAI / Anthropic /
 任意 OpenAI 兼容如 DeepSeek、智谱），刷新模型并给一个模型设置 `summary` / `chat` 角色，
 之后入库论文即自动 AI 分析。
 
@@ -57,8 +57,8 @@ cd ../backend
 
 ```bash
 # 终端 A：后端
-cd backend && .venv/Scripts/python -m uvicorn app.main:create_app --factory --port 8000 --reload
-# 终端 B：前端 dev server（代理 /api -> 8000）
+cd backend && .venv/Scripts/python -m uvicorn app.main:create_app --factory --port 4278 --reload
+# 终端 B：前端 dev server（代理 /api -> 4278）
 cd frontend && npm run dev   # http://127.0.0.1:5173
 ```
 

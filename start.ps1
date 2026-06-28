@@ -6,7 +6,7 @@
 #   .\start.ps1 -Dev       开发模式（后端 --reload + 前端 vite dev server）
 #   .\start.ps1 -Rebuild   强制重新构建前端
 # 环境变量（可选）：
-#   $env:PAPERMIND_PORT            端口，默认 8000
+#   $env:PAPERMIND_PORT            端口，默认 4278
 #   $env:PAPERMIND_NPM_REGISTRY    npm 镜像，默认 https://registry.npmmirror.com
 #   $env:PAPERMIND_PIP_INDEX       pip 镜像，默认（官方）
 param(
@@ -21,7 +21,7 @@ $Backend   = Join-Path $Root "backend"
 $Frontend  = Join-Path $Root "frontend"
 $VenvPy    = Join-Path $Backend ".venv\Scripts\python.exe"
 $NpmReg    = if ($env:PAPERMIND_NPM_REGISTRY) { $env:PAPERMIND_NPM_REGISTRY } else { "https://registry.npmmirror.com" }
-if ($Port -le 0) { $Port = if ($env:PAPERMIND_PORT) { [int]$env:PAPERMIND_PORT } else { 8000 } }
+if ($Port -le 0) { $Port = if ($env:PAPERMIND_PORT) { [int]$env:PAPERMIND_PORT } else { 4278 } }
 
 function Section($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 
