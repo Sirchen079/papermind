@@ -111,7 +111,7 @@ export default function Library({
 
   return (
     <div className="max-w-5xl">
-      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+      <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
         <div className="card">
           <h3 className="mb-3 font-semibold">Add from BibTeX</h3>
           <textarea
@@ -135,6 +135,35 @@ export default function Library({
           <button onClick={ingestArxiv} disabled={loading} className="btn-primary mt-3">
             Fetch &amp; ingest
           </button>
+        </div>
+        <div className="card">
+          <h3 className="mb-3 font-semibold">Upload PDF</h3>
+          <label className={`btn-primary inline-block cursor-pointer ${loading ? "opacity-60" : ""}`}>
+            Choose PDF…
+            <input
+              type="file"
+              accept="application/pdf"
+              className="hidden"
+              disabled={loading}
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                setLoading(true);
+                try {
+                  await api.ingestPdf(f);
+                  await load();
+                } catch (err: any) {
+                  setError(err.message);
+                } finally {
+                  setLoading(false);
+                  e.target.value = "";
+                }
+              }}
+            />
+          </label>
+          <p className="mt-2 text-xs" style={{ color: "var(--faint)" }}>
+            Text extracted locally via PyMuPDF. Scanned / image-only PDFs yield little text.
+          </p>
         </div>
       </div>
 
@@ -200,6 +229,18 @@ export default function Library({
               {selected.authors.join(", ")} {selected.year ? `· ${selected.year}` : ""}
             </p>
             {selected.abstract && <p className="mb-4 text-sm leading-relaxed">{selected.abstract}</p>}
+            {selected.parse_confidence != null && selected.parse_confidence < 0.3 && (
+              <div
+                className="mb-4 rounded-lg px-3 py-2 text-sm"
+                style={{
+                  backgroundColor: "color-mix(in srgb, var(--danger) 10%, transparent)",
+                  color: "var(--danger)",
+                }}
+              >
+                Low-quality text extraction ({Math.round(selected.parse_confidence * 100)}%). This looks
+                like a scanned PDF — AI summary and full-text search will be limited.
+              </div>
+            )}
             {selected.summary ? (
               <div className="space-y-2">
                 <h4 className="font-semibold">AI Summary</h4>

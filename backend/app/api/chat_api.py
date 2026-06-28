@@ -17,6 +17,10 @@ class MessageIn(BaseModel):
     content: str
 
 
+class ConvPatch(BaseModel):
+    title: str
+
+
 def _sse(event: str, data: dict) -> str:
     """Encode one Server-Sent Events frame."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
@@ -119,6 +123,15 @@ def _build_messages(
     return msgs
 
 
+def _auto_title(text: str) -> str:
+    """Derive a short conversation title from the first user message.
+
+    Collapses whitespace and caps length so the sidebar stays readable. Returns
+    "" for blank input (caller keeps the existing title in that case).
+    """
+    return " ".join((text or "").split())[:60]
+
+
 @router.post("/chat/conversations")
 def create_conversation(session: Session = Depends(get_session)) -> dict:
     c = Conversation(title="New conversation")
@@ -131,6 +144,38 @@ def create_conversation(session: Session = Depends(get_session)) -> dict:
 @router.get("/chat/conversations")
 def list_conversations(session: Session = Depends(get_session)) -> list[dict]:
     return [{"id": c.id, "title": c.title} for c in session.exec(select(Conversation)).all()]
+
+
+@router.patch("/chat/conversations/{cid}")
+def rename_conversation(cid: int, body: ConvPatch, session: Session = Depends(get_session)) -> dict:
+    conv = session.get(Conversation, cid)
+    if conv is None:
+        raise HTTPException(404, "conversation not found")
+    title = (body.title or "").strip()
+    if not title:
+        raise HTTPException(400, "title must not be empty")
+    conv.title = title[:120]
+    conv.updated_at = utcnow()
+    session.add(conv)
+    session.commit()
+    return {"id": conv.id, "title": conv.title}
+
+
+@router.delete("/chat/conversations/{cid}", status_code=204)
+def delete_conversation(cid: int, session: Session = Depends(get_session)) -> None:
+    conv = session.get(Conversation, cid)
+    if conv is None:
+        raise HTTPException(404, "conversation not found")
+    # Message→conversation FK has no ON DELETE cascade and foreign_keys=ON, so
+    # clear child rows first. Flush forces the message DELETEs to execute
+    # before the parent row's — SQLAlchemy can't infer the ordering from a bare
+    # FK (no relationship), so without this it may delete the conversation
+    # first and trip the constraint.
+    for m in session.exec(select(Message).where(Message.conversation_id == cid)).all():
+        session.delete(m)
+    session.flush()
+    session.delete(conv)
+    session.commit()
 
 
 @router.get("/chat/conversations/{cid}")
@@ -164,7 +209,12 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
         raise HTTPException(400, "no LLM provider configured")
     client, provider, model_id = ctx
 
+    first_message = (
+        session.exec(select(Message).where(Message.conversation_id == cid)).first() is None
+    )
     session.add(Message(conversation_id=cid, role="user", content=body.content))
+    if first_message:
+        conv.title = _auto_title(body.content) or conv.title
     conv.updated_at = utcnow()
     session.add(conv)
     session.commit()
@@ -190,6 +240,7 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
         "model": model_id,
         "tokens": result.total_tokens,
         "sources": sources,
+        "title": conv.title,
     }
 
 
@@ -210,7 +261,12 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
         raise HTTPException(400, "no LLM provider configured")
     client, provider, model_id = ctx
 
+    first_message = (
+        session.exec(select(Message).where(Message.conversation_id == cid)).first() is None
+    )
     session.add(Message(conversation_id=cid, role="user", content=body.content))
+    if first_message:
+        conv.title = _auto_title(body.content) or conv.title
     conv.updated_at = utcnow()
     session.add(conv)
     session.commit()
@@ -218,6 +274,7 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
     hits = _retrieve_hits(session, body.content)
     messages = _build_messages(session, conv, body.content, hits)
     sources = _sources_from_hits(hits)
+    title = conv.title  # snapshot for the done frame (sidebar sync)
 
     def event_stream():
         collected: list[str] = []
@@ -243,7 +300,13 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
             session.refresh(msg)
             yield _sse(
                 "done",
-                {"content": content, "model": model_id, "tokens": total_tokens, "sources": sources},
+                {
+                    "content": content,
+                    "model": model_id,
+                    "tokens": total_tokens,
+                    "sources": sources,
+                    "title": title,
+                },
             )
         except Exception as exc:  # noqa: BLE001 — never leave the client hanging mid-stream
             yield _sse("error", {"message": str(exc)})

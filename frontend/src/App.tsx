@@ -45,6 +45,7 @@ export default function App() {
   const [page, setPage] = useState("library");
   const [newCount, setNewCount] = useState(0);
   const [openPaperId, setOpenPaperId] = useState<number | null>(null);
+  const [activeConv, setActiveConv] = useState<number | null>(null);
   const { theme, toggle } = useTheme();
   const active = NAV.find((n) => n.key === page);
 
@@ -171,9 +172,15 @@ export default function App() {
             {page === "library" && (
               <Library openPaperId={openPaperId} onConsumedOpen={clearOpenPaper} />
             )}
-            {page === "suggestions" && <Suggestions />}
-            {page === "graph" && <Graph theme={theme} />}
-            {page === "chat" && <Chat onOpenPaper={openPaper} />}
+            {page === "suggestions" && <Suggestions onOpenPaper={openPaper} />}
+            {page === "graph" && <Graph theme={theme} onOpenPaper={openPaper} />}
+            {page === "chat" && (
+              <Chat
+                activeConv={activeConv}
+                setActiveConv={setActiveConv}
+                onOpenPaper={openPaper}
+              />
+            )}
             {page === "skills" && <Skills />}
             {page === "settings" && <Settings />}
           </Suspense>

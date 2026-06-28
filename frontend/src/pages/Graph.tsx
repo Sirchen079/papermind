@@ -7,7 +7,13 @@ function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-export default function Graph({ theme }: { theme: Theme }) {
+export default function Graph({
+  theme,
+  onOpenPaper,
+}: {
+  theme: Theme;
+  onOpenPaper: (id: number) => void;
+}) {
   const [kind, setKind] = useState<"paper" | "concept">("paper");
   const [minPapers, setMinPapers] = useState(1);
   const [data, setData] = useState<GraphData | null>(null);
@@ -58,6 +64,10 @@ export default function Graph({ theme }: { theme: Theme }) {
       minZoom: 0.2,
       maxZoom: 3,
     });
+    // In the paper graph, tapping a node opens that paper (mirrors chat sources).
+    if (kind === "paper") {
+      cyRef.current.on("tap", "node", (evt: any) => onOpenPaper(Number(evt.target.id())));
+    }
     return () => {
       cyRef.current?.destroy();
       cyRef.current = null;

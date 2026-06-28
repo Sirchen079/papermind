@@ -126,3 +126,42 @@ def test_stream_message_activates_keyword_skill_for_current_turn(client):
     assert res.status_code == 200
     sys_msg = next(m["content"] for m in captured["messages"] if m["role"] == "system")
     assert "Use mathematical rigor." in sys_msg
+
+
+def test_first_message_auto_titles_conversation(client):
+    _seed_chat_provider()
+    cid = client.post("/api/chat/conversations").json()["id"]
+    fake = CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+    with patch("app.providers.client.ProviderClient.complete", return_value=fake):
+        res = client.post(
+            f"/api/chat/conversations/{cid}/messages",
+            json={"content": "  Compare   transformer   architectures  "},
+        )
+    assert res.status_code == 200
+    assert res.json()["title"] == "Compare transformer architectures"
+    # sidebar list reflects the derived title
+    assert next(c for c in client.get("/api/chat/conversations").json() if c["id"] == cid)["title"] == "Compare transformer architectures"
+
+
+def test_rename_conversation(client):
+    cid = client.post("/api/chat/conversations").json()["id"]
+    res = client.patch(f"/api/chat/conversations/{cid}", json={"title": "My topic"})
+    assert res.status_code == 200
+    assert res.json()["title"] == "My topic"
+
+
+def test_rename_rejects_empty(client):
+    cid = client.post("/api/chat/conversations").json()["id"]
+    assert client.patch(f"/api/chat/conversations/{cid}", json={"title": "   "}).status_code == 400
+
+
+def test_delete_conversation_clears_messages(client):
+    _seed_chat_provider()
+    cid = client.post("/api/chat/conversations").json()["id"]
+    fake = CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+    with patch("app.providers.client.ProviderClient.complete", return_value=fake):
+        client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "hi"})
+    assert len(client.get(f"/api/chat/conversations/{cid}").json()["messages"]) == 2
+    assert client.delete(f"/api/chat/conversations/{cid}").status_code == 204
+    assert client.get(f"/api/chat/conversations/{cid}").status_code == 404
+    assert all(c["id"] != cid for c in client.get("/api/chat/conversations").json())

@@ -19,6 +19,7 @@ export default function Settings() {
   const [err, setErr] = useState<string | null>(null);
   const [indexing, setIndexing] = useState(false);
   const [indexMsg, setIndexMsg] = useState<string | null>(null);
+  const [newModel, setNewModel] = useState<Record<number, { model_id: string; role: string }>>({});
 
   async function load() {
     try {
@@ -54,6 +55,39 @@ export default function Settings() {
       const r = await api.refreshModels(id);
       setModels({ ...models, [id]: await api.providerModels(id) });
       setMsg(`Fetched ${r.count} models.`);
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  }
+
+  async function toggleProvider(p: Provider) {
+    setErr(null);
+    try {
+      await api.patchProvider(p.id, { enabled: !p.enabled });
+      await load();
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  }
+
+  async function removeProvider(id: number) {
+    setErr(null);
+    try {
+      await api.deleteProvider(id);
+      await load();
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  }
+
+  async function addManualModel(pid: number) {
+    const f = newModel[pid];
+    if (!f?.model_id?.trim()) return;
+    setErr(null);
+    try {
+      await api.addModel(pid, { model_id: f.model_id.trim(), role_default: f.role || undefined });
+      setNewModel({ ...newModel, [pid]: { model_id: "", role: "" } });
+      setModels({ ...models, [pid]: await api.providerModels(pid) });
     } catch (e: any) {
       setErr(e.message);
     }
@@ -151,9 +185,21 @@ export default function Settings() {
                 >
                   {p.enabled ? "enabled" : "disabled"}
                 </span>
-                <button onClick={() => refresh(p.id)} className="btn-ghost ml-auto py-1">
-                  Refresh models
-                </button>
+                <div className="ml-auto flex items-center gap-1">
+                  <button onClick={() => refresh(p.id)} className="btn-ghost py-1">
+                    Refresh models
+                  </button>
+                  <button onClick={() => toggleProvider(p)} className="btn-ghost py-1">
+                    {p.enabled ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    onClick={() => removeProvider(p.id)}
+                    className="btn-ghost py-1"
+                    style={{ color: "var(--danger)" }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
               <div className="space-y-1">
                 {(models[p.id] ?? []).map((m) => (
@@ -173,9 +219,41 @@ export default function Settings() {
                 ))}
                 {p.id in models && models[p.id].length === 0 && (
                   <p className="text-xs" style={{ color: "var(--faint)" }}>
-                    No models. Click “Refresh models”.
+                    No models. Click “Refresh models” or add one manually below.
                   </p>
                 )}
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  className="input flex-1 py-1 text-xs"
+                  placeholder="add model by id (e.g. gpt-4o, llama3:8b)"
+                  value={newModel[p.id]?.model_id ?? ""}
+                  onChange={(e) =>
+                    setNewModel({
+                      ...newModel,
+                      [p.id]: { model_id: e.target.value, role: newModel[p.id]?.role ?? "" },
+                    })
+                  }
+                  onKeyDown={(e) => e.key === "Enter" && addManualModel(p.id)}
+                />
+                <select
+                  className="input w-28 py-1 text-xs"
+                  value={newModel[p.id]?.role ?? ""}
+                  onChange={(e) =>
+                    setNewModel({
+                      ...newModel,
+                      [p.id]: { model_id: newModel[p.id]?.model_id ?? "", role: e.target.value },
+                    })
+                  }
+                >
+                  <option value="">— role —</option>
+                  {ROLES.map((r) => (
+                    <option key={r}>{r}</option>
+                  ))}
+                </select>
+                <button onClick={() => addManualModel(p.id)} className="btn-ghost py-1 text-xs">
+                  Add
+                </button>
               </div>
             </div>
           ))}

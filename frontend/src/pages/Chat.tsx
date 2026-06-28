@@ -20,13 +20,22 @@ function mk(role: string, content: string, model = "", sources: Source[] = []): 
   return { id: nextMsgId++, role, content, model, sources };
 }
 
-export default function Chat({ onOpenPaper }: { onOpenPaper: (id: number) => void }) {
+export default function Chat({
+  activeConv,
+  setActiveConv,
+  onOpenPaper,
+}: {
+  activeConv: number | null;
+  setActiveConv: (id: number | null) => void;
+  onOpenPaper: (id: number) => void;
+}) {
   const [convs, setConvs] = useState<Conv[]>([]);
-  const [active, setActive] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editText, setEditText] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
 
   async function loadConvs() {
@@ -40,32 +49,70 @@ export default function Chat({ onOpenPaper }: { onOpenPaper: (id: number) => voi
     loadConvs();
   }, []);
 
+  // Load the active conversation whenever App says it changed (this also
+  // restores the user's place after navigating away and back — P5).
+  useEffect(() => {
+    if (activeConv == null) {
+      setMessages([]);
+      return;
+    }
+    let alive = true;
+    api
+      .getConversation(activeConv)
+      .then((c) => {
+        if (alive) setMessages(c.messages.map((m) => mk(m.role, m.content, m.model, m.sources ?? [])));
+      })
+      .catch((e: any) => {
+        if (alive) setError(e.message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [activeConv]);
+
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
-  async function openConv(id: number) {
-    try {
-      setActive(id);
-      const c = await api.getConversation(id);
-      setMessages(c.messages.map((m) => mk(m.role, m.content, m.model, m.sources ?? [])));
-    } catch (e: any) {
-      setError(e.message);
-    }
-  }
 
   async function newConv() {
     try {
       const c = await api.createConversation();
       await loadConvs();
-      await openConv(c.id);
+      setActiveConv(c.id); // triggers the loader effect above
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function delConv(id: number) {
+    try {
+      await api.deleteConversation(id);
+      if (activeConv === id) setActiveConv(null);
+      await loadConvs();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  function startRename(c: Conv) {
+    setEditingId(c.id);
+    setEditText(c.title);
+  }
+
+  async function commitRename(id: number) {
+    const title = editText.trim();
+    setEditingId(null);
+    if (!title) return;
+    try {
+      await api.renameConversation(id, title);
+      await loadConvs();
     } catch (e: any) {
       setError(e.message);
     }
   }
 
   async function send() {
-    if (!active || !input.trim() || busy) return;
+    if (activeConv == null || !input.trim() || busy) return;
     const text = input;
     setInput("");
     setMessages((m) => [...m, mk("user", text)]);
@@ -75,7 +122,7 @@ export default function Chat({ onOpenPaper }: { onOpenPaper: (id: number) => voi
     setError(null);
     try {
       let last = "";
-      for await (const { event, data } of api.streamMessage(active, text)) {
+      for await (const { event, data } of api.streamMessage(activeConv, text)) {
         if (event === "delta") {
           last += data.content;
           setMessages((m) => {
@@ -95,6 +142,8 @@ export default function Chat({ onOpenPaper }: { onOpenPaper: (id: number) => voi
             };
             return copy;
           });
+          // first message may have auto-derived a title — sync the sidebar.
+          if (data.title) await loadConvs();
         } else if (event === "error") {
           setError(data.message ?? "stream error");
           setMessages((m) => (m[m.length - 1]?.content === "" ? m.slice(0, -1) : m));
@@ -123,33 +172,69 @@ export default function Chat({ onOpenPaper }: { onOpenPaper: (id: number) => voi
             </p>
           )}
           {convs.map((c) => {
-            const isActive = active === c.id;
+            const isActive = activeConv === c.id;
+            const isEditing = editingId === c.id;
             return (
-              <button
+              <div
                 key={c.id}
-                onClick={() => openConv(c.id)}
-                className="block w-full truncate rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors"
+                className="group flex items-center gap-1 rounded-lg px-1.5 transition-colors"
                 style={
                   isActive
-                    ? { backgroundColor: "var(--accent-soft)", color: "var(--text)" }
-                    : { color: "var(--muted)" }
+                    ? { backgroundColor: "var(--accent-soft)" }
+                    : { backgroundColor: "transparent" }
                 }
-                onMouseEnter={(e) => {
-                  if (!isActive) e.currentTarget.style.backgroundColor = "var(--surface-2)";
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive) e.currentTarget.style.backgroundColor = "transparent";
-                }}
               >
-                {c.title} <span style={{ color: "var(--faint)" }}>#{c.id}</span>
-              </button>
+                {isEditing ? (
+                  <input
+                    autoFocus
+                    className="my-1 w-full rounded border bg-transparent px-1.5 py-1 text-sm"
+                    style={{ borderColor: "var(--accent)", color: "var(--text)" }}
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    onBlur={() => commitRename(c.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitRename(c.id);
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                  />
+                ) : (
+                  <button
+                    onClick={() => setActiveConv(c.id)}
+                    className="block w-full truncate rounded px-1 py-1.5 text-left text-sm"
+                    style={isActive ? { color: "var(--text)" } : { color: "var(--muted)" }}
+                    title={c.title}
+                  >
+                    {c.title || "Untitled"}
+                  </button>
+                )}
+                {!isEditing && (
+                  <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
+                    <button
+                      onClick={() => startRename(c)}
+                      className="px-1 text-xs"
+                      style={{ color: "var(--faint)" }}
+                      title="Rename"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={() => delConv(c.id)}
+                      className="px-1 text-xs"
+                      style={{ color: "var(--faint)" }}
+                      title="Delete"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
       </aside>
 
       <section className="card flex flex-1 flex-col overflow-hidden p-0">
-        {!active ? (
+        {activeConv == null ? (
           <div className="flex flex-1 items-center justify-center" style={{ color: "var(--faint)" }}>
             Start a new conversation
           </div>

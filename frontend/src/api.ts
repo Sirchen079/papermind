@@ -1,9 +1,14 @@
 const BASE = "/api";
 
 async function req<T = any>(path: string, opts?: RequestInit): Promise<T> {
+  // Let the browser set the multipart boundary for FormData; force JSON otherwise.
+  const isForm = typeof FormData !== "undefined" && opts?.body instanceof FormData;
   const res = await fetch(BASE + path, {
-    headers: { "Content-Type": "application/json" },
     ...opts,
+    headers: {
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
+      ...opts?.headers,
+    },
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   if (res.status === 204) return null as T;
@@ -121,6 +126,11 @@ export const api = {
   getPaper: (id: number) => req<Paper>(`/papers/${id}`),
   relatedPapers: (id: number) => req<RelatedPaper[]>(`/papers/${id}/related`),
   reindexLibrary: () => req<{ chunks: number }>("/papers/reindex", { method: "POST" }),
+  ingestPdf: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return req<Paper>("/papers/pdf", { method: "POST", body: form });
+  },
   ingestBibtex: (bibtex: string) =>
     req<Paper[]>("/papers/bibtex", { method: "POST", body: JSON.stringify({ bibtex }) }),
   ingestArxiv: (arxiv_id: string) =>
@@ -131,6 +141,12 @@ export const api = {
   // chat
   listConversations: () => req<{ id: number; title: string }[]>("/chat/conversations"),
   createConversation: () => req<{ id: number; title: string }>("/chat/conversations", { method: "POST" }),
+  renameConversation: (id: number, title: string) =>
+    req<{ id: number; title: string }>(`/chat/conversations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
+  deleteConversation: (id: number) => req(`/chat/conversations/${id}`, { method: "DELETE" }),
   getConversation: (id: number) =>
     req<{
       id: number;
@@ -148,7 +164,12 @@ export const api = {
   listProviders: () => req<Provider[]>("/providers"),
   createProvider: (body: Record<string, unknown>) =>
     req<Provider>("/providers", { method: "POST", body: JSON.stringify(body) }),
+  patchProvider: (id: number, body: Record<string, unknown>) =>
+    req<Provider>(`/providers/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteProvider: (id: number) => req(`/providers/${id}`, { method: "DELETE" }),
   refreshModels: (id: number) => req<{ count: number }>(`/providers/${id}/models/refresh`, { method: "POST" }),
+  addModel: (pid: number, body: { model_id: string; display_name?: string; role_default?: string }) =>
+    req<Model>(`/providers/${pid}/models`, { method: "POST", body: JSON.stringify(body) }),
   providerModels: (id: number) => req<Model[]>(`/providers/${id}/models`),
   setModelRole: (id: number, role_default: string) =>
     req(`/models/${id}`, { method: "PATCH", body: JSON.stringify({ role_default }) }),

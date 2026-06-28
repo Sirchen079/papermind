@@ -146,3 +146,45 @@ def list_provider_models(pid: int, session: Session = Depends(get_session)) -> l
         }
         for m in session.exec(select(Model).where(Model.provider_id == pid)).all()
     ]
+
+
+class ManualModelIn(BaseModel):
+    model_id: str
+    display_name: str | None = None
+    role_default: str | None = None
+
+
+@router.post("/providers/{pid}/models", status_code=201)
+def add_manual_model(pid: int, body: ManualModelIn, session: Session = Depends(get_session)) -> dict:
+    """Add a model by id manually.
+
+    For providers that don't expose a ``/models`` list (some ``openai_compat``
+    gateways, local Ollama, …) so "Refresh models" can't discover them. The
+    row is marked ``is_manual`` so a later refresh knows to leave it (and its
+    role assignment) untouched.
+    """
+    p = session.get(Provider, pid)
+    if p is None:
+        raise HTTPException(404, "provider not found")
+    dup = session.exec(
+        select(Model).where(Model.provider_id == pid, Model.model_id == body.model_id)
+    ).first()
+    if dup is not None:
+        raise HTTPException(409, f"model '{body.model_id}' already exists for this provider")
+    m = Model(
+        provider_id=pid,
+        model_id=body.model_id,
+        display_name=body.display_name,
+        role_default=body.role_default,
+        is_manual=True,
+    )
+    session.add(m)
+    session.commit()
+    session.refresh(m)
+    return {
+        "id": m.id,
+        "model_id": m.model_id,
+        "display_name": m.display_name,
+        "context_window": m.context_window,
+        "role_default": m.role_default,
+    }

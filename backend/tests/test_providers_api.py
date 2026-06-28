@@ -84,6 +84,28 @@ def test_refresh_preserves_role_assignments(client):
     assert models[0]["role_default"] == "chat"
 
 
+def test_add_manual_model(client):
+    pid = client.post(
+        "/api/providers", json={"name": "ollama", "type": "openai_compat", "base_url": "http://localhost:11434/v1"}
+    ).json()["id"]
+    res = client.post(
+        f"/api/providers/{pid}/models",
+        json={"model_id": "llama3:8b", "display_name": "Llama 3 8B", "role_default": "chat"},
+    )
+    assert res.status_code == 201
+    assert res.json()["model_id"] == "llama3:8b"
+    assert res.json()["role_default"] == "chat"
+    models = client.get(f"/api/providers/{pid}/models").json()
+    assert any(m["model_id"] == "llama3:8b" for m in models)
+
+
+def test_add_manual_model_rejects_duplicate(client):
+    pid = client.post("/api/providers", json={"name": "o", "type": "openai_chat"}).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "gpt-4o"})
+    res = client.post(f"/api/providers/{pid}/models", json={"model_id": "gpt-4o"})
+    assert res.status_code == 409
+
+
 def test_delete_provider(client):
     pid = client.post("/api/providers", json={"name": "x", "type": "openai_chat"}).json()["id"]
     assert client.delete(f"/api/providers/{pid}").status_code == 204

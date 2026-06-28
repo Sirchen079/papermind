@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Suggestion } from "../api";
 
-export default function Suggestions() {
+export default function Suggestions({ onOpenPaper }: { onOpenPaper: (id: number) => void }) {
   const [items, setItems] = useState<Suggestion[]>([]);
   const [filter, setFilter] = useState<"new" | "all" | "accepted" | "dismissed">("new");
   const [msg, setMsg] = useState<string | null>(null);
@@ -137,6 +137,32 @@ export default function Suggestions() {
                     <button onClick={() => act(s.id, "dismissed")} className="btn-ghost py-1 text-xs">
                       Dismiss
                     </button>
+                  </div>
+                )}
+                {s.kind === "concept_link" && (s.paper || s.related_paper) && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {s.paper && (
+                      <button
+                        onClick={() => onOpenPaper(s.paper!.id)}
+                        className="inline-flex max-w-[220px] items-center gap-1 rounded-full px-2.5 py-1 text-xs"
+                        style={{ backgroundColor: "var(--accent-soft)", color: "var(--accent)" }}
+                        title={s.paper.title ?? `#${s.paper.id}`}
+                      >
+                        📚 <span className="truncate">{s.paper.title ?? `#${s.paper.id}`}</span>
+                      </button>
+                    )}
+                    {s.related_paper && (
+                      <button
+                        onClick={() => onOpenPaper(s.related_paper!.id)}
+                        className="inline-flex max-w-[220px] items-center gap-1 rounded-full px-2.5 py-1 text-xs"
+                        style={{ backgroundColor: "var(--accent-soft)", color: "var(--accent)" }}
+                        title={s.related_paper.title ?? `#${s.related_paper.id}`}
+                      >
+                        📚 <span className="truncate">
+                          {s.related_paper.title ?? `#${s.related_paper.id}`}
+                        </span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
