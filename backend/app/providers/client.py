@@ -276,10 +276,18 @@ class ProviderClient:
 
     def list_models(self, provider: Provider) -> list[ModelInfo]:
         url, headers = self._models_endpoint(provider)
-        data = httpx.get(url, headers=headers, timeout=30.0).json()
+        resp = httpx.get(url, headers=headers, timeout=30.0)
+        # Raise on auth/quota/etc. failures BEFORE parsing: an error body like
+        # {"error": {...}} has no "data" list, and without this guard the loop
+        # below would iterate dict *keys* and raise AttributeError (a confusing
+        # 500 instead of the caller's clean 502).
+        resp.raise_for_status()
+        data = resp.json()
         raw = data.get("data", data) if isinstance(data, dict) else data
         out: list[ModelInfo] = []
         for item in raw or []:
+            if not isinstance(item, dict):
+                continue
             mid = item.get("id") or item.get("model") or item.get("name")
             if not mid:
                 continue

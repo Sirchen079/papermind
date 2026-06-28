@@ -75,3 +75,26 @@ def test_list_models_openai_compat(tmp_path):
     models = client.list_models(provider)
     assert {m.model_id for m in models} == {"deepseek-chat", "deepseek-reasoner"}
     assert all(isinstance(m, ModelInfo) for m in models)
+
+
+@respx.mock
+def test_list_models_raises_on_error_status(tmp_path):
+    """A 401/error body must raise, not crash with AttributeError iterating keys."""
+    import pytest
+
+    eng = make_engine(tmp_path / "err.sqlite")
+    SQLModel.metadata.create_all(eng)
+    crypto = Crypto(Fernet.generate_key())
+    respx.get("https://api.deepseek.com/v1/models").mock(
+        return_value=httpx.Response(401, json={"error": {"message": "bad key"}})
+    )
+    client = ProviderClient(session_factory=lambda: Session(eng), crypto=crypto)
+    provider = Provider(
+        id=1,
+        name="ds",
+        type="openai_compat",
+        base_url="https://api.deepseek.com/v1",
+        api_key_encrypted=crypto.encrypt("sk-x"),
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        client.list_models(provider)

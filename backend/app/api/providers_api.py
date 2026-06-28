@@ -111,20 +111,25 @@ def refresh_models(pid: int, session: Session = Depends(get_session)) -> dict:
         fetched = _client(session).list_models(p)
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(502, f"failed to fetch models: {exc}") from exc
-    for existing in session.exec(select(Model).where(Model.provider_id == pid)).all():
-        session.delete(existing)
+    # Upsert by model_id so a refresh never wipes the user's role assignments.
+    # The previous delete-all-then-re-add lost role_default on every refresh,
+    # silently breaking chat ("no LLM configured") and RAG (embedding role
+    # gone). Models that vanish from the provider are intentionally kept — a
+    # stale row is harmless, and deleting would risk dropping a model the user
+    # still wants (there's no delete-model UI yet to recover it).
+    existing = {
+        m.model_id: m for m in session.exec(select(Model).where(Model.provider_id == pid)).all()
+    }
     now = utcnow()
-    for m in fetched:
-        session.add(
-            Model(
-                provider_id=pid,
-                model_id=m.model_id,
-                display_name=m.display_name,
-                context_window=m.context_window,
-                fetched_at=now,
-                is_manual=False,
-            )
-        )
+    for mi in fetched:
+        row = existing.get(mi.model_id)
+        if row is None:
+            row = Model(provider_id=pid, model_id=mi.model_id)
+            session.add(row)
+        row.display_name = mi.display_name
+        row.context_window = mi.context_window
+        row.fetched_at = now
+        row.is_manual = False
     session.commit()
     return {"count": len(fetched)}
 

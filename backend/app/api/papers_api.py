@@ -8,9 +8,8 @@ from app.api.deps import get_session
 from app.config import get_settings
 from app.ingestion.service import persist_fetched
 from app.ingestion.sources import FetchedPaper, fetch_arxiv, parse_bibtex
-from app.models import Model, Paper, Provider, Summary
+from app.models import Paper, Provider, Summary
 from app.providers.client import ProviderClient
-from app.security.crypto import get_crypto
 
 router = APIRouter()
 
@@ -53,25 +52,16 @@ def _summary_for(session: Session, paper_id: int) -> dict | None:
 
 
 def _analysis_ctx(session: Session) -> tuple[ProviderClient, Provider, str] | None:
-    """Pick the first enabled provider + a summary-role (or first) model.
+    """Pick the provider + model for ingestion analysis (summarize + extract).
 
-    Returns None when no provider/model is configured (AI is skipped). The
-    client uses a fresh-session factory so token-usage recording never closes
-    the caller's request session (see app.providers.selection.pick_llm).
+    Delegates to the role-aware picker with the ``summary`` role, which honors a
+    summary-tagged model on ANY enabled provider (not just the first) and falls
+    back to the first enabled provider's first model. Returns None when nothing
+    is configured, so AI analysis is skipped gracefully.
     """
-    from app.db.engine import get_engine as _get_engine
+    from app.providers.selection import pick_llm
 
-    provider = session.exec(select(Provider).where(Provider.enabled == True)).first()  # noqa: E712
-    if provider is None:
-        return None
-    model = session.exec(select(Model).where(Model.provider_id == provider.id, Model.role_default == "summary")).first()
-    if model is None:
-        model = session.exec(select(Model).where(Model.provider_id == provider.id)).first()
-    if model is None:
-        return None
-    engine = _get_engine()
-    client = ProviderClient(session_factory=lambda: Session(engine), crypto=get_crypto())
-    return client, provider, model.model_id
+    return pick_llm(session, "summary")
 
 
 @router.get("/papers")

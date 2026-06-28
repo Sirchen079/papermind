@@ -59,6 +59,31 @@ def test_refresh_models_upserts(client):
     assert len(models) == 2
 
 
+def test_refresh_preserves_role_assignments(client):
+    """Refreshing models must not wipe role_default (regression: delete+re-add lost it)."""
+    pid = client.post(
+        "/api/providers",
+        json={
+            "name": "ds",
+            "type": "openai_compat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": "sk",
+        },
+    ).json()["id"]
+    fake_models = [ModelInfo(model_id="deepseek-chat", display_name="deepseek-chat")]
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    mid = client.get(f"/api/providers/{pid}/models").json()[0]["id"]
+    client.patch(f"/api/models/{mid}", json={"role_default": "chat"})
+
+    # A subsequent refresh must keep the role the user assigned.
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    models = client.get(f"/api/providers/{pid}/models").json()
+    assert len(models) == 1
+    assert models[0]["role_default"] == "chat"
+
+
 def test_delete_provider(client):
     pid = client.post("/api/providers", json={"name": "x", "type": "openai_chat"}).json()["id"]
     assert client.delete(f"/api/providers/{pid}").status_code == 204
