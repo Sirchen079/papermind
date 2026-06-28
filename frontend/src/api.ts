@@ -1,0 +1,85 @@
+const BASE = "/api";
+
+async function req<T = any>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(BASE + path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (res.status === 204) return null as T;
+  return res.json();
+}
+
+export interface Paper {
+  id: number;
+  source: string;
+  title: string | null;
+  authors: string[];
+  abstract: string | null;
+  year: number | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  parse_confidence: number | null;
+  has_summary?: boolean;
+  summary?: Record<string, string> | null;
+  full_text?: string | null;
+}
+
+export interface GraphData {
+  nodes: { id: number; title?: string; name?: string; year?: number; type?: string }[];
+  edges: { source: number; target: number; weight: number }[];
+}
+
+export interface Provider {
+  id: number;
+  name: string;
+  type: string;
+  base_url: string | null;
+  enabled: boolean;
+}
+
+export interface Model {
+  id: number;
+  model_id: string;
+  display_name: string | null;
+  context_window: number | null;
+  role_default: string | null;
+}
+
+export const api = {
+  // papers
+  listPapers: () => req<Paper[]>("/papers"),
+  getPaper: (id: number) => req<Paper>(`/papers/${id}`),
+  ingestBibtex: (bibtex: string) =>
+    req<Paper[]>("/papers/bibtex", { method: "POST", body: JSON.stringify({ bibtex }) }),
+  ingestArxiv: (arxiv_id: string) =>
+    req<Paper>("/papers/arxiv", { method: "POST", body: JSON.stringify({ arxiv_id }) }),
+  // graph
+  graph: (kind: "paper" | "concept", minPapers = 1) =>
+    req<GraphData>(`/graph/${kind}?min_papers=${minPapers}`),
+  // chat
+  listConversations: () => req<{ id: number; title: string }[]>("/chat/conversations"),
+  createConversation: () => req<{ id: number; title: string }>("/chat/conversations", { method: "POST" }),
+  getConversation: (id: number) =>
+    req<{ id: number; title: string; messages: { role: string; content: string; model: string }[] }>(
+      `/chat/conversations/${id}`
+    ),
+  sendMessage: (id: number, content: string) =>
+    req<{ role: string; content: string; model: string; tokens: number }>(
+      `/chat/conversations/${id}/messages`,
+      { method: "POST", body: JSON.stringify({ content }) }
+    ),
+  // providers / models
+  listProviders: () => req<Provider[]>("/providers"),
+  createProvider: (body: Record<string, unknown>) =>
+    req<Provider>("/providers", { method: "POST", body: JSON.stringify(body) }),
+  refreshModels: (id: number) => req<{ count: number }>(`/providers/${id}/models/refresh`, { method: "POST" }),
+  providerModels: (id: number) => req<Model[]>(`/providers/${id}/models`),
+  setModelRole: (id: number, role_default: string) =>
+    req(`/models/${id}`, { method: "PATCH", body: JSON.stringify({ role_default }) }),
+  // usage
+  usage: (days = 30) =>
+    req<{ total_tokens: number; by_kind: Record<string, number>; by_model: Record<string, number> }>(
+      `/usage?days=${days}`
+    ),
+};

@@ -54,4 +54,14 @@ def create_app() -> FastAPI:
     app.include_router(papers_router, prefix="/api")
     app.include_router(graph_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
+
+    # Serve the built frontend (production single-app mode) when present.
+    # API routes are registered above with the /api prefix, so they take
+    # precedence over this catch-all static mount.
+    dist = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+    if dist.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=str(dist), html=True), name="frontend")
+
     return app
