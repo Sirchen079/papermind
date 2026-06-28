@@ -13,11 +13,21 @@ interface Skill {
   source: string;
 }
 
+interface ToolResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  exit_code: number;
+  duration_ms: number;
+}
+
 export default function Skills() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", type: "instruction", trigger: "manual", keywords: "", body: "" });
+  const [runningId, setRunningId] = useState<number | null>(null);
+  const [results, setResults] = useState<Record<number, ToolResult>>({});
 
   async function load() {
     try {
@@ -62,6 +72,19 @@ export default function Skills() {
   async function remove(id: number) {
     await api.deleteSkill(id);
     await load();
+  }
+
+  async function runSkill(id: number) {
+    setErr(null);
+    setRunningId(id);
+    try {
+      const r = await api.runSkill(id);
+      setResults((prev) => ({ ...prev, [id]: r }));
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setRunningId(null);
+    }
   }
 
   return (
@@ -119,7 +142,11 @@ export default function Skills() {
         </div>
         <textarea
           className="input h-28 resize-none font-mono"
-          placeholder="skill instructions (markdown)…"
+          placeholder={
+            form.type === "tool"
+              ? "Python code — library/papers/user_input are pre-loaded; print() to return results"
+              : "skill instructions (markdown)…"
+          }
           value={form.body}
           onChange={(e) => setForm({ ...form, body: e.target.value })}
         />
@@ -150,6 +177,15 @@ export default function Skills() {
               <span className="ml-auto text-xs" style={{ color: "var(--faint)" }}>
                 {s.source}
               </span>
+              {s.type === "tool" && (
+                <button
+                  onClick={() => runSkill(s.id)}
+                  disabled={runningId === s.id}
+                  className="btn-subtle px-2 text-sm"
+                >
+                  {runningId === s.id ? "running…" : "run"}
+                </button>
+              )}
               <button onClick={() => remove(s.id)} className="btn-subtle px-2 text-sm" style={{ color: "var(--danger)" }}>
                 delete
               </button>
@@ -167,6 +203,29 @@ export default function Skills() {
                 {s.body.slice(0, 200)}
                 {s.body.length > 200 ? "…" : ""}
               </pre>
+            )}
+            {s.type === "tool" && results[s.id] && (
+              <div
+                className="mt-2 rounded-lg p-2.5 text-xs"
+                style={{ backgroundColor: "var(--surface-2)" }}
+              >
+                <div className="mb-1 flex items-center gap-2" style={{ color: "var(--faint)" }}>
+                  <span>
+                    {results[s.id].ok ? "✓ exited 0" : `✕ exit ${results[s.id].exit_code}`}
+                  </span>
+                  <span>· {results[s.id].duration_ms} ms</span>
+                </div>
+                {results[s.id].stdout && (
+                  <pre className="whitespace-pre-wrap font-mono" style={{ color: "var(--text)" }}>
+                    {results[s.id].stdout.slice(-2000)}
+                  </pre>
+                )}
+                {results[s.id].stderr && (
+                  <pre className="whitespace-pre-wrap font-mono" style={{ color: "var(--danger)" }}>
+                    {results[s.id].stderr.slice(-2000)}
+                  </pre>
+                )}
+              </div>
             )}
           </div>
         ))}

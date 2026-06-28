@@ -3,12 +3,12 @@ from pathlib import Path
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
-from app.models import Skill
+from app.models import Concept, Paper, Skill
 from app.models.base import utcnow
 from app.skills.loader import load_skills_from_dir
 
@@ -95,3 +95,49 @@ def delete_skill(sid: int, session: Session = Depends(get_session)) -> None:
 def reload_skills(session: Session = Depends(get_session)) -> dict:
     count = load_skills_from_dir(session, default_skills_dir())
     return {"loaded": count}
+
+
+class RunIn(BaseModel):
+    input: str = ""
+
+
+def _run_context(session: Session, user_input: str = "") -> dict:
+    """Build the library context handed to a tool skill (JSON via temp file)."""
+    papers = session.exec(select(Paper).where(Paper.is_deleted == False)).all()  # noqa: E712
+    concepts = session.exec(select(Concept)).all()
+    return {
+        "library": {"papers": len(papers), "concepts": len(concepts)},
+        "papers": [
+            {
+                "id": p.id,
+                "title": p.title,
+                "year": p.year,
+                "abstract": (p.abstract or "")[:500],
+            }
+            for p in papers[:50]
+        ],
+        "input": user_input,
+    }
+
+
+@router.post("/skills/{sid}/run")
+def run_skill(sid: int, body: RunIn, session: Session = Depends(get_session)) -> dict:
+    """Execute a tool-type skill in the sandbox and return its output.
+
+    Only ``tool`` skills are runnable; their body is Python executed in an
+    isolated subprocess (see app.skills.sandbox). The library context is
+    pre-loaded into ``library``/``papers``/``user_input`` globals; anything the
+    skill prints becomes ``stdout``.
+    """
+    s = session.get(Skill, sid)
+    if s is None:
+        raise HTTPException(404, "skill not found")
+    if s.type != "tool":
+        raise HTTPException(400, "only tool-type skills are runnable")
+    if not (s.body or "").strip():
+        raise HTTPException(400, "skill has no code body")
+
+    from app.skills.sandbox import run_tool
+
+    result = run_tool(s.body, _run_context(session, body.input))
+    return result.to_dict()

@@ -176,6 +176,11 @@ export const api = {
     req("/skills", { method: "POST", body: JSON.stringify(body) }),
   deleteSkill: (id: number) => req(`/skills/${id}`, { method: "DELETE" }),
   reloadSkills: () => req<{ loaded: number }>("/skills/reload", { method: "POST" }),
+  runSkill: (id: number, input = "") =>
+    req<{ ok: boolean; stdout: string; stderr: string; exit_code: number; duration_ms: number }>(
+      `/skills/${id}/run`,
+      { method: "POST", body: JSON.stringify({ input }) },
+    ),
   // suggestions
   listSuggestions: (status?: string) =>
     req<Suggestion[]>(`/suggestions${status ? `?status=${status}` : ""}`),
