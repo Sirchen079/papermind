@@ -10,6 +10,7 @@ export default function Library() {
   const [selected, setSelected] = useState<Paper | null>(null);
   const [related, setRelated] = useState<RelatedPaper[] | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
+  const [relatedError, setRelatedError] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -62,10 +63,12 @@ export default function Library() {
 
   async function findRelated(id: number) {
     setRelatedLoading(true);
+    setRelatedError(false);
     try {
       setRelated(await api.relatedPapers(id));
     } catch {
-      setRelated([]);
+      setRelated(null);
+      setRelatedError(true);
     } finally {
       setRelatedLoading(false);
     }
@@ -181,7 +184,12 @@ export default function Library() {
               <p className="mb-2 text-xs" style={{ color: "var(--faint)" }}>
                 Discovery via OpenAlex — searches outside your library. Network errors degrade to an empty list.
               </p>
-              {related !== null && related.length === 0 && !relatedLoading && (
+              {relatedError && !relatedLoading && (
+                <p className="text-sm" style={{ color: "var(--danger)" }}>
+                  Discovery failed (network/API error). Try again.
+                </p>
+              )}
+              {related !== null && related.length === 0 && !relatedLoading && !relatedError && (
                 <p className="text-sm" style={{ color: "var(--faint)" }}>
                   No related works found.
                 </p>

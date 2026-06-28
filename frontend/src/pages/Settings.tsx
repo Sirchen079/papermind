@@ -19,8 +19,12 @@ export default function Settings() {
   const [err, setErr] = useState<string | null>(null);
 
   async function load() {
-    setProviders(await api.listProviders());
-    setUsage(await api.usage());
+    try {
+      setProviders(await api.listProviders());
+      setUsage(await api.usage());
+    } catch (e: any) {
+      setErr(e.message);
+    }
   }
   useEffect(() => {
     load();

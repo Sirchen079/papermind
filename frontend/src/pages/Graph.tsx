@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import cytoscape, { type Core } from "cytoscape";
 import { api, type GraphData } from "../api";
+import type { Theme } from "../theme";
 
 function cssVar(name: string): string {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-export default function Graph() {
+export default function Graph({ theme }: { theme: Theme }) {
   const [kind, setKind] = useState<"paper" | "concept">("paper");
   const [minPapers, setMinPapers] = useState(1);
   const [data, setData] = useState<GraphData | null>(null);
@@ -61,7 +62,7 @@ export default function Graph() {
       cyRef.current?.destroy();
       cyRef.current = null;
     };
-  }, [data, kind]);
+  }, [data, kind, theme]);
 
   const nodeCount = data?.nodes.length ?? 0;
   const edgeCount = data?.edges.length ?? 0;
@@ -109,11 +110,21 @@ export default function Graph() {
           {error}
         </div>
       )}
-      <div
-        ref={containerRef}
-        className="h-[640px] rounded-xl border"
-        style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
-      />
+      <div className="relative">
+        <div
+          ref={containerRef}
+          className="h-[640px] rounded-xl border"
+          style={{ backgroundColor: "var(--surface)", borderColor: "var(--border)" }}
+        />
+        {data && nodeCount === 0 && !error && (
+          <div
+            className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm"
+            style={{ color: "var(--faint)" }}
+          >
+            No graph data yet — ingest papers to build the network.
+          </div>
+        )}
+      </div>
     </div>
   );
 }

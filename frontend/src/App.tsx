@@ -6,7 +6,7 @@ import Skills from "./pages/Skills";
 import Settings from "./pages/Settings";
 import Suggestions from "./pages/Suggestions";
 import { api } from "./api";
-import { useTheme } from "./theme";
+import { useTheme, type Theme } from "./theme";
 
 interface NavItem {
   key: string;
@@ -24,8 +24,7 @@ const NAV: NavItem[] = [
   { key: "settings", label: "Settings", icon: "⚙", hint: "Providers & models" },
 ];
 
-function ThemeToggle() {
-  const { theme, toggle } = useTheme();
+function ThemeToggle({ theme, toggle }: { theme: Theme; toggle: () => void }) {
   return (
     <button
       onClick={toggle}
@@ -42,6 +41,7 @@ function ThemeToggle() {
 export default function App() {
   const [page, setPage] = useState("library");
   const [newCount, setNewCount] = useState(0);
+  const { theme, toggle } = useTheme();
   const active = NAV.find((n) => n.key === page);
 
   useEffect(() => {
@@ -124,7 +124,7 @@ export default function App() {
         </nav>
 
         <div className="mt-4 space-y-2">
-          <ThemeToggle />
+          <ThemeToggle theme={theme} toggle={toggle} />
           <div className="px-2 pt-1 text-[11px]" style={{ color: "var(--faint)" }}>
             Local · single-user · v0.1
           </div>
@@ -149,7 +149,7 @@ export default function App() {
         <div className="p-8">
           {page === "library" && <Library />}
           {page === "suggestions" && <Suggestions />}
-          {page === "graph" && <Graph />}
+          {page === "graph" && <Graph theme={theme} />}
           {page === "chat" && <Chat />}
           {page === "skills" && <Skills />}
           {page === "settings" && <Settings />}

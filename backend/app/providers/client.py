@@ -53,6 +53,32 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _responses_text(resp: Any) -> str:
+    """Extract assistant text from a litellm Responses-API response.
+
+    ``output_text`` is the convenience property on LiteLLM's
+    ``ResponsesAPIResponse``, but it is not present in every version. Fall back
+    to walking ``output[*].content[*]`` so we never silently return empty text
+    (which would produce blank summaries / chat replies with no error).
+    """
+    text = getattr(resp, "output_text", None)
+    if text:
+        return text
+    parts: list[str] = []
+    for item in getattr(resp, "output", None) or []:
+        content = getattr(item, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                t = getattr(block, "text", None)
+                if not t and isinstance(block, dict):
+                    t = block.get("text")
+                if t:
+                    parts.append(t)
+        elif isinstance(content, str) and content:
+            parts.append(content)
+    return "".join(parts)
+
+
 class ProviderClient:
     """Unified LLM access over LiteLLM, with per-call token recording.
 
@@ -91,7 +117,7 @@ class ProviderClient:
             # OpenAI Responses API. Detail/validation lands in P2; this branch
             # is best-effort for P0a's abstraction.
             resp = litellm.responses(**kwargs)
-            content = getattr(resp, "output_text", None) or ""
+            content = _responses_text(resp)
             usage = getattr(resp, "usage", None)
         else:
             resp = litellm.completion(**kwargs)
@@ -137,7 +163,12 @@ class ProviderClient:
             return
 
         kwargs["stream"] = True
-        kwargs["stream_usage"] = True
+        # stream_usage is an OpenAI extension; conservative openai_compat
+        # gateways (DeepSeek/智谱/Moonshot self-host, etc.) may 400 on the
+        # unknown param, so only request it for first-party routes. Usage is
+        # estimated below when a provider doesn't report it in-stream.
+        if provider.type != "openai_compat":
+            kwargs["stream_usage"] = True
 
         collected: list[str] = []
         prompt_t = completion_t = total_t = 0

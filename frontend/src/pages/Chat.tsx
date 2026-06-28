@@ -36,15 +36,23 @@ export default function Chat() {
   }, [messages]);
 
   async function openConv(id: number) {
-    setActive(id);
-    const c = await api.getConversation(id);
-    setMessages(c.messages);
+    try {
+      setActive(id);
+      const c = await api.getConversation(id);
+      setMessages(c.messages);
+    } catch (e: any) {
+      setError(e.message);
+    }
   }
 
   async function newConv() {
-    const c = await api.createConversation();
-    await loadConvs();
-    await openConv(c.id);
+    try {
+      const c = await api.createConversation();
+      await loadConvs();
+      await openConv(c.id);
+    } catch (e: any) {
+      setError(e.message);
+    }
   }
 
   async function send() {
