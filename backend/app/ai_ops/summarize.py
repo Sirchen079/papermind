@@ -1,13 +1,13 @@
 import json
 
-_SUMMARY_PROMPT = """You are a research-paper analyst. Summarize the paper below as a JSON object with exactly these keys, each a concise string:
+_SUMMARY_PROMPT = """你是一名科研论文分析专家。请将下面的论文总结为一个 JSON 对象，恰好包含以下键，每个值都是简洁的简体中文字符串：
 {{"problem": "...", "method": "...", "dataset": "...", "results": "...", "limitations": "..."}}
-If a field is not applicable, use "n/a". Return ONLY the JSON object (no prose, no markdown fences).
+若某字段不适用，填 "不适用"。仅返回 JSON 对象本身（不要任何解释文字，不要 markdown 代码块标记）。
 
-Title: {title}
-Abstract: {abstract}
+标题：{title}
+摘要：{abstract}
 
-Full text (truncated):
+全文（已截断）：
 {text}"""
 
 

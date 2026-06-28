@@ -19,10 +19,8 @@ _RESERVE = 4000
 DEFAULT_CONTEXT_WINDOW = 16000
 
 _SUMMARIZE_PROMPT = (
-    "Summarize the research conversation below. Preserve: every paper title and "
-    "id mentioned, key findings, comparisons, and any conclusions the user or "
-    "assistant reached. Be concise (a few sentences / short bullets). Do not "
-    "invent details.\n\nConversation:\n"
+    "请用简体中文总结下面的科研对话。需要保留：提到的每一篇论文标题与 id、关键结论、"
+    "对比要点，以及用户或助手达成的任何结论。力求简洁（几句话或简短要点）。不要编造细节。\n\n对话：\n"
 )
 
 

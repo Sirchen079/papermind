@@ -84,14 +84,13 @@ def _system_prompt(
     concepts = session.exec(select(Concept)).all()
     concept_names = ", ".join(c.name for c in concepts[:30])
     base = (
-        "You are a research assistant with direct access to the user's paper library "
-        "through tools: search_library (find papers by keyword), get_paper (metadata + "
-        "summary + concepts), get_paper_full_text (close-read a paper), list_concepts, "
-        "and find_related. USE the tools to ground your answers in the actual papers — "
-        "search before you summarize, read a paper before you critique it, don't guess. "
-        "When you cite a paper, use its title. Be concise and specific.\n\n"
-        f"The library has {len(papers)} paper(s). "
-        f"Known concepts: {concept_names or '(none yet)'}."
+        "你是一名科研助手，可以通过工具直接访问用户的论文库：search_library（按关键词检索论文）、"
+        "get_paper（元数据 + 摘要 + 概念）、get_paper_full_text（精读某篇论文全文）、list_concepts、"
+        "以及 find_related。**务必使用工具**让回答建立在论文库的真实内容之上——先检索再总结，"
+        "先读论文再点评，不要凭空猜测。引用论文时使用其标题。回答简洁、具体。\n\n"
+        "**始终用简体中文回答**，无论论文本身是何种语言；论文标题、专有名词、术语可保留原文。\n\n"
+        f"当前论文库共有 {len(papers)} 篇论文。"
+        f"已知概念：{concept_names or '（暂无）'}。"
     )
 
     if hits:

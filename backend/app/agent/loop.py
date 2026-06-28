@@ -100,4 +100,4 @@ def run_agent(
         return
 
     # Exhausted the step budget without a plain answer.
-    yield ("done", {"content": "I reached my tool-call step limit without finishing — could you rephrase or narrow the question?", "tokens": tokens_used})
+    yield ("done", {"content": "我已经达到本轮工具调用的步数上限，但未能给出最终回答——能否换个说法或缩小问题范围？", "tokens": tokens_used})

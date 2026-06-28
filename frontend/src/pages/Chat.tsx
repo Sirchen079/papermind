@@ -261,7 +261,7 @@ export default function Chat({
       <aside className="card-tight flex w-56 shrink-0 flex-col overflow-hidden p-0">
         <div className="p-3" style={{ borderBottom: "1px solid var(--border)" }}>
           <button onClick={newConv} className="btn-primary w-full">
-            + New conversation
+            + 新建对话
           </button>
         </div>
         <div className="flex-1 space-y-1 overflow-auto p-2">
@@ -270,7 +270,7 @@ export default function Chat({
               className="px-2 py-4 text-center text-xs"
               style={{ color: "var(--faint)" }}
             >
-              No conversations yet.
+              还没有对话。
             </p>
           )}
           {convs.map((c) => {
@@ -311,7 +311,7 @@ export default function Chat({
                     }
                     title={c.title}
                   >
-                    {c.title || "Untitled"}
+                    {c.title || "未命名"}
                   </button>
                 )}
                 {!isEditing && (
@@ -320,7 +320,7 @@ export default function Chat({
                       onClick={() => startRename(c)}
                       className="px-1 text-xs"
                       style={{ color: "var(--faint)" }}
-                      title="Rename"
+                      title="重命名"
                     >
                       ✎
                     </button>
@@ -328,7 +328,7 @@ export default function Chat({
                       onClick={() => delConv(c.id)}
                       className="px-1 text-xs"
                       style={{ color: "var(--faint)" }}
-                      title="Delete"
+                      title="删除"
                     >
                       ✕
                     </button>
@@ -346,7 +346,7 @@ export default function Chat({
             className="flex flex-1 items-center justify-center"
             style={{ color: "var(--faint)" }}
           >
-            Start a new conversation
+            开始一个新对话
           </div>
         ) : (
           <>
@@ -373,7 +373,7 @@ export default function Chat({
                   >
                     {m.tools?.map((t, i) => (
                       <details key={i} className="tool-card">
-                        <summary title={t.ok ? "tool ran" : "tool failed"}>
+                        <summary title={t.ok ? "工具执行成功" : "工具执行失败"}>
                           <span>{t.ok ? "🔧" : "⚠️"}</span>
                           <code>
                             {t.name}
@@ -399,11 +399,11 @@ export default function Chat({
                         </div>
                       ) : busy ? (
                         <span className="text-sm" style={{ color: "var(--faint)" }}>
-                          thinking…
+                          思考中…
                         </span>
                       ) : m.stopped ? (
                         <span className="text-sm italic" style={{ color: "var(--faint)" }}>
-                          (stopped)
+                          （已停止）
                         </span>
                       ) : null
                     ) : (
@@ -424,9 +424,9 @@ export default function Chat({
                               color: copiedId === m.id ? "var(--success)" : "var(--faint)",
                               backgroundColor: "var(--surface-2)",
                             }}
-                            title="Copy"
+                            title="复制"
                           >
-                            {copiedId === m.id ? "✓ copied" : "📋 copy"}
+                            {copiedId === m.id ? "✓ 已复制" : "📋 复制"}
                           </button>
                         )}
                         {m.sources?.map((s) => (
@@ -463,7 +463,7 @@ export default function Chat({
                 ref={taRef}
                 className="input resize-none"
                 rows={1}
-                placeholder="Ask about your library…  (Enter to send · Shift+Enter for newline)"
+                placeholder="向你的论文库提问…（回车发送 · Shift+回车换行）"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -477,9 +477,9 @@ export default function Chat({
                 <button
                   onClick={stop}
                   className="btn-ghost shrink-0 px-5"
-                  title="Stop generating"
+                  title="停止生成"
                 >
-                  ■ Stop
+                  ■ 停止
                 </button>
               ) : (
                 <button
@@ -487,7 +487,7 @@ export default function Chat({
                   disabled={!input.trim()}
                   className="btn-primary shrink-0 px-5"
                 >
-                  Send
+                  发送
                 </button>
               )}
             </div>

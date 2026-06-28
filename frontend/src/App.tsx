@@ -19,12 +19,12 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { key: "library", label: "Library", icon: "📚", hint: "Papers & ingestion" },
-  { key: "suggestions", label: "Suggestions", icon: "✦", hint: "Proactive connections" },
-  { key: "graph", label: "Graph", icon: "🕸", hint: "Knowledge networks" },
-  { key: "chat", label: "Chat", icon: "💬", hint: "Research conversation" },
-  { key: "skills", label: "Skills", icon: "⚡", hint: "Custom capabilities" },
-  { key: "settings", label: "Settings", icon: "⚙", hint: "Providers & models" },
+  { key: "library", label: "论文库", icon: "📚", hint: "论文与入库" },
+  { key: "suggestions", label: "建议", icon: "✦", hint: "主动关联" },
+  { key: "graph", label: "图谱", icon: "🕸", hint: "知识网络" },
+  { key: "chat", label: "对话", icon: "💬", hint: "科研对话" },
+  { key: "skills", label: "技能", icon: "⚡", hint: "自定义能力" },
+  { key: "settings", label: "设置", icon: "⚙", hint: "模型与提供商" },
 ];
 
 function ThemeToggle({ theme, toggle }: { theme: Theme; toggle: () => void }) {
@@ -32,11 +32,11 @@ function ThemeToggle({ theme, toggle }: { theme: Theme; toggle: () => void }) {
     <button
       onClick={toggle}
       className="btn-ghost w-full justify-start"
-      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      aria-label="Toggle theme"
+      title={`切换到${theme === "dark" ? "浅色" : "深色"}模式`}
+      aria-label="切换主题"
     >
       <span className="text-base leading-none">{theme === "dark" ? "☀" : "☾"}</span>
-      <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+      <span>{theme === "dark" ? "浅色模式" : "深色模式"}</span>
     </button>
   );
 }
@@ -83,13 +83,13 @@ export default function App() {
           <div>
             <div className="text-base font-bold leading-tight tracking-tight">PaperMind</div>
             <div className="text-[11px]" style={{ color: "var(--faint)" }}>
-              AI research workspace
+              AI 科研工作台
             </div>
           </div>
         </div>
 
         <nav className="flex-1 space-y-1">
-          <div className="label px-2">Navigate</div>
+          <div className="label px-2">导航</div>
           {NAV.map((item) => {
             const isActive = page === item.key;
             return (
@@ -138,7 +138,7 @@ export default function App() {
         <div className="mt-4 space-y-2">
           <ThemeToggle theme={theme} toggle={toggle} />
           <div className="px-2 pt-1 text-[11px]" style={{ color: "var(--faint)" }}>
-            Local · single-user · v0.1
+            本地 · 单用户 · v0.1
           </div>
         </div>
       </aside>
@@ -165,7 +165,7 @@ export default function App() {
                 className="flex h-64 items-center justify-center text-sm"
                 style={{ color: "var(--faint)" }}
               >
-                Loading…
+                加载中…
               </div>
             }
           >

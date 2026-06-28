@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { api, Suggestion } from "../api";
 
+// 过滤值是后端状态标识，不能改；这里只做中文展示。
+const FILTER_LABELS: Record<string, string> = {
+  new: "新",
+  all: "全部",
+  accepted: "已采纳",
+  dismissed: "已忽略",
+};
+
 export default function Suggestions({ onOpenPaper }: { onOpenPaper: (id: number) => void }) {
   const [items, setItems] = useState<Suggestion[]>([]);
   const [filter, setFilter] = useState<"new" | "all" | "accepted" | "dismissed">("new");
@@ -25,7 +33,7 @@ export default function Suggestions({ onOpenPaper }: { onOpenPaper: (id: number)
     setErr(null);
     try {
       const r = await api.generateSuggestions();
-      setMsg(r.created > 0 ? `${r.created} new suggestion(s) found.` : "Library is up to date.");
+      setMsg(r.created > 0 ? `找到 ${r.created} 条新建议。` : "论文库已是最新。");
       await load();
     } catch (e: any) {
       setErr(e.message);
@@ -53,26 +61,25 @@ export default function Suggestions({ onOpenPaper }: { onOpenPaper: (id: number)
               <button
                 key={f}
                 onClick={() => setFilter(f)}
-                className="px-3 py-1.5 text-sm capitalize transition-colors"
+                className="px-3 py-1.5 text-sm transition-colors"
                 style={
                   isActive
                     ? { backgroundColor: "var(--accent)", color: "var(--accent-contrast)" }
                     : { backgroundColor: "var(--surface)", color: "var(--muted)" }
                 }
               >
-                {f}
+                {FILTER_LABELS[f] ?? f}
               </button>
             );
           })}
         </div>
         <button onClick={scan} disabled={scanning} className="btn-primary">
-          {scanning ? "Scanning…" : "↻ Scan library"}
+          {scanning ? "扫描中…" : "↻ 扫描论文库"}
         </button>
       </div>
 
       <p className="text-sm" style={{ color: "var(--muted)" }}>
-        Connections the agent surfaces from your concept graph — papers that share themes, and concepts
-        that span much of your library.
+        Agent 从你的概念图谱中主动发现的关系——主题相关的论文，以及横跨多篇论文的核心概念。
       </p>
 
       {msg && (
@@ -96,8 +103,8 @@ export default function Suggestions({ onOpenPaper }: { onOpenPaper: (id: number)
         {items.length === 0 && (
           <div className="card text-center text-sm" style={{ color: "var(--muted)" }}>
             {filter === "new"
-              ? "No new suggestions. Ingest papers with a provider configured, or scan the library."
-              : `No ${filter} suggestions.`}
+              ? "暂无新建议。请配置提供商后导入论文，或扫描论文库。"
+              : `没有「${FILTER_LABELS[filter] ?? filter}」建议。`}
           </div>
         )}
         {items.map((s) => (
@@ -112,30 +119,30 @@ export default function Suggestions({ onOpenPaper }: { onOpenPaper: (id: number)
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">{s.title}</span>
-                  <span className="chip">{s.kind === "concept_hub" ? "theme" : "link"}</span>
+                  <span className="chip">{s.kind === "concept_hub" ? "主题" : "关联"}</span>
                   {s.status !== "new" && (
-                    <span className="text-xs capitalize" style={{ color: "var(--faint)" }}>
-                      {s.status}
+                    <span className="text-xs" style={{ color: "var(--faint)" }}>
+                      {FILTER_LABELS[s.status] ?? s.status}
                     </span>
                   )}
                 </div>
                 <div className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
                   {s.kind === "concept_link" && s.detail.shared_concepts && (
                     <span>
-                      Shares {s.detail.count} concept(s): {s.detail.shared_concepts.join(", ")}
+                      共享 {s.detail.count} 个概念：{s.detail.shared_concepts.join("、")}
                     </span>
                   )}
                   {s.kind === "concept_hub" && (
-                    <span>Appears across {s.detail.papers} paper(s) in your library.</span>
+                    <span>出现在你论文库中的 {s.detail.papers} 篇论文里。</span>
                   )}
                 </div>
                 {s.status === "new" && (
                   <div className="mt-2 flex gap-2">
                     <button onClick={() => act(s.id, "accepted")} className="btn-primary py-1 text-xs">
-                      Useful
+                      有用
                     </button>
                     <button onClick={() => act(s.id, "dismissed")} className="btn-ghost py-1 text-xs">
-                      Dismiss
+                      忽略
                     </button>
                   </div>
                 )}

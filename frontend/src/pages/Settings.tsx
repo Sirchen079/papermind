@@ -12,7 +12,7 @@ function UsageBars({ data }: { data: { day: string; tokens: number }[] }) {
   const gap = data.length > 1 ? 0.4 : 0;
   const bw = (W - gap * (data.length - 1)) / data.length;
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="h-20 w-full" preserveAspectRatio="none" role="img" aria-label="daily token usage">
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-20 w-full" preserveAspectRatio="none" role="img" aria-label="每日 token 用量">
       {data.map((d, i) => {
         const bh = (d.tokens / max) * H;
         const x = i * (bw + gap);
@@ -77,7 +77,7 @@ export default function Settings() {
       if (form.base_url) body.base_url = form.base_url;
       if (form.api_key) body.api_key = form.api_key;
       const p = await api.createProvider(body);
-      setMsg(`Added provider "${p.name}".`);
+      setMsg(`已添加提供商「${p.name}」。`);
       setForm({ name: "", type: "openai_chat", base_url: "", api_key: "" });
       await load();
     } catch (e: any) {
@@ -90,7 +90,7 @@ export default function Settings() {
     try {
       const r = await api.refreshModels(id);
       setModels({ ...models, [id]: await api.providerModels(id) });
-      setMsg(`Fetched ${r.count} models.`);
+      setMsg(`已获取 ${r.count} 个模型。`);
     } catch (e: any) {
       setErr(e.message);
     }
@@ -130,7 +130,7 @@ export default function Settings() {
     try {
       await api.patchProvider(id, body);
       setEditing(null);
-      setMsg("Provider updated.");
+      setMsg("提供商已更新。");
       await load();
     } catch (e: any) {
       setErr(e.message);
@@ -162,7 +162,7 @@ export default function Settings() {
     try {
       const r = await api.reindexLibrary();
       setIndexMsg(
-        r.chunks > 0 ? `${r.chunks} chunk(s) indexed.` : "No embedding model configured.",
+        r.chunks > 0 ? `已索引 ${r.chunks} 个片段。` : "未配置 embedding 模型。",
       );
     } catch (e: any) {
       setErr(e.message);
@@ -191,11 +191,11 @@ export default function Settings() {
       )}
 
       <section className="card">
-        <h3 className="mb-3 font-semibold">Add LLM provider</h3>
+        <h3 className="mb-3 font-semibold">添加 LLM 提供商</h3>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <input
             className="input"
-            placeholder="name"
+            placeholder="名称"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
@@ -206,28 +206,28 @@ export default function Settings() {
           </select>
           <input
             className="input"
-            placeholder="base_url (required for openai_compat)"
+            placeholder="base_url（openai_compat 必填）"
             value={form.base_url}
             onChange={(e) => setForm({ ...form, base_url: e.target.value })}
           />
           <input
             className="input"
             type="password"
-            placeholder="api_key (encrypted at rest)"
+            placeholder="api_key（落盘加密）"
             value={form.api_key}
             onChange={(e) => setForm({ ...form, api_key: e.target.value })}
           />
         </div>
         <button onClick={add} className="btn-primary mt-3">
-          Add provider
+          添加提供商
         </button>
       </section>
 
       <section className="card">
-        <h3 className="mb-3 font-semibold">Providers &amp; models</h3>
+        <h3 className="mb-3 font-semibold">提供商与模型</h3>
         {providers.length === 0 && (
           <p className="text-sm" style={{ color: "var(--muted)" }}>
-            No providers yet.
+            还没有提供商。
           </p>
         )}
         <div className="space-y-3">
@@ -240,24 +240,24 @@ export default function Settings() {
                   className="text-xs"
                   style={{ color: p.enabled ? "var(--success)" : "var(--faint)" }}
                 >
-                  {p.enabled ? "enabled" : "disabled"}
+                  {p.enabled ? "已启用" : "已禁用"}
                 </span>
                 <div className="ml-auto flex items-center gap-1">
                   <button onClick={() => refresh(p.id)} className="btn-ghost py-1">
-                    Refresh models
+                    刷新模型
                   </button>
                   <button onClick={() => toggleProvider(p)} className="btn-ghost py-1">
-                    {p.enabled ? "Disable" : "Enable"}
+                    {p.enabled ? "禁用" : "启用"}
                   </button>
                   <button onClick={() => startEdit(p)} className="btn-ghost py-1">
-                    Edit
+                    编辑
                   </button>
                   <button
                     onClick={() => removeProvider(p.id)}
                     className="btn-ghost py-1"
                     style={{ color: "var(--danger)" }}
                   >
-                    Delete
+                    删除
                   </button>
                 </div>
               </div>
@@ -265,7 +265,7 @@ export default function Settings() {
                 <div className="mb-2 grid grid-cols-1 gap-2 rounded-lg p-2 md:grid-cols-2" style={{ backgroundColor: "var(--surface-2)" }}>
                   <input
                     className="input py-1 text-sm"
-                    placeholder="name"
+                    placeholder="名称"
                     value={editForm.name}
                     onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
                   />
@@ -278,16 +278,16 @@ export default function Settings() {
                   <input
                     className="input py-1 text-sm md:col-span-2"
                     type="password"
-                    placeholder="rotate api key (leave blank to keep)"
+                    placeholder="轮换 api key（留空则不修改）"
                     value={editForm.api_key}
                     onChange={(e) => setEditForm({ ...editForm, api_key: e.target.value })}
                   />
                   <div className="md:col-span-2 flex gap-2">
                     <button onClick={() => saveEdit(p.id)} className="btn-primary py-1 text-sm">
-                      Save
+                      保存
                     </button>
                     <button onClick={() => setEditing(null)} className="btn-ghost py-1 text-sm">
-                      Cancel
+                      取消
                     </button>
                   </div>
                 </div>
@@ -301,7 +301,7 @@ export default function Settings() {
                       value={m.role_default ?? ""}
                       onChange={(e) => setRole(p.id, m.id, e.target.value)}
                     >
-                      <option value="">— role —</option>
+                      <option value="">— 角色 —</option>
                       {ROLES.map((r) => (
                         <option key={r}>{r}</option>
                       ))}
@@ -310,14 +310,14 @@ export default function Settings() {
                 ))}
                 {p.id in models && models[p.id].length === 0 && (
                   <p className="text-xs" style={{ color: "var(--faint)" }}>
-                    No models. Click “Refresh models” or add one manually below.
+                    暂无模型。点击「刷新模型」，或在下方手动添加。
                   </p>
                 )}
               </div>
               <div className="mt-2 flex items-center gap-2">
                 <input
                   className="input flex-1 py-1 text-xs"
-                  placeholder="add model by id (e.g. gpt-4o, llama3:8b)"
+                  placeholder="按 id 添加模型（如 gpt-4o、llama3:8b）"
                   value={newModel[p.id]?.model_id ?? ""}
                   onChange={(e) =>
                     setNewModel({
@@ -337,13 +337,13 @@ export default function Settings() {
                     })
                   }
                 >
-                  <option value="">— role —</option>
+                  <option value="">— 角色 —</option>
                   {ROLES.map((r) => (
                     <option key={r}>{r}</option>
                   ))}
                 </select>
                 <button onClick={() => addManualModel(p.id)} className="btn-ghost py-1 text-xs">
-                  Add
+                  添加
                 </button>
               </div>
             </div>
@@ -352,15 +352,14 @@ export default function Settings() {
       </section>
 
       <section className="card">
-        <h3 className="mb-1 font-semibold">Retrieval (RAG)</h3>
+        <h3 className="mb-1 font-semibold">检索（RAG）</h3>
         <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
-          Assign a dedicated model the <span className="chip">embedding</span> role above so chat can
-          answer from your papers' full text. Any OpenAI-compatible embeddings endpoint works — e.g.
-          a free SiliconFlow <code>bge</code> model via an{" "}
-          <code>openai_compat</code> provider. Then index the library.
+          在上方为某个模型分配 <span className="chip">embedding</span> 角色，让对话能基于论文全文作答。
+          任何 OpenAI 兼容的 embeddings 端点都行——例如通过{" "}
+          <code>openai_compat</code> 提供商接入硅基流动的免费 <code>bge</code> 模型。配置后为论文库建立索引。
         </p>
         <button onClick={reindex} disabled={indexing} className="btn-primary">
-          {indexing ? "Indexing…" : "Re-index library"}
+          {indexing ? "索引中…" : "重建索引"}
         </button>
         {indexMsg && (
           <span className="ml-3 text-sm" style={{ color: "var(--muted)" }}>
@@ -371,17 +370,17 @@ export default function Settings() {
 
       {usage && (
         <section className="card">
-          <h3 className="mb-3 font-semibold">Token usage (30d)</h3>
+          <h3 className="mb-3 font-semibold">Token 用量（近 30 天）</h3>
           <div className="mb-3 text-2xl font-bold">{usage.total_tokens.toLocaleString()} tokens</div>
           {usage.by_day.length > 0 && (
             <div className="mb-4">
-              <div className="label">Daily usage</div>
+              <div className="label">每日用量</div>
               <UsageBars data={usage.by_day} />
             </div>
           )}
           <div className="grid grid-cols-2 gap-6 text-sm">
             <div>
-              <div className="label">By kind</div>
+              <div className="label">按类型</div>
               {Object.entries(usage.by_kind).map(([k, v]) => (
                 <div key={k} className="flex justify-between">
                   <span style={{ color: "var(--muted)" }}>{k}</span>
@@ -393,7 +392,7 @@ export default function Settings() {
               )}
             </div>
             <div>
-              <div className="label">By model</div>
+              <div className="label">按模型</div>
               {Object.entries(usage.by_model).map(([k, v]) => (
                 <div key={k} className="flex justify-between">
                   <span className="font-mono" style={{ color: "var(--muted)" }}>

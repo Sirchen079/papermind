@@ -1,12 +1,12 @@
 import json
 
-_EXTRACT_PROMPT = """You are a research-paper analyst. Extract 3-8 key concepts (methods, datasets, problems, or domains) from the paper below.
-Return ONLY a JSON array of objects, each with keys "name" (short canonical name), "type" (one of: method, dataset, problem, domain), and "evidence" (a short phrase from the paper). No prose, no markdown fences.
+_EXTRACT_PROMPT = """你是一名科研论文分析专家。请从下面的论文中抽取 3-8 个关键概念（方法、数据集、问题或领域）。
+仅返回一个 JSON 数组，每个对象包含键 "name"（简短的规范中文名称）、"type"（取值之一：method, dataset, problem, domain）、"evidence"（论文中能体现该概念的简短中文短语）。不要任何解释文字，不要 markdown 代码块标记。
 
-Title: {title}
-Abstract: {abstract}
+标题：{title}
+摘要：{abstract}
 
-Full text (truncated):
+全文（已截断）：
 {text}"""
 
 

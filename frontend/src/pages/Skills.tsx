@@ -62,7 +62,7 @@ export default function Skills() {
   async function reload() {
     try {
       const r = await api.reloadSkills();
-      setMsg(`Loaded ${r.loaded} skill(s) from user_skills/.`);
+      setMsg(`已从 user_skills/ 加载 ${r.loaded} 个技能。`);
       await load();
     } catch (e: any) {
       setErr(e.message);
@@ -91,10 +91,10 @@ export default function Skills() {
     <div className="max-w-3xl space-y-6">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm" style={{ color: "var(--muted)" }}>
-          Declarative capabilities injected into the assistant.
+          注入到助手中的声明式能力。
         </p>
         <button onClick={reload} className="btn-ghost">
-          ↻ Reload from folder
+          ↻ 从文件夹重新加载
         </button>
       </div>
       {msg && (
@@ -115,11 +115,11 @@ export default function Skills() {
       )}
 
       <section className="card">
-        <h3 className="mb-3 font-semibold">New skill</h3>
+        <h3 className="mb-3 font-semibold">新建技能</h3>
         <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-3">
           <input
             className="input"
-            placeholder="name"
+            placeholder="名称"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
           />
@@ -135,7 +135,7 @@ export default function Skills() {
           </select>
           <input
             className="input md:col-span-3"
-            placeholder="keywords for keyword trigger (comma-separated, e.g. review, critique)"
+            placeholder="keyword 触发的关键词（逗号分隔，如 review, critique）"
             value={form.keywords}
             onChange={(e) => setForm({ ...form, keywords: e.target.value })}
           />
@@ -144,21 +144,21 @@ export default function Skills() {
           className="input h-28 resize-none font-mono"
           placeholder={
             form.type === "tool"
-              ? "Python code — library/papers/user_input are pre-loaded; print() to return results"
-              : "skill instructions (markdown)…"
+              ? "Python 代码——library/papers/user_input 已预加载；用 print() 返回结果"
+              : "技能指令（markdown）…"
           }
           value={form.body}
           onChange={(e) => setForm({ ...form, body: e.target.value })}
         />
         <button onClick={add} className="btn-primary mt-3">
-          Save skill
+          保存技能
         </button>
       </section>
 
       <section className="space-y-2">
         {skills.length === 0 && (
           <div className="card text-center text-sm" style={{ color: "var(--muted)" }}>
-            No skills yet.
+            还没有技能。
           </div>
         )}
         {skills.map((s) => (
@@ -183,11 +183,11 @@ export default function Skills() {
                   disabled={runningId === s.id}
                   className="btn-subtle px-2 text-sm"
                 >
-                  {runningId === s.id ? "running…" : "run"}
+                  {runningId === s.id ? "运行中…" : "运行"}
                 </button>
               )}
               <button onClick={() => remove(s.id)} className="btn-subtle px-2 text-sm" style={{ color: "var(--danger)" }}>
-                delete
+                删除
               </button>
             </div>
             {s.description && (
@@ -211,7 +211,7 @@ export default function Skills() {
               >
                 <div className="mb-1 flex items-center gap-2" style={{ color: "var(--faint)" }}>
                   <span>
-                    {results[s.id].ok ? "✓ exited 0" : `✕ exit ${results[s.id].exit_code}`}
+                    {results[s.id].ok ? "✓ 正常退出" : `✕ 退出码 ${results[s.id].exit_code}`}
                   </span>
                   <span>· {results[s.id].duration_ms} ms</span>
                 </div>

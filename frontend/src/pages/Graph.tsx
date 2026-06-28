@@ -87,21 +87,21 @@ export default function Graph({
               <button
                 key={k}
                 onClick={() => setKind(k)}
-                className="px-3.5 py-1.5 text-sm capitalize transition-colors"
+                className="px-3.5 py-1.5 text-sm transition-colors"
                 style={
                   isActive
                     ? { backgroundColor: "var(--accent)", color: "var(--accent-contrast)" }
                     : { backgroundColor: "var(--surface)", color: "var(--muted)" }
                 }
               >
-                {k} graph
+                {k === "paper" ? "论文图谱" : "概念图谱"}
               </button>
             );
           })}
         </div>
         {kind === "concept" && (
           <label className="flex items-center gap-2 text-sm">
-            <span style={{ color: "var(--muted)" }}>min papers</span>
+            <span style={{ color: "var(--muted)" }}>最少论文数</span>
             <input
               type="number"
               min={1}
@@ -112,7 +112,7 @@ export default function Graph({
           </label>
         )}
         <span className="ml-auto text-sm" style={{ color: "var(--muted)" }}>
-          {nodeCount} nodes · {edgeCount} edges
+          {nodeCount} 个节点 · {edgeCount} 条边
         </span>
       </div>
       {error && (
@@ -131,7 +131,7 @@ export default function Graph({
             className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm"
             style={{ color: "var(--faint)" }}
           >
-            No graph data yet — ingest papers to build the network.
+            暂无图谱数据——导入论文以构建网络。
           </div>
         )}
       </div>

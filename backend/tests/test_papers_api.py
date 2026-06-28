@@ -206,10 +206,9 @@ def test_reanalyze_reruns_and_returns_summary_and_concepts(client):
     def fake_complete(provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
         calls["n"] += 1
         last = messages[-1].get("content") or ""
-        # The concept-extraction prompt asks for a "JSON array"; the summary
-        # prompt asks for a "JSON object" — branch on that (both prompts
-        # otherwise mention "problem").
-        is_concepts = "array" in last
+        # 概念抽取提示词要求返回「JSON 数组」，摘要提示词要求「JSON 对象」——据此区分
+        # （两个中文提示词里都可能出现「问题」一词，不能用它区分）。
+        is_concepts = "数组" in last
         return CompletionResult(
             content='[{"name":"reanalyzed-concept","type":"method"}]'
             if is_concepts
