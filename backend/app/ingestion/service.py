@@ -129,3 +129,11 @@ def _analyze(session: Session, paper: Paper, client, provider: Provider, model_i
     run.finished_at = utcnow()
     session.add(run)
     session.commit()
+
+    # Surface proactive connections now that the concept graph is updated.
+    try:
+        from app.knowledge.suggest import generate_for_paper
+
+        generate_for_paper(session, paper)
+    except Exception:  # noqa: BLE001 — suggestions are non-critical
+        pass

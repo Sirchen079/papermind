@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Library from "./pages/Library";
 import Graph from "./pages/Graph";
 import Chat from "./pages/Chat";
 import Skills from "./pages/Skills";
 import Settings from "./pages/Settings";
+import Suggestions from "./pages/Suggestions";
+import { api } from "./api";
 import { useTheme } from "./theme";
 
 interface NavItem {
@@ -15,6 +17,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { key: "library", label: "Library", icon: "📚", hint: "Papers & ingestion" },
+  { key: "suggestions", label: "Suggestions", icon: "✦", hint: "Proactive connections" },
   { key: "graph", label: "Graph", icon: "🕸", hint: "Knowledge networks" },
   { key: "chat", label: "Chat", icon: "💬", hint: "Research conversation" },
   { key: "skills", label: "Skills", icon: "⚡", hint: "Custom capabilities" },
@@ -38,7 +41,20 @@ function ThemeToggle() {
 
 export default function App() {
   const [page, setPage] = useState("library");
+  const [newCount, setNewCount] = useState(0);
   const active = NAV.find((n) => n.key === page);
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .listSuggestions("new")
+      .then((s) => alive && setNewCount(s.length))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [page]);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <aside
@@ -94,6 +110,14 @@ export default function App() {
                     {item.hint}
                   </span>
                 </span>
+                {item.key === "suggestions" && newCount > 0 && (
+                  <span
+                    className="ml-auto flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+                    style={{ backgroundColor: "var(--accent)", color: "var(--accent-contrast)" }}
+                  >
+                    {newCount}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -124,6 +148,7 @@ export default function App() {
         </header>
         <div className="p-8">
           {page === "library" && <Library />}
+          {page === "suggestions" && <Suggestions />}
           {page === "graph" && <Graph />}
           {page === "chat" && <Chat />}
           {page === "skills" && <Skills />}

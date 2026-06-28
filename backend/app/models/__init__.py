@@ -4,6 +4,7 @@ from app.models.paper import AnalysisRun, Paper, Summary
 from app.models.provider import Model, Provider
 from app.models.skill import Skill
 from app.models.setting import Setting
+from app.models.suggestion import Suggestion
 from app.models.usage import TokenUsage, TokenUsageDaily
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "Conversation",
     "Message",
     "Skill",
+    "Suggestion",
 ]

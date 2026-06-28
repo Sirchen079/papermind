@@ -81,6 +81,18 @@ export interface RelatedPaper {
   openalex_id: string | null;
 }
 
+export interface Suggestion {
+  id: number;
+  kind: string;
+  title: string;
+  detail: Record<string, any>;
+  status: "new" | "seen" | "dismissed" | "accepted";
+  weight: number;
+  created_at: string | null;
+  paper?: { id: number; title: string | null } | null;
+  related_paper?: { id: number; title: string | null } | null;
+}
+
 export interface Provider {
   id: number;
   name: string;
@@ -154,4 +166,10 @@ export const api = {
     req("/skills", { method: "POST", body: JSON.stringify(body) }),
   deleteSkill: (id: number) => req(`/skills/${id}`, { method: "DELETE" }),
   reloadSkills: () => req<{ loaded: number }>("/skills/reload", { method: "POST" }),
+  // suggestions
+  listSuggestions: (status?: string) =>
+    req<Suggestion[]>(`/suggestions${status ? `?status=${status}` : ""}`),
+  patchSuggestion: (id: number, status: string) =>
+    req<Suggestion>(`/suggestions/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  generateSuggestions: () => req<{ created: number }>("/suggestions/generate", { method: "POST" }),
 };

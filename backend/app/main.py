@@ -18,6 +18,7 @@ from app.api.papers_api import router as papers_router
 from app.api.providers_api import router as providers_router
 from app.api.settings_api import router as settings_router
 from app.api.skills_api import router as skills_router
+from app.api.suggestions_api import router as suggestions_router
 from app.api.usage_api import router as usage_router
 from app.logging_setup import configure_logging
 
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     app.include_router(graph_router, prefix="/api")
     app.include_router(chat_router, prefix="/api")
     app.include_router(skills_router, prefix="/api")
+    app.include_router(suggestions_router, prefix="/api")
 
     # Serve the built frontend (production single-app mode) when present.
     # API routes are registered above with the /api prefix, so they take
