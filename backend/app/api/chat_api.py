@@ -23,26 +23,43 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _library_context(session: Session, user_message: str = "") -> str:
-    """A compact summary of the library injected as system context (RAG-lite).
+    """Ground the assistant in the user's library (RAG).
 
-    Full vector RAG over chunk embeddings arrives later; for now the assistant
-    is grounded with paper/concept counts + recent titles (citation grounding
-    principle: it can only reference papers it's told about). Active skills are
-    selected by trigger rules (see app.skills.activation).
+    When an embedding model is configured, the passages most relevant to the
+    user's question are retrieved from the paper chunks and injected with their
+    source titles (citation grounding — the assistant can only reference papers
+    it's shown). Otherwise it falls back to recent titles + concept counts.
+    Active skills are appended per the trigger rules (app.skills.activation).
     """
+    from app.rag.index import retrieve
     from app.skills.activation import select_for_chat
 
     papers = session.exec(select(Paper).where(Paper.is_deleted == False)).all()  # noqa: E712
     concepts = session.exec(select(Concept)).all()
     concept_names = ", ".join(c.name for c in concepts[:30])
-    titles = "\n".join(f"- {p.title}" for p in papers[:20] if p.title)
     base = (
         "You are a research assistant discussing the user's paper library. "
-        "Answer grounded in the library below; if you cite a paper, use its title. "
+        "Answer grounded in the context below; if you cite a paper, use its title. "
         f"The library has {len(papers)} paper(s). "
-        f"Known concepts: {concept_names or '(none yet)'}.\n"
-        f"Recent paper titles:\n{titles or '(none)'}"
+        f"Known concepts: {concept_names or '(none yet)'}."
     )
+
+    context_block = ""
+    if user_message:
+        hits = retrieve(session, user_message)
+        if hits:
+            lines = []
+            for chunk, _score in hits:
+                p = session.get(Paper, chunk.paper_id)
+                title = (p.title if p else None) or f"#{chunk.paper_id}"
+                lines.append(f"[{title}]\n{chunk.text}")
+            context_block = "\n\nRelevant passages from your library:\n" + "\n\n".join(lines)
+    if not context_block:
+        titles = "\n".join(f"- {p.title}" for p in papers[:20] if p.title)
+        if titles:
+            context_block = f"\n\nRecent paper titles:\n{titles}"
+    base += context_block
+
     # Inject skills active for THIS turn (auto always; keyword on match).
     skills = select_for_chat(session, user_message)
     blocks = [f"[Active skill — {s.name}]\n{s.body}" for s in skills]

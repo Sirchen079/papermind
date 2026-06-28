@@ -198,6 +198,57 @@ class ProviderClient:
         self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t)
         yield StreamEvent(None, content, prompt_t, completion_t, total_t, done=True)
 
+    def embed(
+        self,
+        provider: Provider,
+        model_id: str,
+        inputs: list[str],
+        request_kind: str = "embedding",
+        ref_id: str | None = None,
+    ) -> list[list[float]]:
+        """Embed texts via the provider's OpenAI-compatible embeddings API.
+
+        This is the RAG path: a dedicated embedding model (e.g. a free SiliconFlow
+        bge model, OpenAI text-embedding-3-small, ...) configured with the
+        ``embedding`` role. Anthropic offers no embeddings API and raises here.
+        Inputs are batched to keep payloads small; usage is recorded per batch.
+        """
+        if provider.type == "anthropic":
+            raise ValueError(
+                "the embedding role requires an OpenAI-compatible provider; "
+                "Anthropic offers no embeddings API"
+            )
+        base_kwargs: dict[str, Any] = {
+            "model": f"openai/{model_id}",
+            "api_key": self._api_key(provider),
+        }
+        if provider.type == "openai_compat" and provider.base_url:
+            base_kwargs["api_base"] = provider.base_url
+
+        out: list[list[float]] = []
+        batch = 32
+        for i in range(0, len(inputs), batch):
+            resp = litellm.embedding(**base_kwargs, input=inputs[i : i + batch])
+            usage = getattr(resp, "usage", None)
+            prompt_t = getattr(usage, "prompt_tokens", 0) or 0
+            total_t = getattr(usage, "total_tokens", None) or prompt_t
+            self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, 0, total_t)
+            out.extend(self._embedding_vectors(resp))
+        return out
+
+    @staticmethod
+    def _embedding_vectors(resp: Any) -> list[list[float]]:
+        """Extract embedding vectors from a litellm embedding response."""
+        data = getattr(resp, "data", None) or []
+        vectors: list[list[float]] = []
+        for item in data:
+            vec = getattr(item, "embedding", None)
+            if vec is None and isinstance(item, dict):
+                vec = item.get("embedding")
+            if vec is not None:
+                vectors.append(list(vec))
+        return vectors
+
     def _record_usage(
         self,
         provider: Provider,

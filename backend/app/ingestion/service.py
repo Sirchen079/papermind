@@ -137,3 +137,11 @@ def _analyze(session: Session, paper: Paper, client, provider: Provider, model_i
         generate_for_paper(session, paper)
     except Exception:  # noqa: BLE001 — suggestions are non-critical
         pass
+
+    # Index full text for retrieval (RAG) — only when an embedding model is set.
+    try:
+        from app.rag.index import index_paper
+
+        index_paper(session, paper)
+    except Exception:  # noqa: BLE001 — RAG indexing must never abort ingest
+        pass

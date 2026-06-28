@@ -106,6 +106,19 @@ def related_papers(pid: int, session: Session = Depends(get_session)) -> list[di
     return search_related(p.title or "")
 
 
+@router.post("/papers/reindex")
+def reindex_papers(session: Session = Depends(get_session)) -> dict:
+    """Re-chunk + re-embed every paper for retrieval (RAG).
+
+    Run this after configuring (or changing) the embedding-role model, or to
+    pick up improved full-text parses. Returns the number of chunks stored;
+    0 means no embedding model is configured.
+    """
+    from app.rag.index import reindex_library
+
+    return {"chunks": reindex_library(session)}
+
+
 @router.post("/papers/arxiv")
 def ingest_arxiv(body: ArxivIn, session: Session = Depends(get_session)) -> dict:
     try:

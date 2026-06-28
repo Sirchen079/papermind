@@ -114,6 +114,7 @@ export const api = {
   listPapers: () => req<Paper[]>("/papers"),
   getPaper: (id: number) => req<Paper>(`/papers/${id}`),
   relatedPapers: (id: number) => req<RelatedPaper[]>(`/papers/${id}/related`),
+  reindexLibrary: () => req<{ chunks: number }>("/papers/reindex", { method: "POST" }),
   ingestBibtex: (bibtex: string) =>
     req<Paper[]>("/papers/bibtex", { method: "POST", body: JSON.stringify({ bibtex }) }),
   ingestArxiv: (arxiv_id: string) =>

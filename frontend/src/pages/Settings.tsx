@@ -17,6 +17,8 @@ export default function Settings() {
   const [form, setForm] = useState({ name: "", type: "openai_chat", base_url: "", api_key: "" });
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [indexing, setIndexing] = useState(false);
+  const [indexMsg, setIndexMsg] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -60,6 +62,22 @@ export default function Settings() {
   async function setRole(id: number, mid: number, role: string) {
     await api.setModelRole(mid, role);
     setModels({ ...models, [id]: await api.providerModels(id) });
+  }
+
+  async function reindex() {
+    setIndexing(true);
+    setIndexMsg(null);
+    setErr(null);
+    try {
+      const r = await api.reindexLibrary();
+      setIndexMsg(
+        r.chunks > 0 ? `${r.chunks} chunk(s) indexed.` : "No embedding model configured.",
+      );
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setIndexing(false);
+    }
   }
 
   return (
@@ -162,6 +180,24 @@ export default function Settings() {
             </div>
           ))}
         </div>
+      </section>
+
+      <section className="card">
+        <h3 className="mb-1 font-semibold">Retrieval (RAG)</h3>
+        <p className="mb-3 text-sm" style={{ color: "var(--muted)" }}>
+          Assign a dedicated model the <span className="chip">embedding</span> role above so chat can
+          answer from your papers' full text. Any OpenAI-compatible embeddings endpoint works — e.g.
+          a free SiliconFlow <code>bge</code> model via an{" "}
+          <code>openai_compat</code> provider. Then index the library.
+        </p>
+        <button onClick={reindex} disabled={indexing} className="btn-primary">
+          {indexing ? "Indexing…" : "Re-index library"}
+        </button>
+        {indexMsg && (
+          <span className="ml-3 text-sm" style={{ color: "var(--muted)" }}>
+            {indexMsg}
+          </span>
+        )}
       </section>
 
       {usage && (
