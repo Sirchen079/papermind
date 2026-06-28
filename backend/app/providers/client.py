@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+import json
 from typing import Any
 
 import httpx
@@ -15,6 +16,24 @@ from app.security.crypto import Crypto
 @dataclass
 class CompletionResult:
     content: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class ToolTurn:
+    """One agent-loop step: assistant text and/or a batch of tool calls."""
+
+    content: str
+    tool_calls: list[ToolCall]
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
@@ -130,6 +149,60 @@ class ProviderClient:
 
         self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t)
         return CompletionResult(content, prompt_t, completion_t, total_t)
+
+    def complete_with_tools(
+        self,
+        provider: Provider,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        request_kind: str,
+        tools: list[dict[str, Any]] | None = None,
+        ref_id: str | None = None,
+    ) -> ToolTurn:
+        """Completion that may return tool calls (the agent loop's per-step call).
+
+        Always uses the chat-completions API (even for ``openai_responses``
+        providers) so tool calling has one consistent shape across providers.
+        ``tools`` is the OpenAI function-calling schema list; pass None for a
+        plain completion (used when a provider degrades after rejecting tools).
+        """
+        route = route_completion(provider.type, model_id, provider.base_url)
+        kwargs: dict[str, Any] = {
+            "model": route.litellm_model,
+            "messages": messages,
+            "api_key": self._api_key(provider),
+        }
+        if route.api_base:
+            kwargs["api_base"] = route.api_base
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        resp = litellm.completion(**kwargs)
+        msg = resp.choices[0].message
+        content = getattr(msg, "content", None) or ""
+
+        tool_calls: list[ToolCall] = []
+        for tc in getattr(msg, "tool_calls", None) or []:
+            raw_args = getattr(tc.function, "arguments", "{}") or "{}"
+            try:
+                parsed = json.loads(raw_args)
+            except json.JSONDecodeError:
+                parsed = {}
+            tool_calls.append(
+                ToolCall(
+                    id=getattr(tc, "id", "") or "",
+                    name=getattr(tc.function, "name", "") or "",
+                    arguments=parsed,
+                )
+            )
+
+        usage = getattr(resp, "usage", None)
+        prompt_t = getattr(usage, "prompt_tokens", 0) or 0
+        completion_t = getattr(usage, "completion_tokens", 0) or 0
+        total_t = getattr(usage, "total_tokens", None) or (prompt_t + completion_t)
+        self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t)
+        return ToolTurn(content, tool_calls, prompt_t, completion_t, total_t)
 
     def stream_complete(
         self,

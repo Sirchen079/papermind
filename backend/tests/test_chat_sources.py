@@ -2,7 +2,7 @@ from sqlmodel import Session
 
 from app.db.engine import get_engine
 from app.models import Model, Paper, PaperChunk, Provider
-from app.providers.client import CompletionResult
+from app.providers.client import ToolTurn
 
 
 def test_chat_message_returns_and_persists_sources(client, monkeypatch):
@@ -26,10 +26,10 @@ def test_chat_message_returns_and_persists_sources(client, monkeypatch):
 
     monkeypatch.setattr("app.rag.index.retrieve", fake_retrieve)
 
-    def fake_complete(self, provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
-        return CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+    def fake_complete(self, provider, model_id, messages, request_kind, tools=None, ref_id=None):  # noqa: ANN001
+        return ToolTurn(content="ok", tool_calls=[], prompt_tokens=1, completion_tokens=1, total_tokens=2)
 
-    monkeypatch.setattr("app.providers.client.ProviderClient.complete", fake_complete)
+    monkeypatch.setattr("app.providers.client.ProviderClient.complete_with_tools", fake_complete)
 
     cid = client.post("/api/chat/conversations").json()["id"]
     res = client.post(
@@ -58,10 +58,10 @@ def test_chat_sources_empty_without_retrieval(client, monkeypatch):
 
     monkeypatch.setattr("app.rag.index.retrieve", lambda *a, **k: [])
 
-    def fake_complete(self, provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
-        return CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+    def fake_complete(self, provider, model_id, messages, request_kind, tools=None, ref_id=None):  # noqa: ANN001
+        return ToolTurn(content="ok", tool_calls=[], prompt_tokens=1, completion_tokens=1, total_tokens=2)
 
-    monkeypatch.setattr("app.providers.client.ProviderClient.complete", fake_complete)
+    monkeypatch.setattr("app.providers.client.ProviderClient.complete_with_tools", fake_complete)
 
     cid = client.post("/api/chat/conversations").json()["id"]
     res = client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "hi"})

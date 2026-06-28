@@ -84,8 +84,12 @@ def _system_prompt(
     concepts = session.exec(select(Concept)).all()
     concept_names = ", ".join(c.name for c in concepts[:30])
     base = (
-        "You are a research assistant discussing the user's paper library. "
-        "Answer grounded in the context below; if you cite a paper, use its title. "
+        "You are a research assistant with direct access to the user's paper library "
+        "through tools: search_library (find papers by keyword), get_paper (metadata + "
+        "summary + concepts), get_paper_full_text (close-read a paper), list_concepts, "
+        "and find_related. USE the tools to ground your answers in the actual papers — "
+        "search before you summarize, read a paper before you critique it, don't guess. "
+        "When you cite a paper, use its title. Be concise and specific.\n\n"
         f"The library has {len(papers)} paper(s). "
         f"Known concepts: {concept_names or '(none yet)'}."
     )
@@ -114,13 +118,26 @@ def _build_messages(
     user_message: str,
     hits: list[tuple[PaperChunk, float, Paper]],
 ) -> list[dict]:
+    """System prompt + the full conversation history (compaction trims later)."""
     history = session.exec(
         select(Message).where(Message.conversation_id == conversation.id)
     ).all()
     msgs: list[dict] = [{"role": "system", "content": _system_prompt(session, user_message, hits)}]
-    for m in history[-10:]:
+    for m in history:
         msgs.append({"role": m.role, "content": m.content})
     return msgs
+
+
+def _context_window(session: Session, provider: Provider, model_id: str) -> int | None:
+    """Look up the model's context window so the agent can budget against it."""
+    from app.models import Model
+
+    row = session.exec(
+        select(Model).where(
+            Model.provider_id == provider.id, Model.model_id == model_id
+        )
+    ).first()
+    return row.context_window if row else None
 
 
 def _auto_title(text: str) -> str:
@@ -222,13 +239,26 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
     hits = _retrieve_hits(session, body.content)
     messages = _build_messages(session, conv, body.content, hits)
     sources = _sources_from_hits(hits)
-    result = client.complete(provider, model_id, messages, request_kind="chat")
+
+    from app.agent.loop import run_agent
+
+    content = ""
+    tokens = 0
+    for kind, payload in run_agent(
+        client, provider, model_id, messages, session,
+        context_window=_context_window(session, provider, model_id),
+    ):
+        if kind == "done":
+            content, tokens = payload["content"], payload["tokens"]
+        elif kind == "error":
+            raise HTTPException(500, payload["message"])
+
     msg = Message(
         conversation_id=cid,
         role="assistant",
-        content=result.content,
+        content=content,
         model=model_id,
-        tokens_used=result.total_tokens,
+        tokens_used=tokens,
         sources_json=json.dumps(sources, ensure_ascii=False) if sources else None,
     )
     session.add(msg)
@@ -238,7 +268,7 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
         "role": "assistant",
         "content": msg.content,
         "model": model_id,
-        "tokens": result.total_tokens,
+        "tokens": tokens,
         "sources": sources,
         "title": conv.title,
     }
@@ -277,22 +307,31 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
     title = conv.title  # snapshot for the done frame (sidebar sync)
 
     def event_stream():
-        collected: list[str] = []
-        total_tokens = 0
+        from app.agent.loop import run_agent
+
+        content = ""
+        tokens = 0
         try:
-            for ev in client.stream_complete(provider, model_id, messages, request_kind="chat"):
-                if ev.delta:
-                    collected.append(ev.delta)
-                    yield _sse("delta", {"content": ev.delta})
-                if ev.done:
-                    total_tokens = ev.total_tokens
-            content = "".join(collected)
+            for kind, payload in run_agent(
+                client, provider, model_id, messages, session,
+                context_window=_context_window(session, provider, model_id),
+            ):
+                if kind == "tool":
+                    yield _sse("tool", payload)
+                elif kind == "delta":
+                    content = payload["content"]
+                    yield _sse("delta", {"content": content})
+                elif kind == "done":
+                    content, tokens = payload["content"], payload["tokens"]
+                elif kind == "error":
+                    yield _sse("error", payload)
+                    return
             msg = Message(
                 conversation_id=cid,
                 role="assistant",
                 content=content,
                 model=model_id,
-                tokens_used=total_tokens,
+                tokens_used=tokens,
                 sources_json=json.dumps(sources, ensure_ascii=False) if sources else None,
             )
             session.add(msg)
@@ -303,7 +342,7 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
                 {
                     "content": content,
                     "model": model_id,
-                    "tokens": total_tokens,
+                    "tokens": tokens,
                     "sources": sources,
                     "title": title,
                 },

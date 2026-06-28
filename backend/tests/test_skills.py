@@ -5,7 +5,7 @@ from sqlmodel import Session, SQLModel, select
 
 from app.db.engine import get_engine, make_engine
 from app.models import Model, Provider, Skill
-from app.providers.client import CompletionResult
+from app.providers.client import ToolTurn
 from app.skills.loader import load_skills_from_dir, parse_skill_file
 
 SAMPLE = """---
@@ -213,12 +213,12 @@ def test_chat_injects_auto_and_matching_keyword_skills_only(client):
 
     captured: dict = {}
 
-    def fake_complete(provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
+    def fake_complete(provider, model_id, messages, request_kind, tools=None, ref_id=None):  # noqa: ANN001
         captured["messages"] = messages
-        return CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+        return ToolTurn(content="ok", tool_calls=[], prompt_tokens=1, completion_tokens=1, total_tokens=2)
 
     cid = client.post("/api/chat/conversations").json()["id"]
-    with patch("app.providers.client.ProviderClient.complete", side_effect=fake_complete):
+    with patch("app.providers.client.ProviderClient.complete_with_tools", side_effect=fake_complete):
         client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "please review this"})
 
     sys_msg = next(m["content"] for m in captured["messages"] if m["role"] == "system")
