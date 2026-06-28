@@ -40,18 +40,21 @@ def anthropic_api_base(base_url: str | None) -> str | None:
 def route_completion(provider_type: str, model_id: str, base_url: str | None) -> CompletionRoute:
     """Map a provider type + model id to LiteLLM call arguments.
 
-    - openai_chat:      LiteLLM ``openai/<model>`` via completion()
-    - openai_compat:    same, but with the provider's base_url (DeepSeek, 智谱,
+    - openai_chat:      LiteLLM ``openai/<model>`` via completion(). base_url is
+                        honored when set (custom OpenAI-format endpoint); None
+                        falls back to the official api.openai.com.
+    - openai_compat:    same shape, but base_url is REQUIRED (DeepSeek, 智谱,
                         Moonshot, SiliconFlow, Ollama, …). OpenAI-compat servers
                         serve ``/v1/chat/completions``, so base_url keeps its
                         ``/v1`` (LiteLLM appends only ``/chat/completions``).
     - anthropic:        LiteLLM ``anthropic/<model>`` via completion(). Honors a
                         custom base_url (relay/网关/Bedrock-format proxy); LiteLLM
                         appends ``/v1/messages`` itself, so we pass the host root.
-    - openai_responses: OpenAI Responses API via litellm.responses()
+    - openai_responses: OpenAI Responses API via litellm.responses(). base_url is
+                        honored when set.
     """
     if provider_type == "openai_chat":
-        return CompletionRoute(f"openai/{model_id}", None, "completion")
+        return CompletionRoute(f"openai/{model_id}", base_url, "completion")
     if provider_type == "openai_compat":
         if not base_url:
             raise ValueError("openai_compat provider requires base_url")
@@ -59,5 +62,5 @@ def route_completion(provider_type: str, model_id: str, base_url: str | None) ->
     if provider_type == "anthropic":
         return CompletionRoute(f"anthropic/{model_id}", anthropic_api_base(base_url), "completion")
     if provider_type == "openai_responses":
-        return CompletionRoute(f"openai/{model_id}", None, "responses")
+        return CompletionRoute(f"openai/{model_id}", base_url, "responses")
     raise ValueError(f"unknown provider type: {provider_type}")

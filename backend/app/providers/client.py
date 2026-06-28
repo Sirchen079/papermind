@@ -297,7 +297,7 @@ class ProviderClient:
             "model": f"openai/{model_id}",
             "api_key": self._api_key(provider),
         }
-        if provider.type == "openai_compat" and provider.base_url:
+        if provider.base_url:
             base_kwargs["api_base"] = provider.base_url
 
         out: list[list[float]] = []
