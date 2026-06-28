@@ -20,7 +20,7 @@ function mk(role: string, content: string, model = "", sources: Source[] = []): 
   return { id: nextMsgId++, role, content, model, sources };
 }
 
-export default function Chat() {
+export default function Chat({ onOpenPaper }: { onOpenPaper: (id: number) => void }) {
   const [convs, setConvs] = useState<Conv[]>([]);
   const [active, setActive] = useState<number | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -179,14 +179,16 @@ export default function Chat() {
                         sources
                       </span>
                       {m.sources.map((s) => (
-                        <span
+                        <button
                           key={s.paper_id}
-                          className="inline-block max-w-[260px] truncate rounded-full px-2 py-0.5 text-[11px]"
+                          type="button"
+                          onClick={() => onOpenPaper(s.paper_id)}
+                          className="inline-block max-w-[260px] cursor-pointer truncate rounded-full px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80"
                           style={{ backgroundColor: "var(--accent-soft)", color: "var(--accent)" }}
                           title={s.snippet}
                         >
                           📚 {s.title}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   )}

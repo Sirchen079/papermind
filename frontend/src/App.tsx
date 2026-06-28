@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { useTheme, type Theme } from "./theme";
 
@@ -44,8 +44,16 @@ function ThemeToggle({ theme, toggle }: { theme: Theme; toggle: () => void }) {
 export default function App() {
   const [page, setPage] = useState("library");
   const [newCount, setNewCount] = useState(0);
+  const [openPaperId, setOpenPaperId] = useState<number | null>(null);
   const { theme, toggle } = useTheme();
   const active = NAV.find((n) => n.key === page);
+
+  // Cross-page "open this paper" — e.g. clicking a RAG source chip in Chat.
+  const openPaper = useCallback((id: number) => {
+    setOpenPaperId(id);
+    setPage("library");
+  }, []);
+  const clearOpenPaper = useCallback(() => setOpenPaperId(null), []);
 
   useEffect(() => {
     let alive = true;
@@ -160,10 +168,12 @@ export default function App() {
               </div>
             }
           >
-            {page === "library" && <Library />}
+            {page === "library" && (
+              <Library openPaperId={openPaperId} onConsumedOpen={clearOpenPaper} />
+            )}
             {page === "suggestions" && <Suggestions />}
             {page === "graph" && <Graph theme={theme} />}
-            {page === "chat" && <Chat />}
+            {page === "chat" && <Chat onOpenPaper={openPaper} />}
             {page === "skills" && <Skills />}
             {page === "settings" && <Settings />}
           </Suspense>

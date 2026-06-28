@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { api, Paper, RelatedPaper } from "../api";
 
-export default function Library() {
+export default function Library({
+  openPaperId,
+  onConsumedOpen,
+}: {
+  openPaperId: number | null;
+  onConsumedOpen: () => void;
+}) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +43,25 @@ export default function Library() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [selected]);
+
+  // Open a specific paper when navigated to from elsewhere (e.g. a Chat source).
+  useEffect(() => {
+    if (openPaperId == null) return;
+    let alive = true;
+    api
+      .getPaper(openPaperId)
+      .then((p) => {
+        if (!alive) return;
+        setSelected(p);
+        setRelated(null);
+        setRelatedError(false);
+      })
+      .catch(() => {})
+      .finally(onConsumedOpen);
+    return () => {
+      alive = false;
+    };
+  }, [openPaperId, onConsumedOpen]);
 
   async function ingestBibtex() {
     if (!bibtex.trim()) return;
