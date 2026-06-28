@@ -4,10 +4,44 @@ import { api, type Provider, type Model } from "../api";
 const TYPES = ["openai_chat", "openai_responses", "anthropic", "openai_compat"];
 const ROLES = ["summary", "extraction", "chat", "deep", "embedding"];
 
+/** Compact responsive SVG bar chart of daily token usage (no chart dependency). */
+function UsageBars({ data }: { data: { day: string; tokens: number }[] }) {
+  const max = Math.max(1, ...data.map((d) => d.tokens));
+  const W = 100;
+  const H = 36;
+  const gap = data.length > 1 ? 0.4 : 0;
+  const bw = (W - gap * (data.length - 1)) / data.length;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-20 w-full" preserveAspectRatio="none" role="img" aria-label="daily token usage">
+      {data.map((d, i) => {
+        const bh = (d.tokens / max) * H;
+        const x = i * (bw + gap);
+        return (
+          <rect
+            key={d.day}
+            x={x}
+            y={H - bh}
+            width={Math.max(bw - 0.2, 0.1)}
+            height={Math.max(bh, 0.1)}
+            rx={0.4}
+            fill="var(--accent)"
+            opacity={0.4 + 0.6 * (d.tokens / max)}
+          >
+            <title>
+              {d.day}: {d.tokens.toLocaleString()} tokens
+            </title>
+          </rect>
+        );
+      })}
+    </svg>
+  );
+}
+
 interface Usage {
   total_tokens: number;
   by_kind: Record<string, number>;
   by_model: Record<string, number>;
+  by_day: { day: string; tokens: number }[];
 }
 
 export default function Settings() {
@@ -20,6 +54,8 @@ export default function Settings() {
   const [indexing, setIndexing] = useState(false);
   const [indexMsg, setIndexMsg] = useState<string | null>(null);
   const [newModel, setNewModel] = useState<Record<number, { model_id: string; role: string }>>({});
+  const [editing, setEditing] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ name: "", base_url: "", api_key: "" });
 
   async function load() {
     try {
@@ -74,6 +110,27 @@ export default function Settings() {
     setErr(null);
     try {
       await api.deleteProvider(id);
+      await load();
+    } catch (e: any) {
+      setErr(e.message);
+    }
+  }
+
+  function startEdit(p: Provider) {
+    setEditing(p.id);
+    setEditForm({ name: p.name, base_url: p.base_url ?? "", api_key: "" });
+  }
+
+  async function saveEdit(id: number) {
+    setErr(null);
+    const body: Record<string, unknown> = {};
+    if (editForm.name) body.name = editForm.name;
+    if (editForm.base_url) body.base_url = editForm.base_url;
+    if (editForm.api_key) body.api_key = editForm.api_key; // rotate the key
+    try {
+      await api.patchProvider(id, body);
+      setEditing(null);
+      setMsg("Provider updated.");
       await load();
     } catch (e: any) {
       setErr(e.message);
@@ -192,6 +249,9 @@ export default function Settings() {
                   <button onClick={() => toggleProvider(p)} className="btn-ghost py-1">
                     {p.enabled ? "Disable" : "Enable"}
                   </button>
+                  <button onClick={() => startEdit(p)} className="btn-ghost py-1">
+                    Edit
+                  </button>
                   <button
                     onClick={() => removeProvider(p.id)}
                     className="btn-ghost py-1"
@@ -201,6 +261,37 @@ export default function Settings() {
                   </button>
                 </div>
               </div>
+              {editing === p.id && (
+                <div className="mb-2 grid grid-cols-1 gap-2 rounded-lg p-2 md:grid-cols-2" style={{ backgroundColor: "var(--surface-2)" }}>
+                  <input
+                    className="input py-1 text-sm"
+                    placeholder="name"
+                    value={editForm.name}
+                    onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                  />
+                  <input
+                    className="input py-1 text-sm"
+                    placeholder="base_url"
+                    value={editForm.base_url}
+                    onChange={(e) => setEditForm({ ...editForm, base_url: e.target.value })}
+                  />
+                  <input
+                    className="input py-1 text-sm md:col-span-2"
+                    type="password"
+                    placeholder="rotate api key (leave blank to keep)"
+                    value={editForm.api_key}
+                    onChange={(e) => setEditForm({ ...editForm, api_key: e.target.value })}
+                  />
+                  <div className="md:col-span-2 flex gap-2">
+                    <button onClick={() => saveEdit(p.id)} className="btn-primary py-1 text-sm">
+                      Save
+                    </button>
+                    <button onClick={() => setEditing(null)} className="btn-ghost py-1 text-sm">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-1">
                 {(models[p.id] ?? []).map((m) => (
                   <div key={m.id} className="flex items-center gap-2 text-sm">
@@ -282,6 +373,12 @@ export default function Settings() {
         <section className="card">
           <h3 className="mb-3 font-semibold">Token usage (30d)</h3>
           <div className="mb-3 text-2xl font-bold">{usage.total_tokens.toLocaleString()} tokens</div>
+          {usage.by_day.length > 0 && (
+            <div className="mb-4">
+              <div className="label">Daily usage</div>
+              <UsageBars data={usage.by_day} />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-6 text-sm">
             <div>
               <div className="label">By kind</div>

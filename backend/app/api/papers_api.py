@@ -6,9 +6,9 @@ from sqlmodel import Session, select
 
 from app.api.deps import get_session
 from app.config import get_settings
-from app.ingestion.service import persist_fetched
+from app.ingestion.service import analyze_paper, persist_fetched
 from app.ingestion.sources import FetchedPaper, fetch_arxiv, parse_bibtex
-from app.models import Paper, Provider, Summary
+from app.models import Concept, Paper, PaperChunk, PaperConcept, Provider, Summary
 from app.providers.client import ProviderClient
 
 router = APIRouter()
@@ -51,6 +51,23 @@ def _summary_for(session: Session, paper_id: int) -> dict | None:
     return json.loads(row.content_json)
 
 
+def _concepts_for(session: Session, paper_id: int) -> list[dict]:
+    """Concepts linked to a paper: [{name, type}], stable order."""
+    links = session.exec(
+        select(PaperConcept).where(PaperConcept.paper_id == paper_id)
+    ).all()
+    if not links:
+        return []
+    cids = [lc.concept_id for lc in links]
+    concepts = session.exec(select(Concept).where(Concept.id.in_(cids))).all()
+    by_id = {c.id: c for c in concepts}
+    return [
+        {"name": by_id[lc.concept_id].name, "type": by_id[lc.concept_id].type}
+        for lc in links
+        if lc.concept_id in by_id
+    ]
+
+
 def _analysis_ctx(session: Session) -> tuple[ProviderClient, Provider, str] | None:
     """Pick the provider + model for ingestion analysis (summarize + extract).
 
@@ -81,8 +98,61 @@ def get_paper(pid: int, session: Session = Depends(get_session)) -> dict:
         raise HTTPException(404, "paper not found")
     d = _public(p)
     d["summary"] = _summary_for(session, p.id)
+    d["concepts"] = _concepts_for(session, p.id)
     d["full_text"] = p.full_text
     return d
+
+
+@router.delete("/papers/{pid}", status_code=204)
+def delete_paper(pid: int, session: Session = Depends(get_session)) -> None:
+    """Soft-delete a paper and drop its RAG chunks.
+
+    Rows are kept (is_deleted=True) so history/conversations referencing the id
+    stay consistent, but the paper is hidden from the library, the graph, the
+    agent tools, and retrieval.
+    """
+    p = session.get(Paper, pid)
+    if p is None or p.is_deleted:
+        raise HTTPException(404, "paper not found")
+    p.is_deleted = True
+    from app.models.base import utcnow
+
+    p.updated_at = utcnow()
+    session.add(p)
+    # Remove retrieval chunks so a deleted paper can't surface in chat RAG.
+    for chunk in session.exec(select(PaperChunk).where(PaperChunk.paper_id == pid)).all():
+        session.delete(chunk)
+    # Detach concept links so the concept graph (and the agent's list_concepts /
+    # find_related counts) no longer count a hidden paper.
+    for link in session.exec(select(PaperConcept).where(PaperConcept.paper_id == pid)).all():
+        session.delete(link)
+    session.commit()
+
+
+@router.post("/papers/{pid}/analyze")
+def analyze(pid: int, session: Session = Depends(get_session)) -> dict:
+    """Re-run AI analysis (summary + concepts) on an existing paper.
+
+    Used after editing metadata, swapping the summary-role model, or when the
+    first analysis failed. Requires a summary-role provider; 400 otherwise.
+    """
+    p = session.get(Paper, pid)
+    if p is None or p.is_deleted:
+        raise HTTPException(404, "paper not found")
+    ctx = _analysis_ctx(session)
+    if ctx is None:
+        raise HTTPException(400, "no summary-role LLM provider configured")
+    client, provider, model_id = ctx
+    try:
+        analyze_paper(session, p, client, provider, model_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    session.refresh(p)
+    return {
+        "id": p.id,
+        "summary": _summary_for(session, p.id),
+        "concepts": _concepts_for(session, p.id),
+    }
 
 
 @router.get("/papers/{pid}/related")

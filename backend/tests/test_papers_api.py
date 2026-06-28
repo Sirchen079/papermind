@@ -147,3 +147,91 @@ def test_related_papers_degrades_on_network_error(client):
         res = client.get(f"/api/papers/{pid}/related")
     assert res.status_code == 200
     assert res.json() == []
+
+
+def _bibtex_with_abstract(title: str, abstract: str) -> str:
+    return (
+        f"@article{{x, title = {{{title}}}, author = {{Alice}}, year = {{2024}}, "
+        f"abstract = {{{abstract}}}}}"
+    )
+
+
+def test_delete_paper_hides_it_and_drops_chunks(client):
+    from app.models import Concept, Paper, PaperChunk, PaperConcept
+
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    # Seed a chunk + a concept link to confirm both are removed (a deleted paper
+    # must not surface in RAG nor inflate the concept graph).
+    with Session(get_engine()) as s:
+        s.add(PaperChunk(paper_id=pid, ordinal=0, text="seed"))
+        c = Concept(name="transformers", normalized_key="transformers")
+        s.add(c)
+        s.commit()
+        s.refresh(c)
+        s.add(PaperConcept(paper_id=pid, concept_id=c.id, weight=1.0))
+        s.commit()
+
+    res = client.delete(f"/api/papers/{pid}")
+    assert res.status_code == 204
+    assert all(p["id"] != pid for p in client.get("/api/papers").json())
+    with Session(get_engine()) as s:
+        assert s.get(Paper, pid).is_deleted is True  # soft delete: row kept
+        assert s.exec(select(PaperChunk).where(PaperChunk.paper_id == pid)).all() == []
+        assert s.exec(select(PaperConcept).where(PaperConcept.paper_id == pid)).all() == []
+    # 404 on second delete (already deleted).
+    assert client.delete(f"/api/papers/{pid}").status_code == 404
+
+
+def test_get_paper_returns_concepts(client):
+    from app.models import Concept, PaperConcept
+
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    with Session(get_engine()) as s:
+        c = Concept(name="transformers", normalized_key="transformers")
+        s.add(c)
+        s.commit()
+        s.refresh(c)
+        s.add(PaperConcept(paper_id=pid, concept_id=c.id, weight=1.0))
+        s.commit()
+    detail = client.get(f"/api/papers/{pid}").json()
+    assert detail["concepts"][0]["name"] == "transformers"
+
+
+def test_reanalyze_reruns_and_returns_summary_and_concepts(client):
+    _seed_summary_provider()
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    # summary + concept extraction both go through ProviderClient.complete.
+    calls = {"n": 0}
+
+    def fake_complete(provider, model_id, messages, request_kind, ref_id=None):  # noqa: ANN001
+        calls["n"] += 1
+        last = messages[-1].get("content") or ""
+        # The concept-extraction prompt asks for a "JSON array"; the summary
+        # prompt asks for a "JSON object" — branch on that (both prompts
+        # otherwise mention "problem").
+        is_concepts = "array" in last
+        return CompletionResult(
+            content='[{"name":"reanalyzed-concept","type":"method"}]'
+            if is_concepts
+            else '{"problem":"new","method":"m","dataset":"d","results":"r","limitations":"l"}',
+            prompt_tokens=1,
+            completion_tokens=1,
+            total_tokens=2,
+        )
+
+    with patch("app.providers.client.ProviderClient.complete", side_effect=fake_complete):
+        res = client.post(f"/api/papers/{pid}/analyze")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["summary"]["problem"] == "new"
+    assert any(c["name"] == "reanalyzed-concept" for c in body["concepts"])
+    assert calls["n"] >= 2  # summary + concept extraction
+
+
+def test_reanalyze_requires_provider(client):
+    pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    assert client.post(f"/api/papers/{pid}/analyze").status_code == 400
+
+
+def test_reanalyze_404_for_missing(client):
+    assert client.post("/api/papers/9999/analyze").status_code == 404

@@ -113,6 +113,19 @@ def resolve_and_attach_concepts(
     session.commit()
 
 
+def analyze_paper(
+    session: Session, paper: Paper, client, provider: Provider, model_id: str
+) -> None:
+    """Re-run AI analysis (summary + concepts) on an existing paper.
+
+    Thin public wrapper over ``_analyze`` so the API layer can trigger a
+    re-analysis without reaching past the underscore convention.
+    """
+    if not (paper.abstract or paper.full_text):
+        raise ValueError("nothing to analyze: this paper has no abstract or full text")
+    _analyze(session, paper, client, provider, model_id)
+
+
 def _analyze(session: Session, paper: Paper, client, provider: Provider, model_id: str) -> None:
     from app.ai_ops.concepts import extract_concepts
     from app.ai_ops.summarize import summarize_paper

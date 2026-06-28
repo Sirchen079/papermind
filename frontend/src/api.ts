@@ -75,6 +75,7 @@ export interface Paper {
   has_summary?: boolean;
   summary?: Record<string, string> | null;
   full_text?: string | null;
+  concepts?: { name: string; type: string | null }[];
 }
 
 export interface GraphData {
@@ -129,6 +130,12 @@ export const api = {
   // papers
   listPapers: () => req<Paper[]>("/papers"),
   getPaper: (id: number) => req<Paper>(`/papers/${id}`),
+  deletePaper: (id: number) => req(`/papers/${id}`, { method: "DELETE" }),
+  reanalyzePaper: (id: number) =>
+    req<{ id: number; summary: Record<string, string> | null; concepts: { name: string; type: string | null }[] }>(
+      `/papers/${id}/analyze`,
+      { method: "POST" },
+    ),
   relatedPapers: (id: number) => req<RelatedPaper[]>(`/papers/${id}/related`),
   reindexLibrary: () => req<{ chunks: number }>("/papers/reindex", { method: "POST" }),
   ingestPdf: (file: File) => {
@@ -180,7 +187,12 @@ export const api = {
     req(`/models/${id}`, { method: "PATCH", body: JSON.stringify({ role_default }) }),
   // usage
   usage: (days = 30) =>
-    req<{ total_tokens: number; by_kind: Record<string, number>; by_model: Record<string, number> }>(
+    req<{
+      total_tokens: number;
+      by_kind: Record<string, number>;
+      by_model: Record<string, number>;
+      by_day: { day: string; tokens: number }[];
+    }>(
       `/usage?days=${days}`
     ),
   // skills

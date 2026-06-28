@@ -17,6 +17,9 @@ export default function Library({
   const [related, setRelated] = useState<RelatedPaper[] | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [relatedError, setRelatedError] = useState(false);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<"year_desc" | "year_asc" | "title">("year_desc");
+  const [analyzing, setAnalyzing] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -109,6 +112,52 @@ export default function Library({
     }
   }
 
+  async function removePaper(p: Paper) {
+    if (!window.confirm(`Remove "${p.title ?? "this paper"}" from your library?`)) return;
+    try {
+      await api.deletePaper(p.id);
+      if (selected?.id === p.id) setSelected(null);
+      await load();
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }
+
+  async function reanalyze() {
+    if (!selected || analyzing) return;
+    setAnalyzing(true);
+    try {
+      const res = await api.reanalyzePaper(selected.id);
+      setSelected({ ...selected, summary: res.summary, concepts: res.concepts });
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setAnalyzing(false);
+    }
+  }
+
+  // Client-side filter + sort — the library is local and small; a round-trip
+  // per keystroke would be wasteful.
+  const visible = papers
+    .filter((p) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return true;
+      const hay = [
+        p.title ?? "",
+        p.authors.join(" "),
+        (p.concepts ?? []).map((c) => c.name).join(" "),
+        p.abstract ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    })
+    .sort((a, b) => {
+      if (sort === "title") return (a.title ?? "").localeCompare(b.title ?? "");
+      const dy = (b.year ?? 0) - (a.year ?? 0);
+      return sort === "year_asc" ? -dy : dy;
+    });
+
   return (
     <div className="max-w-5xl">
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -176,28 +225,65 @@ export default function Library({
         </div>
       )}
 
+      {papers.length > 0 && (
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <input
+            className="input max-w-xs"
+            placeholder="Search title, author, concept…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <select
+            className="input max-w-[10rem]"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+          >
+            <option value="year_desc">Newest first</option>
+            <option value="year_asc">Oldest first</option>
+            <option value="title">Title A→Z</option>
+          </select>
+          <span className="text-xs" style={{ color: "var(--faint)" }}>
+            {visible.length} of {papers.length}
+          </span>
+        </div>
+      )}
+
       <div className="space-y-2">
         {papers.length === 0 && !loading && (
           <div className="card text-center" style={{ color: "var(--muted)" }}>
             No papers yet — add one above to let the agent parse, summarize, and graph it.
           </div>
         )}
-        {papers.map((p) => (
-          <button
+        {visible.length === 0 && papers.length > 0 && (
+          <div className="card text-center" style={{ color: "var(--muted)" }}>
+            No papers match “{query}”.
+          </div>
+        )}
+        {visible.map((p) => (
+          <div
             key={p.id}
-            onClick={() => open(p)}
-            className="card-tight block w-full text-left transition hover:translate-y-[-1px]"
+            className="card-tight group flex items-center gap-2 transition hover:translate-y-[-1px]"
             style={{ boxShadow: "var(--shadow)" }}
           >
-            <div className="flex items-start justify-between gap-3">
-              <div className="font-medium">{p.title ?? "(untitled)"}</div>
-              {p.has_summary && <span className="chip shrink-0">summarized</span>}
-            </div>
-            <div className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
-              {p.authors.slice(0, 3).join(", ")}
-              {p.authors.length > 3 ? " et al." : ""} {p.year ? `· ${p.year}` : ""}
-            </div>
-          </button>
+            <button onClick={() => open(p)} className="block flex-1 text-left">
+              <div className="flex items-start justify-between gap-3">
+                <div className="font-medium">{p.title ?? "(untitled)"}</div>
+                {p.has_summary && <span className="chip shrink-0">summarized</span>}
+              </div>
+              <div className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+                {p.authors.slice(0, 3).join(", ")}
+                {p.authors.length > 3 ? " et al." : ""} {p.year ? `· ${p.year}` : ""}
+              </div>
+            </button>
+            <button
+              onClick={() => removePaper(p)}
+              className="shrink-0 rounded-lg px-2 py-1 text-xs opacity-0 transition-opacity group-hover:opacity-100"
+              style={{ color: "var(--faint)" }}
+              title="Remove from library"
+            >
+              ✕
+            </button>
+          </div>
         ))}
       </div>
 
@@ -229,6 +315,15 @@ export default function Library({
               {selected.authors.join(", ")} {selected.year ? `· ${selected.year}` : ""}
             </p>
             {selected.abstract && <p className="mb-4 text-sm leading-relaxed">{selected.abstract}</p>}
+            {selected.concepts && selected.concepts.length > 0 && (
+              <div className="mb-4 flex flex-wrap gap-1.5">
+                {selected.concepts.map((c, i) => (
+                  <span key={i} className="chip">
+                    {c.name}
+                  </span>
+                ))}
+              </div>
+            )}
             {selected.parse_confidence != null && selected.parse_confidence < 0.3 && (
               <div
                 className="mb-4 rounded-lg px-3 py-2 text-sm"
@@ -243,7 +338,12 @@ export default function Library({
             )}
             {selected.summary ? (
               <div className="space-y-2">
-                <h4 className="font-semibold">AI Summary</h4>
+                <div className="flex items-center justify-between gap-3">
+                  <h4 className="font-semibold">AI Summary</h4>
+                  <button onClick={reanalyze} disabled={analyzing} className="btn-ghost px-2.5 py-1 text-xs">
+                    {analyzing ? "Re-analyzing…" : "↻ Re-analyze"}
+                  </button>
+                </div>
                 {Object.entries(selected.summary).map(([k, v]) => (
                   <div key={k} className="text-sm">
                     <span className="font-medium capitalize">{k}: </span>
@@ -252,9 +352,16 @@ export default function Library({
                 ))}
               </div>
             ) : (
-              <p className="text-sm" style={{ color: "var(--faint)" }}>
-                No AI summary (configure a provider in Settings).
-              </p>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm" style={{ color: "var(--faint)" }}>
+                    No AI summary (configure a provider in Settings).
+                  </p>
+                  <button onClick={reanalyze} disabled={analyzing} className="btn-ghost px-2.5 py-1 text-xs">
+                    {analyzing ? "Analyzing…" : "↻ Analyze now"}
+                  </button>
+                </div>
+              </div>
             )}
 
             <div className="mt-6 border-t pt-4" style={{ borderColor: "var(--border)" }}>
