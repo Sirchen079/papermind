@@ -2,12 +2,14 @@ import { useState } from "react";
 import Library from "./pages/Library";
 import Graph from "./pages/Graph";
 import Chat from "./pages/Chat";
+import Skills from "./pages/Skills";
 import Settings from "./pages/Settings";
 
 const NAV: [string, string][] = [
   ["library", "Library"],
   ["graph", "Graph"],
   ["chat", "Chat"],
+  ["skills", "Skills"],
   ["settings", "Settings"],
 ];
 
@@ -35,6 +37,7 @@ export default function App() {
         {page === "library" && <Library />}
         {page === "graph" && <Graph />}
         {page === "chat" && <Chat />}
+        {page === "skills" && <Skills />}
         {page === "settings" && <Settings />}
       </main>
     </div>

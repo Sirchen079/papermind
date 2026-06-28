@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/pages/chat.tsx","./src/pages/graph.tsx","./src/pages/library.tsx","./src/pages/settings.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/pages/chat.tsx","./src/pages/graph.tsx","./src/pages/library.tsx","./src/pages/settings.tsx","./src/pages/skills.tsx"],"version":"5.9.3"}

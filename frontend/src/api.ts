@@ -82,4 +82,22 @@ export const api = {
     req<{ total_tokens: number; by_kind: Record<string, number>; by_model: Record<string, number> }>(
       `/usage?days=${days}`
     ),
+  // skills
+  listSkills: () =>
+    req<
+      {
+        id: number;
+        name: string;
+        type: string;
+        trigger: string;
+        description: string | null;
+        body: string | null;
+        enabled: boolean;
+        source: string;
+      }[]
+    >("/skills"),
+  upsertSkill: (body: Record<string, unknown>) =>
+    req("/skills", { method: "POST", body: JSON.stringify(body) }),
+  deleteSkill: (id: number) => req(`/skills/${id}`, { method: "DELETE" }),
+  reloadSkills: () => req<{ loaded: number }>("/skills/reload", { method: "POST" }),
 };
