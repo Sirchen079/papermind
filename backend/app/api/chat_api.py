@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
-from app.models import Concept, Conversation, Message, Paper
+from app.models import Concept, Conversation, Message, Paper, Skill
 from app.models.base import utcnow
 from app.providers.selection import pick_llm
 
@@ -25,13 +25,23 @@ def _library_context(session: Session) -> str:
     concepts = session.exec(select(Concept)).all()
     concept_names = ", ".join(c.name for c in concepts[:30])
     titles = "\n".join(f"- {p.title}" for p in papers[:20] if p.title)
-    return (
+    base = (
         "You are a research assistant discussing the user's paper library. "
         "Answer grounded in the library below; if you cite a paper, use its title. "
         f"The library has {len(papers)} paper(s). "
         f"Known concepts: {concept_names or '(none yet)'}.\n"
         f"Recent paper titles:\n{titles or '(none)'}"
     )
+    # Inject enabled declarative skills (instruction/persona) — §6.5.
+    skills = session.exec(select(Skill).where(Skill.enabled == True)).all()  # noqa: E712
+    blocks = [
+        f"[Active skill — {s.name}]\n{s.body}"
+        for s in skills
+        if s.type in ("instruction", "persona") and s.body
+    ]
+    if blocks:
+        base += "\n\n" + "\n\n".join(blocks)
+    return base
 
 
 def _build_messages(session: Session, conversation: Conversation) -> list[dict]:
