@@ -116,8 +116,15 @@ def concept_hubs(session: Session) -> int:
 
 
 def generate_for_paper(session: Session, paper: Paper) -> int:
-    """All suggestion types relevant to a freshly-analyzed paper."""
-    return concept_links_for_paper(session, paper)
+    """All suggestion types relevant to a freshly-analyzed paper.
+
+    Includes central-theme hubs so they surface automatically on ingest — not
+    only via the manual 'scan library' action (which previously was the sole
+    caller of concept_hubs).
+    """
+    created = concept_links_for_paper(session, paper)
+    created += concept_hubs(session)
+    return created
 
 
 def generate_all(session: Session) -> int:

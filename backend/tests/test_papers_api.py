@@ -4,14 +4,14 @@ from unittest.mock import patch
 import fitz
 import httpx
 import respx
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.db.engine import get_engine
 from app.knowledge.recommend import OPENALEX
-from app.models import Model, Provider
+from app.models import Model, Provider, Summary
 from app.providers.client import CompletionResult
 
-BIBTEX = "@article{x, title = {Paper One}, author = {Alice and Bob}, year = {2024}}"
+BIBTEX = "@article{x, title = {Paper One}, author = {Alice and Bob}, year = {2024}, abstract = {A study of paper things.}}"
 
 
 def test_bibtex_ingest_no_provider(client):
@@ -55,6 +55,40 @@ def test_bibtex_ingest_with_ai_summary(client):
     pid = res.json()[0]["id"]
     detail = client.get(f"/api/papers/{pid}").json()
     assert detail["summary"]["problem"] == "X"
+
+
+def test_reingest_replaces_summary_not_stacks(client):
+    """Re-ingesting a duplicate re-analyzes; the detail must show the NEW summary."""
+    _seed_summary_provider()
+    old = CompletionResult(
+        content='{"problem":"OLD","method":"","dataset":"","results":"","limitations":""}',
+        prompt_tokens=1, completion_tokens=1, total_tokens=2,
+    )
+    with patch("app.providers.client.ProviderClient.complete", return_value=old):
+        pid = client.post("/api/papers/bibtex", json={"bibtex": BIBTEX}).json()[0]["id"]
+    assert client.get(f"/api/papers/{pid}").json()["summary"]["problem"] == "OLD"
+
+    new = CompletionResult(
+        content='{"problem":"NEW","method":"","dataset":"","results":"","limitations":""}',
+        prompt_tokens=1, completion_tokens=1, total_tokens=2,
+    )
+    with patch("app.providers.client.ProviderClient.complete", return_value=new):
+        client.post("/api/papers/bibtex", json={"bibtex": BIBTEX})  # dedup → re-analyze
+
+    detail = client.get(f"/api/papers/{pid}").json()
+    assert detail["summary"]["problem"] == "NEW"  # newest, not the stacked oldest
+    with Session(get_engine()) as s:
+        assert len(s.exec(select(Summary).where(Summary.paper_id == pid)).all()) == 1
+
+
+def test_metadata_only_entry_skips_ai(client):
+    """A title-only BibTeX entry has nothing to summarize — AI must be skipped."""
+    _seed_summary_provider()
+    title_only = "@article{x, title = {Just a Title}, author = {A}, year = {2024}}"
+    with patch("app.providers.client.ProviderClient.complete") as mocked:
+        pid = client.post("/api/papers/bibtex", json={"bibtex": title_only}).json()[0]["id"]
+    assert mocked.call_count == 0
+    assert client.get(f"/api/papers/{pid}").json()["summary"] is None
 
 
 def test_pdf_upload(client):

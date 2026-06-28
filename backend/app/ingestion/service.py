@@ -75,7 +75,10 @@ def persist_fetched(
     session.commit()
     session.refresh(paper)
 
-    if client is not None and provider is not None and model_id:
+    if client is not None and provider is not None and model_id and (paper.abstract or paper.full_text):
+        # Skip AI for metadata-only entries (e.g. a title-only BibTeX row):
+        # there's nothing to summarize, so a call would burn tokens for a
+        # useless freeform summary.
         _analyze(session, paper, client, provider, model_id)
 
     return paper
@@ -120,6 +123,11 @@ def _analyze(session: Session, paper: Paper, client, provider: Provider, model_i
     session.refresh(run)
     try:
         content = summarize_paper(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
+        # Replace any prior summary so re-analysis reflects the latest run.
+        # (Re-ingesting a duplicate re-runs analysis; without this, rows stack and
+        # the detail view — which reads the first row — keeps showing the oldest.)
+        for old in session.exec(select(Summary).where(Summary.paper_id == paper.id)).all():
+            session.delete(old)
         session.add(Summary(paper_id=paper.id, run_id=run.id, content_json=json.dumps(content, ensure_ascii=False)))
         raw_concepts = extract_concepts(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
         resolve_and_attach_concepts(session, paper, run.id, raw_concepts)

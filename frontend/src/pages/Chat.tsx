@@ -75,6 +75,7 @@ export default function Chat({
   }, [messages]);
 
   async function newConv() {
+    if (busy) return; // switching mid-stream would corrupt the in-flight view
     try {
       const c = await api.createConversation();
       await loadConvs();
@@ -199,7 +200,10 @@ export default function Chat({
                   />
                 ) : (
                   <button
-                    onClick={() => setActiveConv(c.id)}
+                    onClick={() => {
+                      if (!busy) setActiveConv(c.id);
+                    }}
+                    disabled={busy}
                     className="block w-full truncate rounded px-1 py-1.5 text-left text-sm"
                     style={isActive ? { color: "var(--text)" } : { color: "var(--muted)" }}
                     title={c.title}

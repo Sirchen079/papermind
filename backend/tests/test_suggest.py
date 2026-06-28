@@ -8,6 +8,7 @@ from app.knowledge.suggest import (
     concept_hubs,
     concept_links_for_paper,
     generate_all,
+    generate_for_paper,
 )
 from app.models import Concept, Paper, PaperConcept, Suggestion
 
@@ -126,6 +127,23 @@ def test_concept_hubs_flags_central_themes(tmp_path):
     detail = json.loads(rows[0].detail_json)
     assert detail["concept"] == "DeepLearning"
     assert detail["papers"] >= HUB_THRESHOLD
+
+
+def test_generate_for_paper_includes_hubs(tmp_path):
+    """Hubs surface automatically on ingest, not only via the manual scan."""
+    eng = _engine(tmp_path)
+    with Session(eng) as s:
+        theme = _mk_concept(s, "theme")
+        papers = []
+        for _ in range(HUB_THRESHOLD):
+            p = _mk_paper(s, "P")
+            _link(s, p.id, theme.id)
+            papers.append(p)
+        created = generate_for_paper(s, papers[-1])
+    assert created >= 1
+    with Session(eng) as s:
+        kinds = {r.kind for r in s.exec(select(Suggestion)).all()}
+    assert "concept_hub" in kinds
 
 
 def test_generate_all_runs_both_kinds(tmp_path):
