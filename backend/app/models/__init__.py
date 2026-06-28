@@ -1,3 +1,4 @@
+from app.models.chat import Conversation, Message
 from app.models.concept import Concept, PaperConcept
 from app.models.paper import AnalysisRun, Paper, Summary
 from app.models.provider import Model, Provider
@@ -15,4 +16,6 @@ __all__ = [
     "Summary",
     "Concept",
     "PaperConcept",
+    "Conversation",
+    "Message",
 ]

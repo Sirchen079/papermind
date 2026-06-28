@@ -10,8 +10,9 @@ from pathlib import Path  # noqa: E402
 
 from fastapi import FastAPI  # noqa: E402
 
-from app.api.health import router as health_router  # noqa: E402
+from app.api.chat_api import router as chat_router  # noqa: E402
 from app.api.graph_api import router as graph_router  # noqa: E402
+from app.api.health import router as health_router  # noqa: E402
 from app.api.models_api import router as models_router
 from app.api.papers_api import router as papers_router
 from app.api.providers_api import router as providers_router
@@ -52,4 +53,5 @@ def create_app() -> FastAPI:
     app.include_router(usage_router, prefix="/api")
     app.include_router(papers_router, prefix="/api")
     app.include_router(graph_router, prefix="/api")
+    app.include_router(chat_router, prefix="/api")
     return app
