@@ -82,7 +82,7 @@ def index_paper(
     so a failure never wipes what was already indexed.
     """
     if client is None or provider is None or model_id is None:
-        ctx = pick_llm(session, "embedding", strict=True)
+        ctx = pick_llm(session, "embedding")
         if ctx is None:
             return 0
         client, provider, model_id = ctx
@@ -128,7 +128,7 @@ def reindex_library(session: Session) -> ReindexResult:
     paper_count = session.exec(
         select(func.count(Paper.id)).where(Paper.is_deleted == False)  # noqa: E712
     ).one()
-    ctx = pick_llm(session, "embedding", strict=True)
+    ctx = pick_llm(session, "embedding")
     if ctx is None:
         return ReindexResult(
             configured=False, papers=paper_count,
@@ -166,7 +166,7 @@ def retrieve(
     query = (query or "").strip()
     if not query:
         return []
-    ctx = pick_llm(session, "embedding", strict=True)
+    ctx = pick_llm(session, "embedding")
     if ctx is None:
         return []
     client, provider, model_id = ctx

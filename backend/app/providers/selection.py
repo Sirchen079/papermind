@@ -5,26 +5,18 @@ from app.models import Model, Provider
 from app.providers.client import ProviderClient
 from app.security.crypto import get_crypto
 
-# "Just text generation" roles — all of these can be served by ONE LLM. ``chat``
-# is the canonical default LLM; the others fall back to a chat-tagged model so a
-# single model handles conversation, ingest-time summarize, and concept
-# extraction alike (the PaperQA2 ``Settings(llm=..., embedding=...)`` model).
-LLM_ROLES = {"chat", "summary", "extraction", "deep"}
 
-
-def pick_llm(
-    session: Session, role: str, *, strict: bool = False
-) -> tuple[ProviderClient, Provider, str] | None:
+def pick_llm(session: Session, role: str) -> tuple[ProviderClient, Provider, str] | None:
     """Choose a provider + model for ``role``.
 
-    Resolution order for an LLM role (chat/summary/extraction/deep):
-      1. a model explicitly tagged with that exact role;
-      2. a model tagged ``chat`` (the default LLM) — so one model serves every
-         text task;
-      3. the first enabled provider's first model (last-resort fallback).
-    ``embedding`` is strict: only an exact ``embedding``-tagged model on an
-    enabled provider qualifies; None otherwise (it cannot fall back to a chat
-    model — wrong tool for the job).
+    Two model concepts only (PaperQA2's ``Settings(llm=..., embedding=...)``):
+      - ``embedding``: a dedicated vector model, tagged ``embedding``. Returns
+        None if none is configured — it cannot fall back to a chat model (wrong
+        tool for the job).
+      - every text role (chat / summarize / concept-extraction / ...): the ONE
+        LLM tagged ``chat``. Summary never gets its own model; it shares the
+        chat LLM. If no model is tagged ``chat``, it falls back to the first
+        enabled provider's first model so a freshly-configured setup still works.
 
     The provider client is given a factory that opens a *fresh* session per
     call (rather than reusing the request session), so internal bookkeeping
@@ -37,27 +29,22 @@ def pick_llm(
         return None
     enabled_ids = [p.id for p in enabled]
 
-    # 1) exact role match
+    # embedding needs its own model; every text role shares the single chat LLM.
+    tag = "embedding" if role == "embedding" else "chat"
     model = session.exec(
-        select(Model).where(Model.role_default == role, Model.provider_id.in_(enabled_ids))
+        select(Model).where(Model.role_default == tag, Model.provider_id.in_(enabled_ids))
     ).first()
-    # 2) an LLM role with no exact match reuses the default LLM (chat-tagged).
-    #    Skipped under `strict` (strict = exact match only, no fallback of any kind).
-    if model is None and not strict and role in LLM_ROLES and role != "chat":
-        model = session.exec(
-            select(Model).where(Model.role_default == "chat", Model.provider_id.in_(enabled_ids))
-        ).first()
 
-    if model is not None:
-        provider = next(p for p in enabled if p.id == model.provider_id)
-    elif strict:
-        return None
-    else:
-        # 3) last resort: first enabled provider's first model
+    if model is None:
+        if role == "embedding":
+            return None  # no vector model configured — don't borrow a chat model
+        # last resort: first enabled provider's first model
         provider = enabled[0]
         model = session.exec(select(Model).where(Model.provider_id == provider.id)).first()
         if model is None:
             return None
+    else:
+        provider = next(p for p in enabled if p.id == model.provider_id)
 
     engine = get_engine()
     client = ProviderClient(session_factory=lambda: Session(engine), crypto=get_crypto())
