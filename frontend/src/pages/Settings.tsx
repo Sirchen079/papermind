@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { api, type Provider, type Model } from "../api";
 
 const TYPES = ["openai_chat", "openai_responses", "anthropic", "openai_compat"];
-const ROLES = ["summary", "extraction", "chat", "deep", "embedding"];
+// 只要两类：一个 LLM（对话/总结/抽取共用），一个向量模型（embedding）。
+// 这就是 PaperQA2「一个 llm + 一个 embedder」模型——简单、足够。
+const ROLES = ["chat", "embedding"];
+const ROLE_LABELS: Record<string, string> = {
+  chat: "LLM（对话 / 总结 / 抽取）",
+  embedding: "向量（embedding）",
+};
 
 // 业界主流就是两种 API 格式：OpenAI 格式 与 Anthropic(Claude) 格式。很多厂商按其中
 // 一种对外提供服务。这里把后端标识映射成「格式 + 是否支持自定义地址」的人话标签，
@@ -248,6 +254,10 @@ export default function Settings() {
 
       <section className="card">
         <h3 className="mb-3 font-semibold">提供商与模型</h3>
+        <p className="mb-3 text-xs" style={{ color: "var(--faint)" }}>
+          只需各设一个：给某个模型标 <b>LLM</b>（对话 / 总结 / 抽取共用），再给一个向量模型标
+          <b> embedding</b>。除向量外，所有文本任务都复用同一个 LLM。
+        </p>
         {providers.length === 0 && (
           <p className="text-sm" style={{ color: "var(--muted)" }}>
             还没有提供商。
@@ -326,7 +336,7 @@ export default function Settings() {
                     >
                       <option value="">— 角色 —</option>
                       {ROLES.map((r) => (
-                        <option key={r}>{r}</option>
+                        <option key={r} value={r}>{ROLE_LABELS[r] ?? r}</option>
                       ))}
                     </select>
                   </div>
@@ -362,7 +372,7 @@ export default function Settings() {
                 >
                   <option value="">— 角色 —</option>
                   {ROLES.map((r) => (
-                    <option key={r}>{r}</option>
+                    <option key={r} value={r}>{ROLE_LABELS[r] ?? r}</option>
                   ))}
                 </select>
                 <button onClick={() => addManualModel(p.id)} className="btn-ghost py-1 text-xs">

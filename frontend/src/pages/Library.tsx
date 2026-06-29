@@ -370,7 +370,7 @@ export default function Library({
                     </p>
                   ) : (
                     <p className="text-sm" style={{ color: "var(--faint)" }}>
-                      暂无 AI 摘要（请在「设置」中为某个模型分配 summary 或 chat 角色）。
+                      暂无 AI 摘要（请在「设置」中为某个模型分配 LLM / chat 角色）。
                     </p>
                   )}
                   <button onClick={reanalyze} disabled={analyzing} className="btn-ghost px-2.5 py-1 text-xs">

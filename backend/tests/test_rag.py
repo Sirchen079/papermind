@@ -304,6 +304,58 @@ def test_pick_llm_prefers_role_tagged_model_across_providers(env):
         assert chat_id == "claude"
 
 
+def test_pick_llm_llm_roles_share_one_chat_model(env):
+    """Non-embedding roles share ONE LLM: when no model is tagged with the role,
+    pick_llm falls back to the chat-tagged model (the default LLM). So a single
+    model tagged 'chat' serves conversation, ingest summarize, and extraction
+    alike — the PaperQA2 'one llm, one embedder' model the user asked about."""
+    from app.providers.selection import pick_llm
+
+    eng = make_engine(env / "pick_llm.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        p = Provider(name="oai", type="openai_chat", enabled=True)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        s.add(Model(provider_id=p.id, model_id="gpt-4o", role_default="chat"))
+        s.commit()
+
+        # No model is tagged summary/extraction/deep — yet they all resolve to
+        # the chat model, because one LLM serves every text task.
+        for role in ("summary", "extraction", "deep"):
+            ctx = pick_llm(s, role)
+            assert ctx is not None, f"{role} should fall back to the chat LLM"
+            _, _, model_id = ctx
+            assert model_id == "gpt-4o", f"{role} resolved to {model_id}, not the chat LLM"
+
+        # embedding stays strict and isolated — it must NOT borrow the chat model.
+        assert pick_llm(s, "embedding", strict=True) is None
+
+
+def test_pick_llm_exact_role_wins_over_chat_fallback(env):
+    """If a model IS tagged with the role, that exact match wins — the
+    chat-fallback only kicks in when the role is unheld. (Lets a power user give
+    summary its own cheaper model while chat stays on the smart one.)"""
+    from app.providers.selection import pick_llm
+
+    eng = make_engine(env / "pick_exact.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        p = Provider(name="oai", type="openai_chat", enabled=True)
+        s.add(p)
+        s.commit()
+        s.refresh(p)
+        s.add(Model(provider_id=p.id, model_id="cheap-haiku", role_default="summary"))
+        s.add(Model(provider_id=p.id, model_id="smart-opus", role_default="chat"))
+        s.commit()
+
+        _, _, summary_id = pick_llm(s, "summary")
+        assert summary_id == "cheap-haiku"  # exact match, not the chat fallback
+        _, _, chat_id = pick_llm(s, "chat")
+        assert chat_id == "smart-opus"
+
+
 # --- ProviderClient.embed (real litellm response shape) ----------------------
 
 def test_client_embed_parses_response_and_records_usage(tmp_path, monkeypatch):
