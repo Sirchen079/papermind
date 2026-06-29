@@ -20,6 +20,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPERMIND_DATA_DIR", str(data_dir))
     monkeypatch.setenv("PAPERMIND_DB_PATH", str(tmp_path / "test.sqlite"))
     monkeypatch.setenv("PAPERMIND_MASTER_KEY_PATH", str(tmp_path / "master.key"))
+    # Keep bundled user_skills/ out of the test DB so skill-count assertions
+    # stay deterministic (create_app auto-loads them in production otherwise).
+    monkeypatch.setenv("PAPERMIND_NO_AUTOLOAD_SKILLS", "1")
     return tmp_path
 
 

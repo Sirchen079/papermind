@@ -296,6 +296,12 @@ class ProviderClient:
         base_kwargs: dict[str, Any] = {
             "model": f"openai/{model_id}",
             "api_key": self._api_key(provider),
+            # LiteLLM defaults ``encoding_format`` to None and still serializes
+            # it into the request body as JSON ``null``. Strict OpenAI-compatible
+            # gateways (e.g. SiliconFlow) reject that null with a 400 "parameter
+            # invalid", silently breaking every embedding call. ``"float"`` is the
+            # OpenAI default value, so any compatible endpoint accepts it.
+            "encoding_format": "float",
         }
         if provider.base_url:
             base_kwargs["api_base"] = provider.base_url

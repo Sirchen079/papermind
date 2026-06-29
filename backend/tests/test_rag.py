@@ -390,3 +390,43 @@ def test_client_embed_rejects_anthropic(tmp_path):
     client = ProviderClient(session_factory=lambda: Session(eng), crypto=Crypto(Fernet.generate_key()))
     with pytest.raises(ValueError):
         client.embed(Provider(name="anth", type="anthropic"), "any", ["x"])
+
+
+def test_client_embed_sends_concrete_encoding_format(tmp_path, monkeypatch):
+    """Regression: LiteLLM serializes a default ``encoding_format=None`` into the
+    request body as JSON ``null``, which strict OpenAI-compatible gateways
+    (SiliconFlow) reject with a 400 — silently breaking every embedding call.
+    The client must send a concrete ``"float"`` (the OpenAI default value)."""
+    from unittest.mock import MagicMock
+
+    from cryptography.fernet import Fernet
+
+    from app.providers.client import ProviderClient
+    from app.security.crypto import Crypto
+
+    eng = make_engine(tmp_path / "emb_fmt.sqlite")
+    SQLModel.metadata.create_all(eng)
+    crypto = Crypto(Fernet.generate_key())
+    captured: dict = {}
+
+    def fake_embedding(**kwargs):
+        captured.update(kwargs)
+        resp = MagicMock()
+        resp.data = [MagicMock(embedding=[0.1, 0.2])]
+        resp.usage = MagicMock(prompt_tokens=1, total_tokens=1)
+        return resp
+
+    monkeypatch.setattr("app.providers.client.litellm.embedding", fake_embedding)
+    client = ProviderClient(session_factory=lambda: Session(eng), crypto=crypto)
+    with Session(eng) as s:
+        provider = Provider(
+            name="sf", type="openai_compat",
+            base_url="https://api.siliconflow.cn/v1", api_key_encrypted=crypto.encrypt("sk-x"),
+        )
+        s.add(provider)
+        s.commit()
+        s.refresh(provider)
+    client.embed(provider, "BAAI/bge-m3", ["hi"])
+    assert captured.get("encoding_format") == "float"  # never None / null
+    assert captured.get("model") == "openai/BAAI/bge-m3"
+    assert captured.get("api_base") == "https://api.siliconflow.cn/v1"

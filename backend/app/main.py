@@ -39,9 +39,30 @@ def _run_migrations() -> None:
     command.upgrade(cfg, "head")
 
 
+def _load_default_skills() -> None:
+    """Insert bundled ``user_skills/*.md`` that aren't yet in the DB.
+
+    Insert-only (``overwrite=False``) so a bundled skill the user edited in the
+    UI is preserved across restarts. Ensures a fresh install has its bundled
+    skills available in chat without a manual 'reload' click. Skipped when
+    ``PAPERMIND_NO_AUTOLOAD_SKILLS`` is set — tests want a clean skill table.
+    """
+    if os.environ.get("PAPERMIND_NO_AUTOLOAD_SKILLS"):
+        return
+    from sqlmodel import Session
+
+    from app.api.skills_api import default_skills_dir
+    from app.db.engine import get_engine
+    from app.skills.loader import load_skills_from_dir
+
+    with Session(get_engine()) as session:
+        load_skills_from_dir(session, default_skills_dir(), overwrite=False)
+
+
 def create_app() -> FastAPI:
     configure_logging()
     _run_migrations()
+    _load_default_skills()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

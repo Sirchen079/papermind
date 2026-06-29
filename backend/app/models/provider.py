@@ -27,6 +27,6 @@ class Model(SQLModel, table=True):
     context_window: int | None = None
     supports_tools: bool | None = None
     supports_streaming: bool | None = None
-    role_default: str | None = None  # summary | extraction | chat | deep | embedding
+    role_default: str | None = None  # chat (default LLM: convo + summarize + extract) | embedding
     fetched_at: datetime | None = None
     is_manual: bool = False
