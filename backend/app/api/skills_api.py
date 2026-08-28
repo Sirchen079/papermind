@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
+from app import paths
 from app.api.deps import get_session
 from app.models import Concept, Paper, Skill
 from app.models.base import utcnow
@@ -16,8 +17,9 @@ router = APIRouter()
 
 
 def default_skills_dir() -> Path:
-    # backend/app/api/skills_api.py -> backend/user_skills
-    return Path(__file__).resolve().parent.parent.parent / "user_skills"
+    # backend/app/api/skills_api.py -> backend/user_skills (dev),
+    # or _internal/backend/user_skills inside a PyInstaller bundle.
+    return paths.user_skills_dir()
 
 
 class SkillIn(BaseModel):

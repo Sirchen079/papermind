@@ -22,7 +22,8 @@
 ```
 
 启动后自动打开 http://127.0.0.1:4278 。脚本幂等：venv / 依赖 / `frontend/dist`
-已就绪时会跳过，直接启动。可选环境变量：`PAPERMIND_PORT`、`PAPERMIND_NPM_REGISTRY`
+已就绪时会跳过，直接启动。如果使用 `-Rebuild`，请先关闭正在运行的旧 PaperMind
+服务窗口；否则脚本会明确报错，避免浏览器仍打开旧后端。可选环境变量：`PAPERMIND_PORT`、`PAPERMIND_NPM_REGISTRY`
 （默认 npmmirror）、`PAPERMIND_PIP_INDEX`（国内可设清华源）。
 
 > 首次进入后，到 **Settings** 添加一个 LLM provider（OpenAI / Anthropic / 任意 OpenAI
@@ -67,6 +68,24 @@ cd frontend && npm run dev   # http://127.0.0.1:5173
 ```bash
 cd backend && .venv/Scripts/python -m pytest      # 后端单元/集成测试
 cd frontend && npm run build                       # 前端类型检查 + 构建
+```
+
+## 备份与恢复
+
+设置页可以创建完整备份、校验备份、下载备份，并为每个备份生成恢复指南。完整备份包含数据库、
+`master.key` 和已入库 PDF。恢复前务必关闭正在运行的 PaperMind。
+
+根目录提供离线恢复脚本。默认只做预检，不写入任何文件：
+
+```powershell
+.\restore.ps1 -Backup .\backend\data\backups\papermind-backup-YYYYMMDD-HHMMSS.zip
+```
+
+确认预检通过后，显式加 `-Apply` 才会恢复。脚本会先复制当前数据目录为
+`data.before-restore-*` 回退副本，再替换数据库、`master.key` 和 `pdfs/`：
+
+```powershell
+.\restore.ps1 -Backup .\backend\data\backups\papermind-backup-YYYYMMDD-HHMMSS.zip -Apply
 ```
 
 ## 配置（环境变量）

@@ -34,8 +34,19 @@ def _add(session: Session, **fields) -> bool:
     return True
 
 
+def _active_paper_ids(session: Session) -> set[int]:
+    return {
+        int(pid)
+        for pid in session.exec(select(Paper.id).where(Paper.is_deleted == False)).all()  # noqa: E712
+        if pid is not None
+    }
+
+
 def _shared_concepts(session: Session, paper_id: int) -> dict[int, list[str]]:
     """Map related_paper_id -> [shared concept names] for papers sharing ≥1 concept."""
+    active_ids = _active_paper_ids(session)
+    if paper_id not in active_ids:
+        return {}
     # concept ids attached to the subject paper
     my_concepts = {
         row.concept_id
@@ -50,7 +61,7 @@ def _shared_concepts(session: Session, paper_id: int) -> dict[int, list[str]]:
     related: dict[int, set[int]] = {}
     rows = session.exec(select(PaperConcept).where(PaperConcept.concept_id.in_(my_concepts))).all()
     for row in rows:
-        if row.paper_id == paper_id:
+        if row.paper_id == paper_id or row.paper_id not in active_ids:
             continue
         related.setdefault(row.paper_id, set()).add(row.concept_id)
     return {
@@ -91,8 +102,11 @@ def concept_links_for_paper(session: Session, paper: Paper) -> int:
 
 def concept_hubs(session: Session) -> int:
     """Flag concepts spanning ≥HUB_THRESHOLD papers as central themes."""
+    active_ids = _active_paper_ids(session)
     counts: dict[int, int] = {}
     for row in session.exec(select(PaperConcept)).all():
+        if row.paper_id not in active_ids:
+            continue
         counts[row.concept_id] = counts.get(row.concept_id, 0) + 1
     hub_ids = [cid for cid, n in counts.items() if n >= HUB_THRESHOLD]
     created = 0

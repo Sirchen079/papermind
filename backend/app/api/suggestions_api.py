@@ -15,8 +15,29 @@ class StatusIn(BaseModel):
     status: str  # new | seen | dismissed | accepted
 
 
+def _paper_is_visible(session: Session, paper_id: int | None) -> bool:
+    if paper_id is None:
+        return True
+    paper = session.get(Paper, paper_id)
+    return paper is not None and not paper.is_deleted
+
+
+def _suggestion_is_visible(s: Suggestion, session: Session) -> bool:
+    return _paper_is_visible(session, s.paper_id) and _paper_is_visible(session, s.related_paper_id)
+
+
+def _parse_detail(value: str | None) -> dict:
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _public(s: Suggestion, session: Session) -> dict:
-    detail = json.loads(s.detail_json or "{}")
+    detail = _parse_detail(s.detail_json)
     out = {
         "id": s.id,
         "kind": s.kind,
@@ -44,7 +65,7 @@ def list_suggestions(
     if status:
         stmt = stmt.where(Suggestion.status == status)
     stmt = stmt.order_by(Suggestion.weight.desc(), Suggestion.created_at.desc())
-    return [_public(s, session) for s in session.exec(stmt).all()]
+    return [_public(s, session) for s in session.exec(stmt).all() if _suggestion_is_visible(s, session)]
 
 
 @router.patch("/suggestions/{sid}")

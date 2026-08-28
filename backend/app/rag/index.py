@@ -175,7 +175,14 @@ def retrieve(
     except Exception:  # noqa: BLE001 — retrieval is best-effort
         return []
 
-    rows = session.exec(select(PaperChunk).where(PaperChunk.embedding_model == model_id)).all()
+    rows = session.exec(
+        select(PaperChunk)
+        .join(Paper, Paper.id == PaperChunk.paper_id)
+        .where(
+            PaperChunk.embedding_model == model_id,
+            Paper.is_deleted == False,  # noqa: E712
+        )
+    ).all()
     if not rows:
         return []
     candidates = [(row, list(deserialize(row.embedding))) for row in rows]

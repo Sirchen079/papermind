@@ -1,7 +1,7 @@
 from sqlmodel import Session
 
 from app.db.engine import get_engine
-from app.models import Model, Paper, PaperChunk, Provider
+from app.models import Conversation, Message, Model, Paper, PaperChunk, Provider
 from app.providers.client import ToolTurn
 
 
@@ -66,3 +66,28 @@ def test_chat_sources_empty_without_retrieval(client, monkeypatch):
     cid = client.post("/api/chat/conversations").json()["id"]
     res = client.post(f"/api/chat/conversations/{cid}/messages", json={"content": "hi"})
     assert res.json()["sources"] == []
+
+
+def test_conversation_tolerates_malformed_persisted_sources(client):
+    with Session(get_engine()) as s:
+        conv = Conversation(title="Malformed sources")
+        s.add(conv)
+        s.commit()
+        s.refresh(conv)
+        s.add(
+            Message(
+                conversation_id=conv.id,
+                role="assistant",
+                content="old answer",
+                sources_json="not-json",
+            )
+        )
+        s.commit()
+        cid = conv.id
+
+    res = client.get(f"/api/chat/conversations/{cid}")
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["messages"][0]["content"] == "old answer"
+    assert body["messages"][0]["sources"] == []

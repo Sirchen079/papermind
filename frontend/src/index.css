@@ -9,6 +9,7 @@
  */
 @layer base {
   :root {
+    color-scheme: light;
     --bg: #f6f7f9;
     --surface: #ffffff;
     --surface-2: #f1f5f9;
@@ -16,19 +17,29 @@
     --border: #e2e8f0;
     --border-strong: #cbd5e1;
     --text: #0f172a;
-    --muted: #64748b;
-    --faint: #94a3b8;
+    --muted: #475569;
+    --faint: #64748b;
     --accent: #4f46e5;
     --accent-hover: #4338ca;
     --accent-soft: #eef2ff;
     --accent-contrast: #ffffff;
-    --danger: #dc2626;
     --success: #16a34a;
+    --success-soft: #dcfce7;
+    --warning: #b45309;
+    --warning-soft: #fef3c7;
+    --danger: #dc2626;
+    --danger-soft: #fee2e2;
+    --info: #0369a1;
+    --info-soft: #e0f2fe;
+    --overlay: rgb(15 23 42 / 0.45);
+    --ring-offset: 2px;
     --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 3px rgb(15 23 42 / 0.06);
     --shadow-md: 0 4px 12px rgb(15 23 42 / 0.08);
+    --shadow-lg: 0 12px 32px rgb(15 23 42 / 0.12);
   }
 
   .dark {
+    color-scheme: dark;
     --bg: #0a0f1c;
     --surface: #111827;
     --surface-2: #1b2435;
@@ -42,10 +53,19 @@
     --accent-hover: #818cf8;
     --accent-soft: #1e2542;
     --accent-contrast: #ffffff;
-    --danger: #f87171;
     --success: #4ade80;
+    --success-soft: rgb(74 222 128 / 0.14);
+    --warning: #fbbf24;
+    --warning-soft: rgb(251 191 36 / 0.14);
+    --danger: #f87171;
+    --danger-soft: rgb(248 113 113 / 0.14);
+    --info: #38bdf8;
+    --info-soft: rgb(56 189 248 / 0.14);
+    --overlay: rgb(0 0 0 / 0.65);
+    --ring-offset: 2px;
     --shadow: 0 1px 2px rgb(0 0 0 / 0.4);
     --shadow-md: 0 6px 18px rgb(0 0 0 / 0.45);
+    --shadow-lg: 0 16px 40px rgb(0 0 0 / 0.55);
   }
 
   html {
@@ -75,6 +95,22 @@
   }
   *::-webkit-scrollbar-track {
     background: transparent;
+  }
+
+  /* Smooth theme switch + state changes. Scoped to color props so layout
+     transitions stay snappy. Disabled entirely under prefers-reduced-motion. */
+  *,
+  *::before,
+  *::after {
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition: none !important;
+      animation: none !important;
+    }
   }
 }
 
@@ -163,6 +199,46 @@
 
   .surface-muted {
     color: var(--muted);
+  }
+
+  /* Standard text-color helpers so pages stop inlining var(--faint)/var(--muted). */
+  .text-muted {
+    color: var(--muted);
+  }
+  .text-faint {
+    color: var(--faint);
+  }
+
+  /* Inline alert banners (success / warning / danger / info). Left accent bar
+     + tinted background. Replaces ~6 files of `color-mix(...)` inline styles. */
+  .alert {
+    @apply rounded-lg border-l-[3px] px-3.5 py-2.5 text-sm;
+    background-color: var(--surface-2);
+    border-left-color: var(--border-strong);
+  }
+  .alert-success {
+    background-color: var(--success-soft);
+    border-left-color: var(--success);
+  }
+  .alert-warning {
+    background-color: var(--warning-soft);
+    border-left-color: var(--warning);
+  }
+  .alert-danger {
+    background-color: var(--danger-soft);
+    border-left-color: var(--danger);
+  }
+  .alert-info {
+    background-color: var(--info-soft);
+    border-left-color: var(--info);
+  }
+
+  /* Modal/dialog backdrop. */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background-color: var(--overlay);
+    backdrop-filter: blur(2px);
   }
 
   /* Assistant markdown replies. Scoped so user bubbles (plain text) are untouched. */
@@ -296,5 +372,90 @@
     color: var(--faint);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 11px;
+  }
+
+  /* Loading placeholder. Pulse is suppressed under reduced-motion. */
+  .skeleton {
+    @apply rounded;
+    background-color: var(--surface-3);
+    animation: pm-pulse 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pm-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.55;
+    }
+  }
+
+  /* Entrance animation for modals / toasts / drawers. */
+  .animate-fade-in {
+    animation: pm-fade-in 160ms ease-out;
+  }
+  .animate-slide-up {
+    animation: pm-slide-up 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes pm-fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pm-slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes pm-drawer-in {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  /* —— 信息分层组件（Phase A）—— */
+
+  /* 次级分组容器：无阴影无边框，靠底色区分层级。用于卡片内分区或弱化区块。 */
+  .card-quiet {
+    @apply rounded-lg;
+    background-color: var(--surface-2);
+  }
+
+  /* 区块带：把相关卡片打包成视觉一组，可选标题行由调用方自行渲染。 */
+  .section-band {
+    @apply rounded-xl p-5;
+    background-color: var(--surface-2);
+  }
+
+  /* 统计数字卡：大号数字 + 小号标签。 */
+  .stat-card {
+    @apply rounded-xl border px-4 py-3;
+    background-color: var(--surface);
+    border-color: var(--border);
+  }
+
+  /* 页面标题层级（PageHeader 组件用，也可单独使用）。 */
+  .page-title {
+    @apply text-2xl font-bold tracking-tight;
+  }
+  .page-subtitle {
+    @apply text-sm;
+    color: var(--muted);
+  }
+
+  /* 右侧抽屉滑入。reduced-motion 下被全局规则禁用。 */
+  .animate-drawer-in {
+    animation: pm-drawer-in 220ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 }

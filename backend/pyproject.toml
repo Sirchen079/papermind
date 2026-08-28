@@ -30,9 +30,10 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Use a project-local basetemp instead of the system per-user pytest dir,
-# which can get into an inaccessible state on Windows (locked handles).
-addopts = "--basetemp=.pytest_basetemp"
+# Keep pytest's temp files project-local, but avoid pytest cache writes and
+# the previously-used .pytest_basetemp path, which can become inaccessible on
+# Windows after a locked-handle cleanup failure.
+addopts = "-p no:cacheprovider --basetemp=.tmp_pytest"
 filterwarnings = [
   # Third-party: fastapi/starlette's testclient emits a
   # StarletteDeprecationWarning (a UserWarning subclass) at import time,

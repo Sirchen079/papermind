@@ -1,8 +1,9 @@
 """Research tools the agent can call.
 
-All tools are read-only queries over the local library — the agent cannot
-mutate data, so a bad model turn can't corrupt anything. Each tool returns a
-JSON string so the model gets structured, predictable data.
+Most tools are read-only queries over the local library. A small set performs
+explicit organization actions, such as adding tags or placing a paper into a
+collection. Each tool returns a JSON string so the model gets structured,
+predictable data.
 """
 from __future__ import annotations
 
@@ -13,6 +14,13 @@ from typing import Any, Callable
 from sqlmodel import Session, select
 
 from app.models import Concept, Paper, PaperConcept, Summary
+from app.models.paper import parse_authors_json, parse_summary_json
+from app.organization.service import (
+    add_paper_to_collection,
+    attach_tag_to_paper,
+    create_or_update_collection,
+    create_or_update_tag,
+)
 
 
 @dataclass
@@ -35,14 +43,19 @@ class Tool:
 
 
 def _authors(p: Paper) -> list[str]:
-    try:
-        return json.loads(p.authors_json or "[]")[:3]
-    except json.JSONDecodeError:
-        return []
+    return parse_authors_json(p.authors_json)[:3]
 
 
 def _brief(p: Paper) -> dict[str, Any]:
     return {"id": p.id, "title": p.title, "year": p.year, "authors": _authors(p)}
+
+
+def _active_paper_ids(session: Session) -> set[int]:
+    return {
+        int(pid)
+        for pid in session.exec(select(Paper.id).where(Paper.is_deleted == False)).all()  # noqa: E712
+        if pid is not None
+    }
 
 
 def _concept_names(session: Session, paper_id: int) -> list[str]:
@@ -66,10 +79,7 @@ def _summary(session: Session, paper_id: int) -> dict[str, Any] | None:
     ).first()
     if row is None or not row.content_json:
         return None
-    try:
-        return json.loads(row.content_json)
-    except json.JSONDecodeError:
-        return None
+    return parse_summary_json(row.content_json)
 
 
 def t_search_library(session: Session, query: str, top_k: int = 5) -> str:
@@ -79,7 +89,9 @@ def t_search_library(session: Session, query: str, top_k: int = 5) -> str:
     # concept names per paper (one pass)
     names_by_paper: dict[int, set[str]] = {}
     if qwords:
+        active_ids = {p.id for p in papers if p.id is not None}
         links = session.exec(select(PaperConcept)).all()
+        links = [link for link in links if link.paper_id in active_ids]
         cids = {lc.concept_id for lc in links}
         cname = {c.id: (c.name or "").lower() for c in session.exec(select(Concept).where(Concept.id.in_(cids))).all()}
         for lc in links:
@@ -136,8 +148,11 @@ def t_get_paper_full_text(session: Session, paper_id: int, max_chars: int = 6000
 
 def t_list_concepts(session: Session, min_papers: int = 1) -> str:
     """Concepts in the library, with how many papers each spans."""
+    active_ids = _active_paper_ids(session)
     counts: dict[int, int] = {}
     for row in session.exec(select(PaperConcept)).all():
+        if row.paper_id not in active_ids:
+            continue
         counts[row.concept_id] = counts.get(row.concept_id, 0) + 1
     keep = {c for c, n in counts.items() if n >= min_papers}
     concepts = session.exec(select(Concept).where(Concept.id.in_(keep))).all()
@@ -160,8 +175,9 @@ def t_find_related(session: Session, paper_id: int) -> str:
     if not my:
         return json.dumps({"note": "this paper has no extracted concepts yet"})
     related: dict[int, set[int]] = {}
+    active_ids = _active_paper_ids(session)
     for row in session.exec(select(PaperConcept).where(PaperConcept.concept_id.in_(my))).all():
-        if row.paper_id == paper_id:
+        if row.paper_id == paper_id or row.paper_id not in active_ids:
             continue
         related.setdefault(row.paper_id, set()).add(row.concept_id)
     out: list[dict[str, Any]] = []
@@ -170,6 +186,40 @@ def t_find_related(session: Session, paper_id: int) -> str:
         if rp is not None and not rp.is_deleted:
             out.append({**_brief(rp), "shared_concepts": len(cids)})
     return json.dumps(out or [{"note": "no related papers in the library"}], ensure_ascii=False)
+
+
+def t_tag_paper(session: Session, paper_id: int, tag_name: str, color: str | None = None) -> str:
+    """Create/update a user tag and attach it to one paper."""
+    paper = session.get(Paper, paper_id)
+    if paper is None or paper.is_deleted:
+        return json.dumps({"ok": False, "error": f"paper {paper_id} not found"}, ensure_ascii=False)
+    try:
+        tag, _ = create_or_update_tag(session, {"name": tag_name, "color": color})
+        attached, _ = attach_tag_to_paper(session, paper_id, int(tag["id"]))
+    except (LookupError, ValueError) as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    return json.dumps({"ok": True, "paper_id": paper_id, "tag": attached}, ensure_ascii=False)
+
+
+def t_add_paper_to_collection(
+    session: Session,
+    paper_id: int,
+    collection_name: str,
+    description: str | None = None,
+) -> str:
+    """Create/update a user collection and add one paper to it."""
+    paper = session.get(Paper, paper_id)
+    if paper is None or paper.is_deleted:
+        return json.dumps({"ok": False, "error": f"paper {paper_id} not found"}, ensure_ascii=False)
+    try:
+        collection, _ = create_or_update_collection(
+            session,
+            {"name": collection_name, "description": description},
+        )
+        added, _ = add_paper_to_collection(session, int(collection["id"]), paper_id)
+    except (LookupError, ValueError) as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    return json.dumps({"ok": True, "paper_id": paper_id, "collection": added}, ensure_ascii=False)
 
 
 TOOLS: list[Tool] = [
@@ -228,6 +278,34 @@ TOOLS: list[Tool] = [
             "required": ["paper_id"],
         },
         run=t_find_related,
+    ),
+    Tool(
+        name="tag_paper",
+        description="Create or reuse a user tag and attach it to one paper. Use after identifying a paper id. Good for organizing a master's library by topic, method, priority, or thesis role.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "integer", "description": "The paper's id."},
+                "tag_name": {"type": "string", "description": "User-visible tag name."},
+                "color": {"type": "string", "description": "Optional CSS color, such as #2563eb."},
+            },
+            "required": ["paper_id", "tag_name"],
+        },
+        run=t_tag_paper,
+    ),
+    Tool(
+        name="add_paper_to_collection",
+        description="Create or reuse a user collection and add one paper to it. Use for durable folders such as thesis must-read, related work, experiment baseline, or advisor discussion.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "paper_id": {"type": "integer", "description": "The paper's id."},
+                "collection_name": {"type": "string", "description": "User-visible collection name."},
+                "description": {"type": "string", "description": "Optional collection description."},
+            },
+            "required": ["paper_id", "collection_name"],
+        },
+        run=t_add_paper_to_collection,
     ),
 ]
 

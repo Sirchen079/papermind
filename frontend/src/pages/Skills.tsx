@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { Check, RotateCw, X } from "../icons";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+import { useToast } from "../components/ui/Toast";
+import { SkeletonGroup } from "../components/ui/Skeleton";
+import { Shell } from "../components/layout/Shell";
+import { EmptyState } from "../components/ui/EmptyState";
+import { PageHeader } from "../components/ui/PageHeader";
 
 interface Skill {
   id: number;
@@ -23,17 +30,20 @@ interface ToolResult {
 
 export default function Skills() {
   const [skills, setSkills] = useState<Skill[]>([]);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", type: "instruction", trigger: "manual", keywords: "", body: "" });
   const [runningId, setRunningId] = useState<number | null>(null);
   const [results, setResults] = useState<Record<number, ToolResult>>({});
+  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+  const confirm = useConfirm();
 
   async function load() {
     try {
       setSkills(await api.listSkills());
     } catch (e: any) {
-      setErr(e.message);
+      toast.error(e.message);
+    } finally {
+      setLoading(false);
     }
   }
   useEffect(() => {
@@ -41,8 +51,6 @@ export default function Skills() {
   }, []);
 
   async function add() {
-    setErr(null);
-    setMsg(null);
     try {
       await api.upsertSkill({
         name: form.name,
@@ -53,67 +61,63 @@ export default function Skills() {
         enabled: true,
       });
       setForm({ name: "", type: "instruction", trigger: "manual", keywords: "", body: "" });
+      toast.success("已保存技能。");
       await load();
     } catch (e: any) {
-      setErr(e.message);
+      toast.error(e.message);
     }
   }
 
   async function reload() {
     try {
       const r = await api.reloadSkills();
-      setMsg(`已从 user_skills/ 加载 ${r.loaded} 个技能。`);
+      toast.success(`已从 user_skills/ 加载 ${r.loaded} 个技能。`);
       await load();
     } catch (e: any) {
-      setErr(e.message);
+      toast.error(e.message);
     }
   }
 
-  async function remove(id: number) {
-    await api.deleteSkill(id);
-    await load();
+  async function remove(s: Skill) {
+    const ok = await confirm({
+      title: "删除技能？",
+      message: `将删除「${s.name}」，此操作不可撤销。`,
+      variant: "danger",
+      confirmText: "删除",
+    });
+    if (!ok) return;
+    try {
+      await api.deleteSkill(s.id);
+      toast.success("已删除技能。");
+      await load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
   }
 
   async function runSkill(id: number) {
-    setErr(null);
     setRunningId(id);
     try {
       const r = await api.runSkill(id);
       setResults((prev) => ({ ...prev, [id]: r }));
     } catch (e: any) {
-      setErr(e.message);
+      toast.error(e.message);
     } finally {
       setRunningId(null);
     }
   }
 
   return (
-    <div className="max-w-3xl space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm" style={{ color: "var(--muted)" }}>
-          注入到助手中的声明式能力。
-        </p>
-        <button onClick={reload} className="btn-ghost">
-          ↻ 从文件夹重新加载
-        </button>
-      </div>
-      {msg && (
-        <div
-          className="rounded-lg px-3 py-2 text-sm"
-          style={{ backgroundColor: "color-mix(in srgb, var(--success) 14%, transparent)", color: "var(--success)" }}
-        >
-          {msg}
-        </div>
-      )}
-      {err && (
-        <div
-          className="rounded-lg px-3 py-2 text-sm"
-          style={{ backgroundColor: "color-mix(in srgb, var(--danger) 12%, transparent)", color: "var(--danger)" }}
-        >
-          {err}
-        </div>
-      )}
-
+    <Shell max="narrow" className="space-y-6">
+      <PageHeader
+        title="技能"
+        subtitle="注入到助手中的声明式能力"
+        actions={
+          <button onClick={reload} className="btn-ghost">
+            <RotateCw size={14} /> 从文件夹重新加载
+          </button>
+        }
+      />
       <section className="card">
         <h3 className="mb-3 font-semibold">新建技能</h3>
         <div className="mb-3 grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -156,25 +160,25 @@ export default function Skills() {
       </section>
 
       <section className="space-y-2">
-        {skills.length === 0 && (
-          <div className="card text-center text-sm" style={{ color: "var(--muted)" }}>
-            还没有技能。
-          </div>
-        )}
+        {loading ? (
+          <SkeletonGroup variant="row" count={4} />
+        ) : skills.length === 0 ? (
+          <EmptyState title="还没有技能" hint="新建一个指令、模板、工具或人格技能。" />
+        ) : null}
         {skills.map((s) => (
           <div key={s.id} className="card-tight" style={{ boxShadow: "var(--shadow)" }}>
             <div className="flex items-center gap-2">
               <span className="font-medium">{s.name}</span>
               <span className="chip">{s.type}</span>
-              <span className="text-xs" style={{ color: "var(--faint)" }}>
+              <span className="text-xs text-faint">
                 {s.trigger}
               </span>
               {s.keywords.length > 0 && (
-                <span className="text-xs" style={{ color: "var(--faint)" }}>
+                <span className="text-xs text-faint">
                   · {s.keywords.join(", ")}
                 </span>
               )}
-              <span className="ml-auto text-xs" style={{ color: "var(--faint)" }}>
+              <span className="ml-auto text-xs text-faint">
                 {s.source}
               </span>
               {s.type === "tool" && (
@@ -186,20 +190,17 @@ export default function Skills() {
                   {runningId === s.id ? "运行中…" : "运行"}
                 </button>
               )}
-              <button onClick={() => remove(s.id)} className="btn-subtle px-2 text-sm" style={{ color: "var(--danger)" }}>
+              <button onClick={() => remove(s)} className="btn-subtle px-2 text-sm text-[var(--danger)]">
                 删除
               </button>
             </div>
             {s.description && (
-              <p className="mt-1 text-sm" style={{ color: "var(--muted)" }}>
+              <p className="mt-1 text-sm text-muted">
                 {s.description}
               </p>
             )}
             {s.body && (
-              <pre
-                className="mt-2 whitespace-pre-wrap font-mono text-xs"
-                style={{ color: "var(--muted)" }}
-              >
+              <pre className="mt-2 whitespace-pre-wrap font-mono text-xs text-muted">
                 {s.body.slice(0, 200)}
                 {s.body.length > 200 ? "…" : ""}
               </pre>
@@ -209,19 +210,19 @@ export default function Skills() {
                 className="mt-2 rounded-lg p-2.5 text-xs"
                 style={{ backgroundColor: "var(--surface-2)" }}
               >
-                <div className="mb-1 flex items-center gap-2" style={{ color: "var(--faint)" }}>
+                <div className="mb-1 flex items-center gap-2 text-faint">
                   <span>
-                    {results[s.id].ok ? "✓ 正常退出" : `✕ 退出码 ${results[s.id].exit_code}`}
+                    {results[s.id].ok ? (<><Check size={11} /> 正常退出</>) : (<><X size={11} /> 退出码 {results[s.id].exit_code}</>)}
                   </span>
                   <span>· {results[s.id].duration_ms} ms</span>
                 </div>
                 {results[s.id].stdout && (
-                  <pre className="whitespace-pre-wrap font-mono" style={{ color: "var(--text)" }}>
+                  <pre className="whitespace-pre-wrap font-mono text-[var(--text)]">
                     {results[s.id].stdout.slice(-2000)}
                   </pre>
                 )}
                 {results[s.id].stderr && (
-                  <pre className="whitespace-pre-wrap font-mono" style={{ color: "var(--danger)" }}>
+                  <pre className="whitespace-pre-wrap font-mono text-[var(--danger)]">
                     {results[s.id].stderr.slice(-2000)}
                   </pre>
                 )}
@@ -230,6 +231,6 @@ export default function Skills() {
           </div>
         ))}
       </section>
-    </div>
+    </Shell>
   );
 }

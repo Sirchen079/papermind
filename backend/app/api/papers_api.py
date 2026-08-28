@@ -6,10 +6,28 @@ from sqlmodel import Session, select
 
 from app.api.deps import get_session
 from app.config import get_settings
+from app.ingestion.citation_key import normalize_citation_key
+from app.ingestion.dedup import normalize_title
 from app.ingestion.service import analyze_paper, persist_fetched
-from app.ingestion.sources import FetchedPaper, fetch_arxiv, parse_bibtex
-from app.models import AnalysisRun, Concept, Paper, PaperChunk, PaperConcept, Provider, Summary
+from app.ingestion.sources import FetchedPaper, fetch_arxiv, parse_bibtex, parse_ris
+from app.models import (
+    AnalysisRun,
+    CollectionPaper,
+    Concept,
+    Paper,
+    PaperChunk,
+    PaperConcept,
+    PaperLink,
+    PaperTag,
+    Provider,
+    Summary,
+    Suggestion,
+)
+from app.models.base import utcnow
+from app.models.paper import parse_authors_json, parse_summary_json
+from app.organization.service import paper_collections, paper_tags
 from app.providers.client import ProviderClient
+from app.reading.service import reading_summary
 
 router = APIRouter()
 
@@ -20,6 +38,36 @@ class ArxivIn(BaseModel):
 
 class BibtexIn(BaseModel):
     bibtex: str
+
+
+class RisIn(BaseModel):
+    ris: str
+
+
+class ManualPaperIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    citation_key: str | None = None
+    title: str
+    authors: list[str] | None = None
+    abstract: str | None = None
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+
+
+class PaperPatchIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    citation_key: str | None = None
+    title: str | None = None
+    authors: list[str] | None = None
+    abstract: str | None = None
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
 
 
 def _pdf_dir() -> "Path":
@@ -33,8 +81,9 @@ def _public(p: Paper) -> dict:
         "id": p.id,
         "source": p.source,
         "source_ref": p.source_ref,
+        "citation_key": p.citation_key,
         "title": p.title,
-        "authors": json.loads(p.authors_json or "[]"),
+        "authors": parse_authors_json(p.authors_json),
         "abstract": p.abstract,
         "year": p.year,
         "venue": p.venue,
@@ -44,11 +93,73 @@ def _public(p: Paper) -> dict:
     }
 
 
+def _optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _citation_key(value: str | None) -> str | None:
+    text = _optional_text(value)
+    if text is None:
+        return None
+    if normalize_citation_key(text) is None:
+        raise ValueError("invalid citation key")
+    return text
+
+
+def _ensure_unique_citation_key(session: Session, paper_id: int, key: str | None) -> None:
+    if key is None:
+        return
+    row = session.exec(
+        select(Paper).where(
+            Paper.citation_key == key,
+            Paper.id != paper_id,
+            Paper.is_deleted == False,  # noqa: E712
+        )
+    ).first()
+    if row is not None:
+        raise ValueError("citation key already exists")
+
+
+def _ensure_unique_paper_identifier(
+    session: Session, paper_id: int, field: str, value: str | None, message: str
+) -> None:
+    if value is None:
+        return
+    column = getattr(Paper, field)
+    row = session.exec(
+        select(Paper).where(
+            column == value,
+            Paper.id != paper_id,
+            Paper.is_deleted == False,  # noqa: E712
+        )
+    ).first()
+    if row is not None:
+        raise ValueError(message)
+
+
+def _ensure_unique_title(session: Session, paper_id: int, title: str | None) -> None:
+    title_norm = normalize_title(title)
+    if title_norm is None:
+        return
+    row = session.exec(
+        select(Paper).where(
+            Paper.title_norm == title_norm,
+            Paper.id != paper_id,
+            Paper.is_deleted == False,  # noqa: E712
+        )
+    ).first()
+    if row is not None:
+        raise ValueError("paper title already exists")
+
+
 def _summary_for(session: Session, paper_id: int) -> dict | None:
     row = session.exec(select(Summary).where(Summary.paper_id == paper_id)).first()
     if row is None or not row.content_json:
         return None
-    return json.loads(row.content_json)
+    return parse_summary_json(row.content_json)
 
 
 def _concepts_for(session: Session, paper_id: int) -> list[dict]:
@@ -98,6 +209,9 @@ def list_papers(session: Session = Depends(get_session)) -> list[dict]:
     for p in session.exec(select(Paper).where(Paper.is_deleted == False)):  # noqa: E712
         d = _public(p)
         d["has_summary"] = _summary_for(session, p.id) is not None
+        d["reading"] = reading_summary(session, p.id)
+        d["tags"] = paper_tags(session, p.id)
+        d["collections"] = paper_collections(session, p.id)
         out.append(d)
     return out
 
@@ -112,7 +226,95 @@ def get_paper(pid: int, session: Session = Depends(get_session)) -> dict:
     d["concepts"] = _concepts_for(session, p.id)
     d["analysis"] = _analysis_for(session, p.id)
     d["full_text"] = p.full_text
+    d["reading"] = reading_summary(session, p.id)
+    d["tags"] = paper_tags(session, p.id)
+    d["collections"] = paper_collections(session, p.id)
     return d
+
+
+@router.patch("/papers/{pid}")
+def patch_paper(pid: int, body: PaperPatchIn, session: Session = Depends(get_session)) -> dict:
+    p = session.get(Paper, pid)
+    if p is None or p.is_deleted:
+        raise HTTPException(404, "paper not found")
+
+    fields = body.model_fields_set
+    try:
+        if "citation_key" in fields:
+            key = _citation_key(body.citation_key)
+            _ensure_unique_citation_key(session, pid, key)
+            p.citation_key = key
+        if "doi" in fields:
+            doi = _optional_text(body.doi)
+            _ensure_unique_paper_identifier(session, pid, "doi", doi, "doi already exists")
+            p.doi = doi
+        if "arxiv_id" in fields:
+            arxiv_id = _optional_text(body.arxiv_id)
+            _ensure_unique_paper_identifier(
+                session, pid, "arxiv_id", arxiv_id, "arxiv id already exists"
+            )
+            p.arxiv_id = arxiv_id
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    if "title" in fields:
+        p.title = _optional_text(body.title)
+        p.title_norm = normalize_title(p.title)
+    if "authors" in fields:
+        p.authors_json = json.dumps(
+            [str(author).strip() for author in (body.authors or []) if str(author).strip()],
+            ensure_ascii=False,
+        )
+    if "abstract" in fields:
+        p.abstract = _optional_text(body.abstract)
+    if "year" in fields:
+        p.year = body.year
+    if "venue" in fields:
+        p.venue = _optional_text(body.venue)
+    p.updated_at = utcnow()
+    session.add(p)
+    session.commit()
+    session.refresh(p)
+    return _public(p)
+
+
+@router.post("/papers/manual", status_code=201)
+def create_manual_paper(body: ManualPaperIn, session: Session = Depends(get_session)) -> dict:
+    title = _optional_text(body.title)
+    if title is None:
+        raise HTTPException(422, "title is required")
+
+    try:
+        citation_key = _citation_key(body.citation_key)
+        _ensure_unique_citation_key(session, 0, citation_key)
+        doi = _optional_text(body.doi)
+        _ensure_unique_paper_identifier(session, 0, "doi", doi, "doi already exists")
+        arxiv_id = _optional_text(body.arxiv_id)
+        _ensure_unique_paper_identifier(session, 0, "arxiv_id", arxiv_id, "arxiv id already exists")
+        _ensure_unique_title(session, 0, title)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    paper = Paper(
+        source="manual",
+        citation_key=citation_key,
+        title=title,
+        authors_json=json.dumps(
+            [str(author).strip() for author in (body.authors or []) if str(author).strip()],
+            ensure_ascii=False,
+        ),
+        abstract=_optional_text(body.abstract),
+        year=body.year,
+        venue=_optional_text(body.venue),
+        doi=doi,
+        arxiv_id=arxiv_id,
+        title_norm=normalize_title(title),
+        updated_at=utcnow(),
+    )
+    session.add(paper)
+    session.commit()
+    session.refresh(paper)
+    return _public(paper)
 
 
 @router.delete("/papers/{pid}", status_code=204)
@@ -127,8 +329,6 @@ def delete_paper(pid: int, session: Session = Depends(get_session)) -> None:
     if p is None or p.is_deleted:
         raise HTTPException(404, "paper not found")
     p.is_deleted = True
-    from app.models.base import utcnow
-
     p.updated_at = utcnow()
     session.add(p)
     # Remove retrieval chunks so a deleted paper can't surface in chat RAG.
@@ -138,6 +338,21 @@ def delete_paper(pid: int, session: Session = Depends(get_session)) -> None:
     # find_related counts) no longer count a hidden paper.
     for link in session.exec(select(PaperConcept).where(PaperConcept.paper_id == pid)).all():
         session.delete(link)
+    # Detach thesis/project links too. A hidden paper no longer appears in the
+    # thesis workspace, so leaving invisible links would block later cleanup.
+    for link in session.exec(select(PaperLink).where(PaperLink.paper_id == pid)).all():
+        session.delete(link)
+    for link in session.exec(select(PaperTag).where(PaperTag.paper_id == pid)).all():
+        session.delete(link)
+    for link in session.exec(select(CollectionPaper).where(CollectionPaper.paper_id == pid)).all():
+        session.delete(link)
+    for suggestion in session.exec(
+        select(Suggestion).where(
+            (Suggestion.paper_id == pid) | (Suggestion.related_paper_id == pid)
+        )
+    ).all():
+        suggestion.status = "dismissed"
+        session.add(suggestion)
     session.commit()
 
 
@@ -215,6 +430,23 @@ def ingest_bibtex(body: BibtexIn, session: Session = Depends(get_session)) -> li
     ctx = _analysis_ctx(session)
     out = []
     for fetched in parse_bibtex(body.bibtex):
+        paper = persist_fetched(
+            session,
+            fetched,
+            pdf_dir=_pdf_dir(),
+            client=ctx[0] if ctx else None,
+            provider=ctx[1] if ctx else None,
+            model_id=ctx[2] if ctx else None,
+        )
+        out.append(_public(paper))
+    return out
+
+
+@router.post("/papers/ris")
+def ingest_ris(body: RisIn, session: Session = Depends(get_session)) -> list[dict]:
+    ctx = _analysis_ctx(session)
+    out = []
+    for fetched in parse_ris(body.ris):
         paper = persist_fetched(
             session,
             fetched,

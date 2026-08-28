@@ -1,13 +1,34 @@
 import json
+import re
 from pathlib import Path
 
 from sqlmodel import Session, select
 
+from app.ingestion.citation_key import normalize_citation_key
 from app.ingestion.dedup import normalize_title
 from app.ingestion.pdf_parser import parse_pdf
 from app.ingestion.sources import FetchedPaper
 from app.models import AnalysisRun, Paper, Provider, Summary
 from app.models.base import utcnow
+
+
+def _safe_pdf_slug(raw: str | None) -> str:
+    """Return a filename-safe slug with no path separators or dot traversal."""
+    cleaned = re.sub(r"[^\w.-]+", "_", raw or "", flags=re.UNICODE).strip("._-")
+    return cleaned or "paper"
+
+
+def _citation_key_available(session: Session, key: str | None, paper_id: int | None) -> bool:
+    key = normalize_citation_key(key)
+    if not key:
+        return False
+    conditions = [
+        Paper.citation_key == key,
+        Paper.is_deleted == False,  # noqa: E712
+    ]
+    if paper_id is not None:
+        conditions.append(Paper.id != paper_id)
+    return session.exec(select(Paper.id).where(*conditions)).first() is None
 
 
 def find_duplicate(
@@ -18,11 +39,15 @@ def find_duplicate(
 ) -> Paper | None:
     """Return an existing non-deleted Paper matching doi/arxiv_id/title, else None."""
     if doi:
-        hit = session.exec(select(Paper).where(Paper.doi == doi)).first()
+        hit = session.exec(
+            select(Paper).where(Paper.doi == doi, Paper.is_deleted == False)  # noqa: E712
+        ).first()
         if hit:
             return hit
     if arxiv_id:
-        hit = session.exec(select(Paper).where(Paper.arxiv_id == arxiv_id)).first()
+        hit = session.exec(
+            select(Paper).where(Paper.arxiv_id == arxiv_id, Paper.is_deleted == False)  # noqa: E712
+        ).first()
         if hit:
             return hit
     tn = normalize_title(title)
@@ -51,6 +76,12 @@ def persist_fetched(
     existing = find_duplicate(session, fetched.doi, fetched.arxiv_id, fetched.title)
     paper = existing if existing is not None else Paper(source=fetched.source, source_ref=fetched.source_ref)
 
+    if (
+        fetched.citation_key
+        and not paper.citation_key
+        and _citation_key_available(session, fetched.citation_key, paper.id)
+    ):
+        paper.citation_key = fetched.citation_key
     paper.title = fetched.title or paper.title
     paper.authors_json = json.dumps(fetched.authors, ensure_ascii=False)
     paper.abstract = fetched.abstract or paper.abstract
@@ -62,7 +93,9 @@ def persist_fetched(
     paper.updated_at = utcnow()
 
     if fetched.pdf_bytes:
-        slug = fetched.arxiv_id or (fetched.doi or "").replace("/", "_") or fetched.source_ref or "paper"
+        slug = _safe_pdf_slug(
+            fetched.arxiv_id or (fetched.doi or "").replace("/", "_") or fetched.source_ref
+        )
         pdf_path = Path(pdf_dir) / f"{slug}.pdf"
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         pdf_path.write_bytes(fetched.pdf_bytes)

@@ -197,6 +197,50 @@ def test_retrieve_returns_closest_chunk(tmp_path, monkeypatch):
     assert hits[1][1] == 0.0
 
 
+def test_retrieve_ignores_deleted_paper_chunks(tmp_path, monkeypatch):
+    eng = make_engine(tmp_path / "ret_deleted.sqlite")
+    SQLModel.metadata.create_all(eng)
+    with Session(eng) as s:
+        active = Paper(source="pdf", title="Active Paper")
+        deleted = Paper(source="pdf", title="Deleted Paper", is_deleted=True)
+        s.add(active)
+        s.add(deleted)
+        s.commit()
+        s.refresh(active)
+        s.refresh(deleted)
+        s.add(
+            PaperChunk(
+                paper_id=deleted.id,
+                ordinal=0,
+                text="deleted exact match",
+                embedding=serialize([1.0, 0.0, 0.0]),
+                embedding_model="emb",
+            )
+        )
+        s.add(
+            PaperChunk(
+                paper_id=active.id,
+                ordinal=0,
+                text="active weaker match",
+                embedding=serialize([0.0, 1.0, 0.0]),
+                embedding_model="emb",
+            )
+        )
+        s.commit()
+
+    from app.rag import index as index_mod
+
+    class FixedClient:
+        def embed(self, provider, model_id, inputs, request_kind="embedding", ref_id=None):  # noqa: ANN001
+            return [[1.0, 0.0, 0.0] for _ in inputs]
+
+    monkeypatch.setattr(index_mod, "pick_llm", lambda *a, **k: (FixedClient(), object(), "emb"))
+    with Session(eng) as s:
+        hits = index_mod.retrieve(s, "anything")
+
+    assert [chunk.text for chunk, _score in hits] == ["active weaker match"]
+
+
 def test_retrieve_empty_without_embedding_model(tmp_path, monkeypatch):
     eng = make_engine(tmp_path / "ret2.sqlite")
     SQLModel.metadata.create_all(eng)

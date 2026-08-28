@@ -1,11 +1,13 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app import paths
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="PAPERMIND_", env_file=".env", extra="ignore")
 
-    data_dir: Path = Path("data")
+    data_dir: Path = paths.default_data_dir()
     db_path: Path | None = None          # default: data_dir/papermind.sqlite
     master_key_path: Path | None = None  # default: data_dir/master.key
 

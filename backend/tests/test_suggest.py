@@ -92,6 +92,25 @@ def test_concept_links_no_concepts_returns_zero(tmp_path):
         assert concept_links_for_paper(s, a) == 0
 
 
+def test_concept_links_ignore_deleted_related_papers(tmp_path):
+    eng = _engine(tmp_path)
+    with Session(eng) as s:
+        active = _mk_paper(s, "Active")
+        deleted = _mk_paper(s, "Deleted")
+        deleted.is_deleted = True
+        s.add(deleted)
+        s.commit()
+        shared = _mk_concept(s, "stale-shared")
+        _link(s, active.id, shared.id)
+        _link(s, deleted.id, shared.id)
+
+        created = concept_links_for_paper(s, active)
+        suggestions = s.exec(select(Suggestion)).all()
+
+    assert created == 0
+    assert suggestions == []
+
+
 def test_concept_links_handles_missing_title(tmp_path):
     """A paper with a null title must not render 'None' in the suggestion title."""
     eng = _engine(tmp_path)
@@ -127,6 +146,25 @@ def test_concept_hubs_flags_central_themes(tmp_path):
     detail = json.loads(rows[0].detail_json)
     assert detail["concept"] == "DeepLearning"
     assert detail["papers"] >= HUB_THRESHOLD
+
+
+def test_concept_hubs_count_only_active_papers(tmp_path):
+    eng = _engine(tmp_path)
+    with Session(eng) as s:
+        theme = _mk_concept(s, "MaybeHub")
+        for i in range(HUB_THRESHOLD - 1):
+            _link(s, _mk_paper(s, f"Active {i}").id, theme.id)
+        deleted = _mk_paper(s, "Deleted Hub Contributor")
+        deleted.is_deleted = True
+        s.add(deleted)
+        s.commit()
+        _link(s, deleted.id, theme.id)
+
+        created = concept_hubs(s)
+
+    assert created == 0
+    with Session(eng) as s:
+        assert s.exec(select(Suggestion)).all() == []
 
 
 def test_generate_for_paper_includes_hubs(tmp_path):

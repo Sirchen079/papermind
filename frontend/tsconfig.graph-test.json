@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "strict": true,
+    "outDir": ".tmp_graph_test_dist",
+    "rootDir": "src/pages",
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": false
+  },
+  "include": [
+    "src/pages/graphModel.ts",
+    "src/pages/libraryDiagnosticsModel.ts",
+    "src/pages/thesisLinkModel.ts",
+    "src/pages/readingWorkspaceModel.ts",
+    "src/pages/readinessModel.ts",
+    "src/pages/researchProgressModel.ts",
+    "src/pages/thesisWorkspaceModel.ts",
+    "src/pages/organizationModel.ts",
+    "src/pages/manualPaperModel.ts",
+    "src/pages/pdfBatchModel.ts",
+    "src/pages/bulkOrganizationModel.ts",
+    "src/pages/archiveModel.ts"
+  ]
+}

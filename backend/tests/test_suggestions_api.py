@@ -1,7 +1,7 @@
 from sqlmodel import Session
 
 from app.db.engine import get_engine
-from app.models import Concept, Paper, PaperConcept
+from app.models import Concept, Paper, PaperConcept, Suggestion
 
 
 def _seed_connected_library():
@@ -46,6 +46,41 @@ def test_generate_then_list(client):
     link = next(s for s in listed if s["kind"] == "concept_link")
     assert link["related_paper"] is not None
     assert link["detail"]["count"] >= 1
+
+
+def test_list_hides_existing_suggestions_for_deleted_papers(client):
+    _seed_connected_library()
+    client.post("/api/suggestions/generate")
+    listed = client.get("/api/suggestions").json()
+    link = next(s for s in listed if s["kind"] == "concept_link")
+    linked_paper_id = link["related_paper"]["id"]
+
+    assert client.delete(f"/api/papers/{linked_paper_id}").status_code == 204
+
+    new_items = client.get("/api/suggestions?status=new").json()
+    all_items = client.get("/api/suggestions").json()
+    assert link["id"] not in [s["id"] for s in new_items]
+    assert link["id"] not in [s["id"] for s in all_items]
+
+
+def test_list_tolerates_malformed_suggestion_detail(client):
+    with Session(get_engine()) as s:
+        suggestion = Suggestion(
+            kind="concept_hub",
+            title="Malformed detail",
+            detail_json="not-json",
+            status="new",
+        )
+        s.add(suggestion)
+        s.commit()
+        sid = suggestion.id
+
+    res = client.get("/api/suggestions")
+
+    assert res.status_code == 200
+    row = next(item for item in res.json() if item["id"] == sid)
+    assert row["title"] == "Malformed detail"
+    assert row["detail"] == {}
 
 
 def test_generate_is_idempotent(client):

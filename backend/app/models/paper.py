@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 
 from sqlmodel import Field, SQLModel
@@ -5,11 +6,36 @@ from sqlmodel import Field, SQLModel
 from app.models.base import utcnow
 
 
+def parse_authors_json(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(author).strip() for author in parsed if str(author).strip()]
+
+
+def parse_summary_json(value: str | None) -> dict | None:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
 class Paper(SQLModel, table=True):
     __tablename__ = "paper"
     id: int | None = Field(default=None, primary_key=True)
     source: str  # pdf | arxiv | bibtex | manual
     source_ref: str | None = None  # arxiv_id / doi / file path
+    citation_key: str | None = Field(default=None, index=True)
     title: str | None = None
     authors_json: str = Field(default="[]")  # JSON-encoded list[str]
     abstract: str | None = None

@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, type Source } from "../api";
+import { AlertTriangle, BookOpen, Check, Copy, Menu, MessageSquare, Pencil, SquareIcon, Wrench, X } from "../icons";
+import { useToast } from "../components/ui/Toast";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+import { EmptyState } from "../components/ui/EmptyState";
 
 interface Conv {
   id: number;
@@ -57,8 +61,10 @@ export default function Chat({
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const toast = useToast();
+  const confirm = useConfirm();
+  const [navOpen, setNavOpen] = useState(false);
   const [editText, setEditText] = useState("");
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -95,7 +101,7 @@ export default function Chat({
           );
       })
       .catch((e: any) => {
-        if (alive) setError(e.message);
+        if (alive) toast.error(e.message);
       });
     return () => {
       alive = false;
@@ -121,17 +127,25 @@ export default function Chat({
       await loadConvs();
       setActiveConv(c.id); // triggers the loader effect above
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   }
 
-  async function delConv(id: number) {
+  async function delConv(c: Conv) {
+    const ok = await confirm({
+      title: "删除对话？",
+      message: `将删除「${c.title}」，此操作不可撤销。`,
+      variant: "danger",
+      confirmText: "删除",
+    });
+    if (!ok) return;
     try {
-      await api.deleteConversation(id);
-      if (activeConv === id) setActiveConv(null);
+      await api.deleteConversation(c.id);
+      if (activeConv === c.id) setActiveConv(null);
       await loadConvs();
+      toast.success("已删除对话。");
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   }
 
@@ -148,7 +162,7 @@ export default function Chat({
       await api.renameConversation(id, title);
       await loadConvs();
     } catch (e: any) {
-      setError(e.message);
+      toast.error(e.message);
     }
   }
 
@@ -171,7 +185,6 @@ export default function Chat({
     // assistant placeholder: tool steps stream in first, then the final answer.
     setMessages((m) => [...m, mk("assistant")]);
     setBusy(true);
-    setError(null);
     const ac = new AbortController();
     abortRef.current = ac;
     try {
@@ -224,7 +237,7 @@ export default function Chat({
           // first message may have auto-derived a title — sync the sidebar.
           if (data.title) await loadConvs();
         } else if (event === "error") {
-          setError(data.message ?? "stream error");
+          toast.error(data.message ?? "stream error");
           setMessages((m) =>
             m[m.length - 1]?.content === "" && !(m[m.length - 1]?.tools?.length)
               ? m.slice(0, -1)
@@ -243,7 +256,7 @@ export default function Chat({
           return [...m.slice(0, -1), { ...last, stopped: true }];
         });
       } else {
-        setError(e.message);
+        toast.error(e.message);
         setMessages((m) =>
           m[m.length - 1]?.content === "" && !(m[m.length - 1]?.tools?.length)
             ? m.slice(0, -1)
@@ -257,19 +270,26 @@ export default function Chat({
   }
 
   return (
-    <div className="flex h-[78vh] gap-4">
-      <aside className="card-tight flex w-56 shrink-0 flex-col overflow-hidden p-0">
-        <div className="p-3" style={{ borderBottom: "1px solid var(--border)" }}>
-          <button onClick={newConv} className="btn-primary w-full">
+    <div className="relative flex h-[78vh] gap-4 px-4 sm:px-6 lg:px-10">
+      <aside
+        className={`card-tight absolute inset-y-0 left-0 z-20 flex w-64 shrink-0 flex-col overflow-hidden p-0 transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 ${
+          navOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="p-3 border-b border-[var(--border)]">
+          <button
+            onClick={() => {
+              newConv();
+              setNavOpen(false);
+            }}
+            className="btn-primary w-full"
+          >
             + 新建对话
           </button>
         </div>
         <div className="flex-1 space-y-1 overflow-auto p-2">
           {convs.length === 0 && (
-            <p
-              className="px-2 py-4 text-center text-xs"
-              style={{ color: "var(--faint)" }}
-            >
+            <p className="px-2 py-4 text-center text-xs text-faint">
               还没有对话。
             </p>
           )}
@@ -303,12 +323,12 @@ export default function Chat({
                   <button
                     onClick={() => {
                       if (!busy) setActiveConv(c.id);
+                      setNavOpen(false);
                     }}
                     disabled={busy}
-                    className="block w-full truncate rounded px-1 py-1.5 text-left text-sm"
-                    style={
-                      isActive ? { color: "var(--text)" } : { color: "var(--muted)" }
-                    }
+                    className={`block w-full truncate rounded px-1 py-1.5 text-left text-sm ${
+                      isActive ? "text-[var(--text)]" : "text-muted"
+                    }`}
                     title={c.title}
                   >
                     {c.title || "未命名"}
@@ -318,19 +338,19 @@ export default function Chat({
                   <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100">
                     <button
                       onClick={() => startRename(c)}
-                      className="px-1 text-xs"
-                      style={{ color: "var(--faint)" }}
+                      className="px-1 text-xs text-faint"
                       title="重命名"
+                      aria-label={`重命名「${c.title}」`}
                     >
-                      ✎
+                      <Pencil size={12} />
                     </button>
                     <button
-                      onClick={() => delConv(c.id)}
-                      className="px-1 text-xs"
-                      style={{ color: "var(--faint)" }}
+                      onClick={() => delConv(c)}
+                      className="px-1 text-xs text-faint"
                       title="删除"
+                      aria-label={`删除对话「${c.title}」`}
                     >
-                      ✕
+                      <X size={12} />
                     </button>
                   </div>
                 )}
@@ -340,14 +360,35 @@ export default function Chat({
         </div>
       </aside>
 
+      {navOpen && (
+        <div
+          className="modal-overlay z-10 md:hidden"
+          onClick={() => setNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
       <section className="card flex flex-1 flex-col overflow-hidden p-0">
+        <div className="flex items-center gap-2 p-2 md:hidden border-b border-[var(--border)]">
+          <button onClick={() => setNavOpen(true)} className="btn-ghost p-1.5" aria-label="打开对话列表">
+            <Menu size={16} />
+          </button>
+          <span className="text-sm text-muted">
+            {activeConv == null ? "选择或新建对话" : "当前对话"}
+          </span>
+        </div>
         {activeConv == null ? (
-          <div
-            className="flex flex-1 items-center justify-center"
-            style={{ color: "var(--faint)" }}
-          >
-            开始一个新对话
-          </div>
+          <EmptyState
+            className="flex-1"
+            icon={<MessageSquare size={24} />}
+            title="开始一个新对话"
+            hint="向你的论文库提问、总结文献、梳理研究脉络。"
+            action={
+              <button onClick={newConv} className="btn-primary">
+                + 新建对话
+              </button>
+            }
+          />
         ) : (
           <>
             <div className="flex-1 space-y-3 overflow-auto p-4">
@@ -374,7 +415,7 @@ export default function Chat({
                     {m.tools?.map((t, i) => (
                       <details key={i} className="tool-card">
                         <summary title={t.ok ? "工具执行成功" : "工具执行失败"}>
-                          <span>{t.ok ? "🔧" : "⚠️"}</span>
+                          <span className="flex items-center justify-center">{t.ok ? <Wrench size={12} /> : <AlertTriangle size={12} />}</span>
                           <code>
                             {t.name}
                             {argSummary(t.name, t.args)}
@@ -398,11 +439,11 @@ export default function Chat({
                           </ReactMarkdown>
                         </div>
                       ) : busy ? (
-                        <span className="text-sm" style={{ color: "var(--faint)" }}>
+                        <span className="text-sm text-faint">
                           思考中…
                         </span>
                       ) : m.stopped ? (
-                        <span className="text-sm italic" style={{ color: "var(--faint)" }}>
+                        <span className="text-sm italic text-faint">
                           （已停止）
                         </span>
                       ) : null
@@ -426,7 +467,7 @@ export default function Chat({
                             }}
                             title="复制"
                           >
-                            {copiedId === m.id ? "✓ 已复制" : "📋 复制"}
+                            {copiedId === m.id ? (<><Check size={11} /> 已复制</>) : (<><Copy size={11} /> 复制</>)}
                           </button>
                         )}
                         {m.sources?.map((s) => (
@@ -441,7 +482,7 @@ export default function Chat({
                             }}
                             title={s.snippet}
                           >
-                            📚 {s.title}
+                            <BookOpen size={11} /> {s.title}
                           </button>
                         ))}
                       </div>
@@ -450,14 +491,9 @@ export default function Chat({
               ))}
               <div ref={endRef} />
             </div>
-            {error && (
-              <div className="px-4 py-2 text-sm" style={{ color: "var(--danger)" }}>
-                {error}
-              </div>
-            )}
             <div
-              className="flex items-end gap-2 p-3"
-              style={{ borderTop: "1px solid var(--border)" }}
+              className="flex items-end gap-2 p-3 border-t border-[var(--border)]"
+              
             >
               <textarea
                 ref={taRef}
@@ -479,7 +515,7 @@ export default function Chat({
                   className="btn-ghost shrink-0 px-5"
                   title="停止生成"
                 >
-                  ■ 停止
+                  <SquareIcon size={12} /> 停止
                 </button>
               ) : (
                 <button

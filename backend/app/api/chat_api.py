@@ -68,6 +68,16 @@ def _sources_from_hits(
     return sources
 
 
+def _parse_sources(value: str | None) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _system_prompt(
     session: Session, user_message: str, hits: list[tuple[PaperChunk, float, Paper]]
 ) -> str:
@@ -208,7 +218,7 @@ def get_conversation(cid: int, session: Session = Depends(get_session)) -> dict:
                 "role": m.role,
                 "content": m.content,
                 "model": m.model,
-                "sources": json.loads(m.sources_json) if m.sources_json else [],
+                "sources": _parse_sources(m.sources_json),
             }
             for m in msgs
         ],
