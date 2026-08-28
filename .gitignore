@@ -5,14 +5,26 @@ __pycache__/
 venv/
 *.egg-info/
 .pytest_cache/
+.pytest_basetemp/
+.tmp_pytest*/
+.tmp_run*/
+.tmp_papermind_*.log
+
+# Runtime logs (.codex/ 等)
+*.log
+.codex/
 
 # Node / Frontend
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
+frontend/.tmp_graph_test_dist/
 
 # Local data (用户数据、上传 PDF、向量、DB)
 backend/data/
+backend/data.before-restore-*/
+data.before-restore-*/
 *.sqlite
 *.sqlite-journal
 *.sqlite-wal
@@ -26,6 +38,11 @@ backend/data/
 .DS_Store
 .idea/
 .vscode/
+
+# Build / packaging artifacts
+# build/dist/ is already covered by the global dist/ rule above.
+build/build_artifacts/
+build/installer_output/
 
 # SDD scratch (progress ledger, task briefs)
 .superpowers/
