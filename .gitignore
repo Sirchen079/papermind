@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.pytest_basetemp/
+.tmp_pytest*/
+.tmp_run*/
+.tmp_review*/
+.tmp_papermind_*.log
+
+# Runtime logs (.codex/ 等)
+*.log
+.codex/
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+frontend/.tmp_graph_test_dist/
+
+# Local data (用户数据、上传 PDF、向量、DB)
+/data/
+backend/data/
+backend/data.before-restore-*/
+data.before-restore-*/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Secrets / 本地配置
+.env
+*.local
+master.key
+connections.key
+api_token
+*.pem
+*.p12
+*.pfx
+
+# Internal notes and generated research/evaluation artifacts stay local.
+/CONTEXT.md
+/AGENTS.md
+/CLAUDE.md
+/docs/superpowers/
+/docs/product/
+/docs/internal/
+/private/
+/outputs/
+/work/
+*.jsonl
+*.har
+*.zip
+*.7z
+*.exe
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Build / packaging artifacts
+# build/dist/ is already covered by the global dist/ rule above.
+build/build_artifacts/
+build/installer_output/
+build/vendor/
+
+# SDD scratch (progress ledger, task briefs)
+.superpowers/
+.mimosa/
+# Isolated research-flow preview and synthetic test databases.
+.research-dev/
+.test-*/
+backend/.baseline-test-temp/
+backend/.prereq-*-temp/
+backend/.agent-*-temp/
+backend/.sources-*-temp/

@@ -1,0 +1,9 @@
+#!/bin/sh
+if [ -n "$PAPERMIND_CHECK_PYTHON" ]; then
+  exec "$PAPERMIND_CHECK_PYTHON" tools/check_public_tree.py
+fi
+if command -v python >/dev/null 2>&1; then
+  exec python tools/check_public_tree.py
+fi
+echo 'Python is required to check publication files before committing.' >&2
+exit 1

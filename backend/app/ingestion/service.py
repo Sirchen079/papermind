@@ -1,0 +1,300 @@
+import json
+import hashlib
+import logging
+import re
+from pathlib import Path
+
+from sqlmodel import Session, select
+
+from app.ingestion.citation_key import normalize_citation_key, resolve_unique_citation_key
+from app.ingestion.dedup import normalize_title
+from app.ingestion.pdf_parser import parse_pdf
+from app.ingestion.sources import FetchedPaper
+from app.models import AnalysisRun, Paper, Provider, Summary
+from app.models.base import utcnow
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_pdf_slug(raw: str | None) -> str:
+    """Return a filename-safe slug with no path separators or dot traversal."""
+    cleaned = re.sub(r"[^\w.-]+", "_", raw or "", flags=re.UNICODE).strip("._-")
+    return cleaned or "paper"
+
+
+def _citation_key_available(session: Session, key: str | None, paper_id: int | None) -> bool:
+    key = normalize_citation_key(key)
+    if not key:
+        return False
+    conditions = [
+        Paper.citation_key == key,
+        Paper.is_deleted == False,  # noqa: E712
+    ]
+    if paper_id is not None:
+        conditions.append(Paper.id != paper_id)
+    return session.exec(select(Paper.id).where(*conditions)).first() is None
+
+
+def find_duplicate(
+    session: Session,
+    doi: str | None,
+    arxiv_id: str | None,
+    title: str | None,
+) -> Paper | None:
+    """Return an existing non-deleted Paper matching doi/arxiv_id/title, else None."""
+    if doi:
+        hit = session.exec(
+            select(Paper).where(Paper.doi == doi, Paper.is_deleted == False)  # noqa: E712
+        ).first()
+        if hit:
+            return hit
+    if arxiv_id:
+        hit = session.exec(
+            select(Paper).where(Paper.arxiv_id == arxiv_id, Paper.is_deleted == False)  # noqa: E712
+        ).first()
+        if hit:
+            return hit
+    tn = normalize_title(title)
+    if tn:
+        hit = session.exec(
+            select(Paper).where(Paper.title_norm == tn, Paper.is_deleted == False)  # noqa: E712
+        ).first()
+        if hit:
+            return hit
+    return None
+
+
+def persist_fetched(
+    session: Session,
+    fetched: FetchedPaper,
+    pdf_dir: Path,
+    client=None,
+    provider: Provider | None = None,
+    model_id: str | None = None,
+) -> Paper:
+    """Dedup, parse PDF, optionally AI-summarize, and persist a FetchedPaper.
+
+    AI summarization runs only when ``client``/``provider``/``model_id`` are all
+    provided (graceful degradation when no provider is configured — R11).
+    """
+    pdf_path = None
+    text, conf = None, None
+    if fetched.pdf_bytes is not None:
+        # Validate in a disposable file before touching either the library or
+        # an ORM object. A failed upload must leave existing evidence intact.
+        try:
+            text, conf = parse_pdf(fetched.pdf_bytes)
+        except Exception as exc:
+            raise ValueError("无法解析 PDF，请检查文件是否完整、未加密且格式正确。") from exc
+        digest = hashlib.sha256(fetched.pdf_bytes).hexdigest()
+        pdf_path = Path(pdf_dir).resolve() / f"{digest}.pdf"
+    # Keep parsing/network work outside the write transaction. All import
+    # routes share this boundary for deduplication, citation keys and PDF writes.
+    if not session.connection().connection.driver_connection.in_transaction:
+        session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+        session.expire_all()
+    if fetched.pdf_bytes is not None:
+        if fetched.source == "pdf":
+            # Upload filenames are labels, not paper identities. Also recognize
+            # legacy files and renamed papers by bytes without changing metadata.
+            for candidate in session.exec(select(Paper).where(Paper.is_deleted == False, Paper.pdf_path != None)).all():
+                from app.ingestion.pdf_storage import resolve_pdf
+                old_path = resolve_pdf(candidate.pdf_path, Path(pdf_dir))
+                if old_path and hashlib.sha256(old_path.read_bytes()).hexdigest() == digest:
+                    session.commit()
+                    return candidate
+    existing = (None if fetched.source == "pdf" else
+                find_duplicate(session, fetched.doi, fetched.arxiv_id, fetched.title))
+    if existing and pdf_path and existing.pdf_path:
+        from app.ingestion.pdf_storage import resolve_pdf
+        old_path = resolve_pdf(existing.pdf_path, Path(pdf_dir))
+        if old_path and old_path.read_bytes() != fetched.pdf_bytes:
+            raise ValueError("这篇论文已有不同内容的 PDF，已保留原文。请将新版本作为独立论文导入。")
+    paper = existing if existing is not None else Paper(source=fetched.source, source_ref=fetched.source_ref)
+
+    if (
+        fetched.citation_key
+        and not paper.citation_key
+        and _citation_key_available(session, fetched.citation_key, paper.id)
+    ):
+        paper.citation_key = fetched.citation_key
+    paper.title = fetched.title or paper.title
+    if fetched.authors:
+        paper.authors_json = json.dumps(fetched.authors, ensure_ascii=False)
+    paper.abstract = fetched.abstract or paper.abstract
+    paper.doi = fetched.doi or paper.doi
+    paper.arxiv_id = fetched.arxiv_id or paper.arxiv_id
+    paper.year = fetched.year or paper.year
+    paper.venue = fetched.venue or paper.venue
+    paper.title_norm = normalize_title(paper.title)
+    paper.updated_at = utcnow()
+
+    if not paper.citation_key:
+        # P10.4: persist a stable firstauthorYEARfirstword key (conflict →
+        # -a/-b… suffix). Legacy rows without a stored key stay lazy.
+        from app.archive.bibtex import base_citekey
+
+        paper.citation_key = resolve_unique_citation_key(
+            session, base_citekey(paper), paper.id
+        )
+
+    if pdf_path is not None:
+        pdf_path.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive creation prevents concurrent uploads from truncating a file.
+        try:
+            with pdf_path.open("xb") as output:
+                output.write(fetched.pdf_bytes)
+        except FileExistsError:
+            if pdf_path.read_bytes() != fetched.pdf_bytes:
+                raise ValueError("PDF 存储校验失败，原文件未修改。")
+        paper.pdf_path = str(pdf_path)
+        paper.full_text = text or paper.full_text
+        paper.parse_confidence = conf
+
+    session.add(paper)
+    session.commit()
+    session.refresh(paper)
+
+    if client is not None and provider is not None and model_id and (paper.abstract or paper.full_text):
+        # Skip AI for metadata-only entries (e.g. a title-only BibTeX row):
+        # there's nothing to summarize, so a call would burn tokens for a
+        # useless freeform summary.
+        _analyze(session, paper, client, provider, model_id)
+
+    # Reference extraction (rule-first, LLM fallback) — runs with or without a
+    # configured LLM and never aborts ingest.
+    from app.ingestion.citation_extract import extract_and_store_citations
+    from app.ingestion.citation_match import match_citations_for_paper
+
+    extract_and_store_citations(session, paper, client=client, provider=provider, model_id=model_id)
+    try:
+        match_citations_for_paper(session, paper)
+    except Exception:  # noqa: BLE001 — matching must not abort ingest
+        logger.warning(
+            "citation_matching failed for paper %s; continuing",
+            paper.id,
+            exc_info=True,
+        )
+
+    return paper
+
+
+def resolve_and_attach_concepts(
+    session: Session, paper: Paper, run_id: int | None, raw_concepts: list[dict]
+) -> None:
+    """Normalize concept names, merge with existing concepts (G1), link to paper."""
+    from app.models import Concept, PaperConcept
+
+    for raw in raw_concepts:
+        nkey = normalize_title(raw.get("name"))
+        if not nkey:
+            continue
+        concept = session.exec(select(Concept).where(Concept.normalized_key == nkey)).first()
+        if concept is None:
+            concept = Concept(name=raw.get("name"), normalized_key=nkey, type=raw.get("type"))
+            session.add(concept)
+            session.commit()
+            session.refresh(concept)
+        if session.get(PaperConcept, (paper.id, concept.id)) is None:
+            session.add(
+                PaperConcept(
+                    paper_id=paper.id,
+                    concept_id=concept.id,
+                    weight=1.0,
+                    evidence=raw.get("evidence"),
+                    run_id=run_id,
+                )
+            )
+    session.commit()
+
+
+def analyze_paper(
+    session: Session, paper: Paper, client, provider: Provider, model_id: str
+) -> None:
+    """Re-run AI analysis (summary + concepts) on an existing paper.
+
+    Thin public wrapper over ``_analyze`` so the API layer can trigger a
+    re-analysis without reaching past the underscore convention.
+    """
+    if not (paper.abstract or paper.full_text):
+        raise ValueError("nothing to analyze: this paper has no abstract or full text")
+    _analyze(session, paper, client, provider, model_id)
+
+
+def _analyze(session: Session, paper: Paper, client, provider: Provider, model_id: str) -> None:
+    from app.ai_ops.concepts import extract_concepts
+    from app.ai_ops.summarize import summarize_paper
+
+    run = AnalysisRun(paper_id=paper.id, provider_id=provider.id, model=model_id)
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    try:
+        content = summarize_paper(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
+        # Replace any prior summary so re-analysis reflects the latest run.
+        # (Re-ingesting a duplicate re-runs analysis; without this, rows stack and
+        # the detail view — which reads the first row — keeps showing the oldest.)
+        for old in session.exec(select(Summary).where(Summary.paper_id == paper.id)).all():
+            session.delete(old)
+        session.add(Summary(paper_id=paper.id, run_id=run.id, content_json=json.dumps(content, ensure_ascii=False)))
+        raw_concepts = extract_concepts(client, provider, model_id, paper.title, paper.abstract, paper.full_text)
+        resolve_and_attach_concepts(session, paper, run.id, raw_concepts)
+        run.status = "done"
+    except Exception as exc:  # noqa: BLE001 — analysis failure must not abort ingest
+        run.status = "failed"
+        run.error = f"{type(exc).__name__}: {exc}"
+    run.finished_at = utcnow()
+    session.add(run)
+    session.commit()
+
+    # Surface proactive connections now that the concept graph is updated.
+    try:
+        from app.knowledge.suggest import generate_for_paper
+
+        generate_for_paper(session, paper)
+    except Exception:  # noqa: BLE001 — suggestions are non-critical
+        logger.warning(
+            "suggestions_generation failed for paper %s; continuing",
+            paper.id,
+            exc_info=True,
+        )
+
+    # AI relation analysis (conflicts / combinations vs neighbors) — needs its
+    # own chat-role provider pick, degrades silently without one (P9.2).
+    try:
+        from app.ai_ops.relations import analyze_relations
+
+        analyze_relations(session, paper)
+    except Exception:  # noqa: BLE001 — relation suggestions are non-critical
+        logger.warning(
+            "relation_analysis failed for paper %s; continuing",
+            paper.id,
+            exc_info=True,
+        )
+
+    # Claim-Evidence graph (P12): opt-in claim extraction, then claim-level
+    # relations vs neighbors (contradicts/supports/extends). Both degrade
+    # silently; extraction is a no-op unless the setting is enabled.
+    try:
+        from app.ai_ops.claims import analyze_claim_relations, extract_claims
+
+        extract_claims(session, paper)
+        analyze_claim_relations(session, paper)
+    except Exception:  # noqa: BLE001 — claim graph steps are non-critical
+        logger.warning(
+            "claim_extraction_and_relations failed for paper %s; continuing",
+            paper.id,
+            exc_info=True,
+        )
+
+    # Index full text for retrieval (RAG) — only when an embedding model is set.
+    try:
+        from app.rag.index import index_paper
+
+        index_paper(session, paper)
+    except Exception:  # noqa: BLE001 — RAG indexing must never abort ingest
+        logger.warning(
+            "rag_indexing failed for paper %s; continuing",
+            paper.id,
+            exc_info=True,
+        )

@@ -1,0 +1,45 @@
+[project]
+name = "papermind-backend"
+version = "0.5.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "sqlmodel>=0.0.22",
+  "alembic>=1.13",
+  "litellm>=1.50",
+  "cryptography>=43",
+  "pydantic-settings>=2.5",
+  "httpx>=0.27",
+  "python-multipart>=0.0.9",
+  "pymupdf>=1.24",
+  "arxiv>=2.1",
+  "bibtexparser>=1.4,<2",
+  "sqlite-vec>=0.1.6",
+  "python-pptx>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.21"]
+desktop = ["pywebview==6.2.1; sys_platform == 'win32'"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Keep pytest's temp files project-local, but avoid pytest cache writes and
+# the previously-used .pytest_basetemp path, which can become inaccessible on
+# Windows after a locked-handle cleanup failure.
+addopts = "-p no:cacheprovider --basetemp=.tmp_pytest"
+filterwarnings = [
+  # Third-party: fastapi/starlette's testclient emits a
+  # StarletteDeprecationWarning (a UserWarning subclass) at import time,
+  # recommending httpx2. Not actionable from this project; suppress for
+  # pristine test output.
+  "ignore::UserWarning:fastapi.testclient",
+]
