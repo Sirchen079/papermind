@@ -1,0 +1,23 @@
+.markdown-content { min-width: 0; max-width: 100%; text-align: left; overflow-wrap: anywhere; white-space: normal; }
+.markdown-content pre { max-width: 100%; white-space: pre; overflow-wrap: normal; }
+.markdown-content .katex { font-size: 1.08em; text-align: initial; overflow-wrap: normal; }
+.markdown-content .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: .6em .2em; margin: .6em 0; }
+.markdown-content .katex-display > .katex { white-space: nowrap; }
+.markdown-content .katex-error { font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.markdown-content .markdown-table-scroll { max-width: 100%; overflow-x: auto; margin: .75em 0; }
+.markdown-content .markdown-table-scroll table { margin: 0; width: max-content; min-width: 100%; }
+.markdown-content th, .markdown-content td { min-width: 5rem; max-width: 26rem; }
+.markdown-content img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
+.markdown-content .contains-task-list { list-style: none; padding-left: .25em; }
+.markdown-content .task-list-item input { margin-right: .5em; }
+.markdown-content :is(h5,h6) { margin: .8em 0 .4em; font-weight: 600; }
+.markdown-content .hljs { color: var(--text); }
+.markdown-content :is(.hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-type) { color: var(--color-primary-text); }
+.markdown-content :is(.hljs-string,.hljs-regexp,.hljs-addition,.hljs-quote) { color: var(--color-success); }
+.markdown-content :is(.hljs-number,.hljs-literal,.hljs-symbol,.hljs-attr,.hljs-title) { color: var(--color-info); }
+.markdown-content :is(.hljs-comment,.hljs-meta) { color: var(--color-text-subtle); }
+.markdown-content .hljs-deletion { color: var(--color-danger); }
+.markdown-content .hljs-emphasis { font-style: italic; }
+.markdown-content .hljs-strong { font-weight: 600; }
+.user-message { min-width: 0; text-align: left; }
+.assistant-message { min-width: 0; }

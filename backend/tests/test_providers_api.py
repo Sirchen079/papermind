@@ -1,0 +1,147 @@
+import secrets
+from unittest.mock import patch
+
+import httpx
+
+from app.providers.client import ModelInfo
+
+
+# Runtime-generated placeholder; avoids hardcoding credential-like literals.
+FAKE_KEY = "test-" + secrets.token_hex(16)
+
+
+def test_create_provider_encrypts_key_and_hides_it(client):
+    res = client.post(
+        "/api/providers",
+        json={
+            "name": "deepseek",
+            "type": "openai_compat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": FAKE_KEY,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["name"] == "deepseek"
+    assert "api_key" not in body
+    assert "api_key_encrypted" not in body
+    assert body["id"] is not None
+
+
+def test_list_hides_keys(client):
+    client.post("/api/providers", json={"name": "a", "type": "openai_chat", "api_key": FAKE_KEY})
+    lst = client.get("/api/providers").json()
+    assert lst and "api_key" not in lst[0]
+
+
+def test_refresh_models_upserts(client):
+    pid = client.post(
+        "/api/providers",
+        json={
+            "name": "ds",
+            "type": "openai_compat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": FAKE_KEY,
+        },
+    ).json()["id"]
+
+    fake_models = [
+        ModelInfo(model_id="deepseek-chat", display_name="deepseek-chat"),
+        ModelInfo(model_id="deepseek-reasoner", display_name="deepseek-reasoner"),
+    ]
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        res = client.post(f"/api/providers/{pid}/models/refresh")
+    assert res.status_code == 200
+    assert res.json()["count"] == 2
+
+    models = client.get(f"/api/providers/{pid}/models").json()
+    assert {m["model_id"] for m in models} == {"deepseek-chat", "deepseek-reasoner"}
+
+    # Second refresh replaces, not duplicates.
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    models = client.get(f"/api/providers/{pid}/models").json()
+    assert len(models) == 2
+
+
+def test_refresh_preserves_role_assignments(client):
+    """Refreshing models must not wipe role_default (regression: delete+re-add lost it)."""
+    pid = client.post(
+        "/api/providers",
+        json={
+            "name": "ds",
+            "type": "openai_compat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": FAKE_KEY,
+        },
+    ).json()["id"]
+    fake_models = [ModelInfo(model_id="deepseek-chat", display_name="deepseek-chat")]
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    mid = client.get(f"/api/providers/{pid}/models").json()[0]["id"]
+    client.patch(f"/api/models/{mid}", json={"role_default": "chat"})
+
+    # A subsequent refresh must keep the role the user assigned.
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    models = client.get(f"/api/providers/{pid}/models").json()
+    assert len(models) == 1
+    assert models[0]["role_default"] == "chat"
+
+
+def test_add_manual_model(client):
+    pid = client.post(
+        "/api/providers", json={"name": "ollama", "type": "openai_compat", "base_url": "http://localhost:11434/v1"}
+    ).json()["id"]
+    res = client.post(
+        f"/api/providers/{pid}/models",
+        json={"model_id": "llama3:8b", "display_name": "Llama 3 8B", "role_default": "chat"},
+    )
+    assert res.status_code == 201
+    assert res.json()["model_id"] == "llama3:8b"
+    assert res.json()["role_default"] == "chat"
+    models = client.get(f"/api/providers/{pid}/models").json()
+    assert any(m["model_id"] == "llama3:8b" for m in models)
+
+
+def test_add_manual_model_rejects_duplicate(client):
+    pid = client.post("/api/providers", json={"name": "o", "type": "openai_chat"}).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "gpt-4o"})
+    res = client.post(f"/api/providers/{pid}/models", json={"model_id": "gpt-4o"})
+    assert res.status_code == 409
+
+
+def test_delete_provider(client):
+    pid = client.post("/api/providers", json={"name": "x", "type": "openai_chat"}).json()["id"]
+    assert client.delete(f"/api/providers/{pid}").status_code == 204
+    assert client.get("/api/providers").json() == []
+
+
+def test_delete_provider_cascades_models(client):
+    pid = client.post("/api/providers", json={"name": "y", "type": "openai_chat"}).json()["id"]
+    fake_models = [ModelInfo(model_id="gpt-4o", display_name="gpt-4o")]
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=fake_models):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    assert len(client.get(f"/api/providers/{pid}/models").json()) == 1
+    assert client.delete(f"/api/providers/{pid}").status_code == 204
+    assert client.get(f"/api/providers/{pid}/models").json() == []
+
+
+def test_invalid_provider_type_rejected(client):
+    res = client.post("/api/providers", json={"name": "bad", "type": "garbage"})
+    assert res.status_code == 422
+
+
+def test_compat_requires_base_url(client):
+    res = client.post("/api/providers", json={"name": "c", "type": "openai_compat"})
+    assert res.status_code == 422
+
+
+def test_refresh_failure_returns_502(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    with patch(
+        "app.api.providers_api.ProviderClient.list_models",
+        side_effect=httpx.ConnectError("unreachable"),
+    ):
+        res = client.post(f"/api/providers/{pid}/models/refresh")
+    assert res.status_code == 502

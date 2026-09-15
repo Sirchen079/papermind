@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark" data-brand="blue" data-density="compact" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PaperMind</title>
+    <script>
+      // Apply the saved theme before first paint to avoid a flash.
+      (function () {
+        try {
+          var t = localStorage.getItem("papermind-theme");
+          var theme = t === "light" ? "light" : "dark";
+          var root = document.documentElement;
+          root.dataset.theme = theme;
+          root.classList.toggle("dark", theme === "dark");
+          // Adopt the requested blue palette once for existing installations.
+          // Later explicit palette choices continue to persist normally.
+          if (localStorage.getItem("papermind-palette-version") !== "blue-2026-09") {
+            localStorage.setItem("papermind-brand", "blue");
+            localStorage.setItem("papermind-palette-version", "blue-2026-09");
+          }
+          root.dataset.brand = localStorage.getItem("papermind-brand") === "warm" ? "warm" : "blue";
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
