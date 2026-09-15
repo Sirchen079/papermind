@@ -45,6 +45,35 @@ def _seed():
     return eng, ids
 
 
+def test_full_text_can_reach_late_sections_without_repeating_prefix():
+    from app.models import Paper
+    from app.agent.provenance import tool_sources
+    eng, ids = _seed()
+    text = "A" * 15000 + "Training hardware: eight P100 GPUs. " + "B" * 14000
+    with Session(eng) as s:
+        p = s.get(Paper, ids["b"])
+        p.full_text = text
+        s.add(p)
+        s.commit()
+        first = json.loads(t_get_paper_full_text(s, p.id, max_chars=100000))
+        second = json.loads(t_get_paper_full_text(s, p.id, max_chars=12000, start_char=first["next_start_char"]))
+        third = json.loads(t_get_paper_full_text(s, p.id, max_chars=12000, start_char=second["next_start_char"]))
+        assert first["text"] + second["text"] + third["text"] == text
+        assert first["end_char"] == 12000
+        assert third["next_start_char"] is None
+        found = json.loads(t_get_paper_full_text(s, p.id, max_chars=1000, query="TRAINING HARDWARE"))
+        assert found["match_char"] == 15000
+        assert "eight P100 GPUs" in found["text"]
+        assert found["start_char"] == 14500
+        absent = json.loads(t_get_paper_full_text(s, p.id, query="hallucination rate"))
+        assert absent["match_found"] is False
+        assert "text" not in absent
+        assert tool_sources(s, "get_paper_full_text", json.dumps(absent)) == []
+        assert tool_sources(s, "get_paper_full_text", json.dumps(found))[0]["paper_id"] == p.id
+        end = json.loads(t_get_paper_full_text(s, p.id, start_char=999999))
+        assert end["text"] == "" and end["next_start_char"] is None
+
+
 def test_tool_schemas_and_lookup():
     schemas = tool_schemas()
     assert len(schemas) == len(TOOLS) == 10

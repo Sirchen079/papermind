@@ -30,3 +30,20 @@ def env(tmp_path, monkeypatch):
 def client(env):
     from app.main import create_app
     return TestClient(create_app())
+
+
+@pytest.fixture
+def accept_evidence_review(monkeypatch):
+    """Transport stub for tests of chat persistence, not semantic review.
+
+    The verifier has separate failure/edit tests and real-provider acceptance.
+    Other request kinds still use the test's original provider mock.
+    """
+    from types import SimpleNamespace
+    from app.providers.client import ProviderClient
+    original=ProviderClient.complete
+    def complete(self,*args,**kwargs):
+        if kwargs.get('request_kind')=='evidence_review':
+            return SimpleNamespace(content='{"edits":[]}',total_tokens=2)
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(ProviderClient,'complete',complete)

@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 """Lifecycle reproductions for the final release acceptance findings."""
 from datetime import datetime
 from io import BytesIO

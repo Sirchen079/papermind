@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 from unittest.mock import MagicMock
 
 from cryptography.fernet import Fernet

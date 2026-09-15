@@ -28,6 +28,10 @@ def tool_sources(session, name: str, result: str) -> list[dict]:
     for row in rows:
         if not isinstance(row, dict) or row.get('error') or row.get('ok') is False:
             continue
+        # A failed phrase lookup or an exhausted page returned no paper text.
+        # It is a search observation, not a supporting excerpt to cite.
+        if name == 'get_paper_full_text' and not (isinstance(row.get('text'), str) and row['text'].strip()):
+            continue
         pid = row.get('paper_id', row.get('id'))
         if not isinstance(pid, int) or isinstance(pid, bool):
             continue

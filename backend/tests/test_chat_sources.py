@@ -5,6 +5,7 @@ from app.models import Conversation, Message, Model, Paper, PaperChunk, Provider
 from app.providers.client import ToolCall, ToolTurn
 import json
 import pytest
+pytestmark=pytest.mark.usefixtures('accept_evidence_review')
 
 
 def test_chat_message_returns_and_persists_sources(client, monkeypatch):

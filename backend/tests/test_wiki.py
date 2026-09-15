@@ -1,4 +1,5 @@
 import json
+import pytest
 from types import SimpleNamespace
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -29,6 +30,8 @@ def configure(client,prefix='/api'):
 
 
 def mock_complete(self,provider,model,messages,**kwargs):
+    if kwargs.get('request_kind')=='evidence_review':
+        return SimpleNamespace(content='{"edits":[]}',total_tokens=2)
     payload=json.loads(messages[1]['content'])
     ref=payload['model_evidence'][0]['ref']
     return SimpleNamespace(content=json.dumps({'content':f'基线评测需要核对条件。[{ref}]','references':[ref],'change_note':'纳入新增证据并整理条件。'},ensure_ascii=False))
@@ -136,6 +139,8 @@ def test_model_result_survives_concurrent_human_edit_without_overwriting_it(clie
     configure(client);pid=paper(client);page=create_page(client)
     page,_=save(client,page,paper_ids=[pid],cite_added=True)
     def slow(self,provider,model,messages,**kwargs):
+        if kwargs.get('request_kind')=='evidence_review':
+            return mock_complete(self,provider,model,messages,**kwargs)
         saved,_=save(client,page,content='人工在模型运行期间补充的结论。',references=page['latest']['references'])
         assert saved['latest']['number']==2
         return mock_complete(self,provider,model,messages,**kwargs)
@@ -208,7 +213,7 @@ def test_interrupted_update_can_retry_and_remains_a_candidate(client,monkeypatch
     assert after['adopted'] is None
 
 
-def test_research_artifact_into_topic_then_chat_receives_versioned_evidence(client,monkeypatch):
+def test_research_artifact_into_topic_then_chat_receives_versioned_evidence(client,monkeypatch,accept_evidence_review):
     from app.providers.client import ToolTurn
     configure(client);pid=paper(client)
     task=client.post('/api/research/tasks',json={'request_id':str(uuid4()),'question':'基线评测的适用条件','paper_ids':[pid]}).json()
@@ -298,6 +303,39 @@ def test_nested_research_sources_still_report_changes_after_flattening(client):
     assert 'Baseline evaluation conditions' in client.get('/api/wiki/pages/'+topic['id']+'/export?number=1').text
 
 
+@pytest.mark.parametrize('recovers', [True, False])
+def test_empty_wiki_response_retries_once_within_context(client, monkeypatch, recovers):
+    from app.agent.context import estimate_tokens
+    from app.models import Model
+    from app.db.engine import get_engine
+    from sqlmodel import Session, select
+    configure(client)
+    with Session(get_engine()) as session:
+        model=session.exec(select(Model)).first()
+        model.context_window=16000
+        session.add(model);session.commit()
+    source=paper(client)
+    topic=create_page(client)
+    calls=[]
+    def empty_then_result(self,provider,model,messages,**kwargs):
+        if kwargs.get('request_kind')=='evidence_review':
+            return mock_complete(self,provider,model,messages,**kwargs)
+        calls.append(kwargs['max_tokens'])
+        assert estimate_tokens(''.join(m['content'] for m in messages))+kwargs['max_tokens']<16000
+        if len(calls)==1 or not recovers:
+            return SimpleNamespace(content='')
+        return mock_complete(self,provider,model,messages,**kwargs)
+    monkeypatch.setattr('app.providers.client.ProviderClient.complete',empty_then_result)
+    response=client.post('/api/wiki/pages/'+topic['id']+'/updates',json={'request_id':str(uuid4()),'expected_version':topic['version'],'paper_ids':[source]})
+    assert response.status_code==202,response.text
+    result=client.get('/api/wiki/pages/'+topic['id']).json()
+    assert len(calls)==2 and calls[1]>calls[0] and calls[1]<=12000
+    assert result['updates'][0]['status']==('done' if recovers else 'failed')
+    if not recovers:
+        assert '模型未返回专题正文' in result['updates'][0]['error']
+        assert result['latest'] is None
+
+
 def test_model_update_caps_chinese_materials_to_selected_context_window(client,monkeypatch):
     from app.agent.context import estimate_tokens
     from app.models import Model
@@ -311,7 +349,8 @@ def test_model_update_caps_chinese_materials_to_selected_context_window(client,m
     def limited(self,provider,model,messages,**kwargs):
         assert estimate_tokens(''.join(m['content'] for m in messages))+kwargs['max_tokens']<8000
         payload=json.loads(messages[-1]['content'])
-        assert payload['omitted_evidence_count']>0
+        if kwargs.get('request_kind')!='evidence_review':
+            assert payload['omitted_evidence_count']>0
         return mock_complete(self,provider,model,messages,**kwargs)
     monkeypatch.setattr('app.providers.client.ProviderClient.complete',limited)
     response=client.post('/api/wiki/pages/'+topic['id']+'/updates',json={'request_id':str(uuid4()),'expected_version':topic['version'],'paper_ids':ids})

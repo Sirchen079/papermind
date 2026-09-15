@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 """ask_user is a durable human boundary, not a model-generated tool result."""
 import copy
 import json

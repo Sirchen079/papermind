@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 from types import SimpleNamespace
 
 import httpx

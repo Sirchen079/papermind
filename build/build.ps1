@@ -79,6 +79,10 @@ $exe = Join-Path $pyiDist "PaperMind\PaperMind.exe"
 if (-not (Test-Path $exe)) { throw "未找到产物：$exe" }
 Copy-Item -LiteralPath (Join-Path $Root 'restore.ps1') -Destination (Join-Path (Split-Path -Parent $exe) 'restore.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'restore-all.ps1') -Destination (Join-Path (Split-Path -Parent $exe) 'restore-all.ps1') -Force
+foreach ($notice in @('README.md', 'THIRD_PARTY_NOTICES.md')) {
+  Copy-Item -LiteralPath (Join-Path $Root $notice) -Destination (Join-Path (Split-Path -Parent $exe) $notice) -Force
+}
+Copy-Item -LiteralPath (Join-Path $Root 'third_party') -Destination (Split-Path -Parent $exe) -Recurse -Force
 Write-Host "打包成功：$exe" -ForegroundColor Green
 Write-Host "运行测试：& '$exe'   （直接打开桌面窗口，关闭窗口退出）" -ForegroundColor Cyan
 

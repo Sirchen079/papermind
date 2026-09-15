@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 

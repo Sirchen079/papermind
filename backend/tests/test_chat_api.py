@@ -2,6 +2,7 @@ import json
 import copy
 from unittest.mock import patch
 import pytest
+pytestmark=pytest.mark.usefixtures('accept_evidence_review')
 
 from sqlmodel import Session
 

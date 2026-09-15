@@ -2096,8 +2096,7 @@ export default function Library({
               )}
               {selected.parse_confidence != null && selected.parse_confidence < 0.3 && (
                 <div className="alert-danger mt-3">
-                  文本提取质量较低（{Math.round(selected.parse_confidence * 100)}%）。这看起来是扫描版
-                  PDF，AI 摘要与全文检索会受限。
+                  提取到的文字较少，可能是篇幅较短、图表较多或扫描版 PDF。请核对原文，确认可供 AI 分析和全文检索的资料是否完整。
                 </div>
               )}
             </div>

@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 """Versioned topic provenance survives streaming, retries and project switches."""
 import json
 from uuid import uuid4

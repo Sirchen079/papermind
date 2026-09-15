@@ -21,7 +21,9 @@ DEFAULT_CONTEXT_WINDOW = 16000
 
 _SUMMARIZE_PROMPT = (
     "请用简体中文总结下面的科研对话。需要保留：提到的每一篇论文标题与 id、关键结论、"
-    "对比要点，以及用户或助手达成的任何结论。力求简洁（几句话或简短要点）。不要编造细节。\n\n对话：\n"
+    "对比要点，以及用户或助手达成的任何结论。区分已核对事实、用户猜测和助手推测，"
+    "保留未报告的信息、适用条件与后续纠正，不得把历史助手说法提升为论文已证明的结论。"
+    "力求简洁（几句话或简短要点）。不要编造细节。\n\n对话：\n"
 )
 
 
@@ -32,6 +34,7 @@ def estimate_tokens(text: str) -> int:
 
 def _msg_tokens(m: dict[str, Any]) -> int:
     body = m.get("content") or ""
+    body += m.get('reasoning_content') or ''
     # tool_calls carry their own JSON payload
     tc = m.get("tool_calls")
     if tc:

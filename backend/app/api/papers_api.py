@@ -6,6 +6,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import func
 from sqlmodel import Session, select
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_session
 from app.config import get_settings
@@ -804,7 +805,8 @@ async def ingest_pdf(file: UploadFile = File(...), session: Session = Depends(ge
     )
     ctx = _analysis_ctx(session)
     try:
-        paper = persist_fetched(
+        paper = await run_in_threadpool(
+            persist_fetched,
             session, fetched, pdf_dir=_pdf_dir(),
             client=ctx[0] if ctx else None,
             provider=ctx[1] if ctx else None,

@@ -132,8 +132,11 @@ def t_get_paper(session: Session, paper_id: int) -> str:
     )
 
 
-def t_get_paper_full_text(session: Session, paper_id: int, max_chars: int = 6000) -> str:
-    """The extracted full text of a paper (truncated), for close reading."""
+def t_get_paper_full_text(
+    session: Session, paper_id: int, max_chars: int = 6000,
+    start_char: int = 0, query: str | None = None,
+) -> str:
+    """Read a bounded, navigable excerpt of the extracted paper text."""
     p = session.get(Paper, paper_id)
     if p is None or p.is_deleted:
         return json.dumps({"error": f"paper {paper_id} not found"})
@@ -141,8 +144,22 @@ def t_get_paper_full_text(session: Session, paper_id: int, max_chars: int = 6000
     if not text:
         return json.dumps({"note": "no parsed full text for this paper"})
     max_chars = max(500, min(int(max_chars), 12000))
+    start_char = max(0, min(int(start_char), len(text)))
+    match_char = None
+    if query and query.strip():
+        match_char = text.lower().find(query.strip().lower(), start_char)
+        if match_char < 0:
+            return json.dumps({"id": p.id, "title": p.title, "total_chars": len(text),
+                               "query": query, "match_found": False,
+                               "note": "No exact phrase match after start_char; try a shorter keyword or read by offset."}, ensure_ascii=False)
+        start_char = max(start_char, match_char - min(500, max_chars // 2))
+    end_char = min(len(text), start_char + max_chars)
     return json.dumps(
-        {"id": p.id, "title": p.title, "text": text[:max_chars] + ("…" if len(text) > max_chars else "")},
+        {"id": p.id, "title": p.title, "text": text[start_char:end_char],
+         "start_char": start_char, "end_char": end_char, "total_chars": len(text),
+         "truncated": start_char > 0 or end_char < len(text),
+         "next_start_char": end_char if end_char < len(text) else None,
+         **({"match_found": True, "match_char": match_char} if match_char is not None else {})},
         ensure_ascii=False,
     )
 
@@ -412,12 +429,14 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="get_paper_full_text",
-        description="Read the extracted full text of a paper (truncated). Use for close reading or quoting details not in the abstract.",
+        description="Read a paper excerpt for close reading. Returns offsets, total length and next_start_char; a truncated excerpt is NOT the whole paper. For specific facts prefer query with a short exact phrase (e.g. 'Training' or 'Table 2') to locate relevant text without repeating the beginning. Use start_char=next_start_char to continue. Max 12000 characters per call; increasing max_chars beyond this does not reveal later sections.",
         parameters={
             "type": "object",
             "properties": {
                 "paper_id": {"type": "integer", "description": "The paper's id."},
-                "max_chars": {"type": "integer", "description": "Max characters to return.", "default": 6000},
+                "max_chars": {"type": "integer", "description": "Characters per excerpt, capped at 12000.", "default": 6000},
+                "start_char": {"type": "integer", "description": "Zero-based character offset; use next_start_char from a previous result to continue.", "default": 0},
+                "query": {"type": "string", "description": "Optional short case-insensitive exact phrase; searches at/after start_char and returns surrounding text. No match is not proof the paper lacks the concept."},
             },
             "required": ["paper_id"],
         },

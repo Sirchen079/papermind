@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from app.models import Provider, TokenUsage
 from app.providers.routing import anthropic_api_base, route_completion
+from app.providers.capabilities import reasoning_options
 from app.providers.prompt_cache import cache_options, cache_usage, marker_count, prepare_messages, prepare_tools, token_usage
 from app.security.crypto import Crypto
 from app.security.url_guard import ensure_http_url, validated_get
@@ -46,6 +47,7 @@ class ToolTurn:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    reasoning_content: str | None = None  # Private protocol state, never user-facing answer text.
 
 
 @dataclass
@@ -138,9 +140,10 @@ class ProviderClient:
         reasoning_effort: str | None = None,
     ) -> CompletionResult:
         route = route_completion(provider.type, model_id, provider.base_url)
+        documented=reasoning_options(provider,model_id,reasoning_effort)
         # Unknown/custom models use provider defaults. Never send a reasoning
         # knob solely because the caller happens to be a research workflow.
-        if reasoning_effort:
+        if reasoning_effort and not documented:
             try:
                 if not litellm.supports_reasoning(model=route.litellm_model):
                     reasoning_effort = None
@@ -152,12 +155,20 @@ class ProviderClient:
             "api_key": self._api_key(provider),
         }
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
+        kwargs.update(documented)
+        if documented:
+            reasoning_effort=None
         if route.api_base:
             kwargs["api_base"] = ensure_http_url(route.api_base)  # SSRF guard
 
         # No unbounded provider retries inside a bounded research step.
         if request_kind == "research":
             kwargs["timeout"] = 90
+            kwargs["num_retries"] = 0
+        elif request_kind in {"evidence_review", "wiki_update"}:
+            # LiteLLM's inherited default can be 6000 seconds. Bound a
+            # foreground step and let the application expose a retryable error.
+            kwargs["timeout"] = 300 if request_kind == "evidence_review" else 180
             kwargs["num_retries"] = 0
         if route.call == "responses":
             kwargs["input"] = kwargs.pop("messages")
@@ -203,6 +214,8 @@ class ProviderClient:
             "model": route.litellm_model,
             "messages": prepare_messages(messages, provider.type, request_kind, max(0, 4 - (max(1, marker_count(tools)) if tools else 0))),
             "api_key": self._api_key(provider),
+            "timeout": 180,
+            "num_retries": 0,
         }
         if route.api_base:
             # SSRF guard: api_base comes from user-configured base_url and
@@ -215,6 +228,7 @@ class ProviderClient:
             kwargs["tool_choice"] = "auto"
 
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
+        kwargs.update(reasoning_options(provider,model_id))
         if route.call == "responses":
             converted = []
             for message in kwargs['messages']:
@@ -271,7 +285,7 @@ class ProviderClient:
         usage = getattr(resp, "usage", None)
         prompt_t, completion_t, total_t = token_usage(usage)
         self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t, usage=usage)
-        return ToolTurn(content, tool_calls, prompt_t, completion_t, total_t)
+        return ToolTurn(content, tool_calls, prompt_t, completion_t, total_t,getattr(msg,'reasoning_content',None))
 
     def stream_complete(
         self,

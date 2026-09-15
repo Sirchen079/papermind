@@ -97,6 +97,7 @@ export default function PdfReader({
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
   const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [notesOpen, setNotesOpen] = useState(() => window.matchMedia("(min-width: 768px)").matches);
   const [rendering, setRendering] = useState(false);
   const [selection, setSelection] = useState<SelectionAnchor | null>(null);
   const [savingSelection, setSavingSelection] = useState(false);
@@ -450,7 +451,7 @@ export default function PdfReader({
         style={{ borderColor: "var(--border)", backgroundColor: "var(--surface)" }}
       >
         <div className="min-w-0 flex-1 truncate text-sm font-medium">{title ?? "PDF 阅读"}</div>
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <button className="btn-ghost py-1 text-xs" onClick={() => goToPage(currentPage - 1)} disabled={currentPage <= 1 || loading}>
             上一页
           </button>
@@ -483,6 +484,9 @@ export default function PdfReader({
             重置
           </button>
         </div>
+        <button className="btn-ghost shrink-0 py-1 text-xs" aria-expanded={notesOpen} aria-controls="pdf-reader-notes" onClick={() => setNotesOpen((open) => !open)}>
+          {notesOpen ? "收起笔记" : "笔记与摘录"}
+        </button>
         <button className="btn-subtle shrink-0 px-2" onClick={() => void leaveReader(onClose)} aria-label="退出阅读">
           <X size={18} />
         </button>
@@ -500,7 +504,7 @@ export default function PdfReader({
             <p className="p-8 text-center text-sm" style={{ color: "var(--danger)" }}>{errorMsg}</p>
           )}
           {!loading && !errorMsg && (
-            <div className="flex justify-center p-4">
+            <div className="flex w-max min-w-full justify-center p-4">
               <div
                 ref={wrapperRef}
                 className="relative shadow-lg"
@@ -513,7 +517,8 @@ export default function PdfReader({
           )}
         </div>
         <aside
-          className="w-72 shrink-0 overflow-y-auto border-l"
+          id="pdf-reader-notes"
+          className={`${notesOpen ? "block" : "hidden"} w-72 max-w-[75vw] shrink-0 overflow-y-auto border-l`}
           style={{ borderColor: "var(--border)", backgroundColor: "var(--surface)" }}
           aria-label="笔记与摘录"
         >

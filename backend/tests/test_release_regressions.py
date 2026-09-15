@@ -1,3 +1,6 @@
+import pytest
+pytestmark=pytest.mark.usefixtures("accept_evidence_review")
+
 """Reproductions from the September release acceptance report."""
 import json
 from pathlib import Path

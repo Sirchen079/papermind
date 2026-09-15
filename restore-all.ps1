@@ -30,7 +30,11 @@ try {
   } else {
     $exe = if ($PythonPath) { $PythonPath } else { Join-Path $Root 'backend\.venv\Scripts\python.exe' }
     if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw '找不到 Python。请先运行 start.ps1，或用 -PythonPath 指定 Python 可执行文件。' }
-    $env:PYTHONPATH = Join-Path $Root 'backend'
+    # Keep custom interpreter dependency paths while giving this source tree
+    # precedence. Replacing PYTHONPATH breaks -PythonPath installations whose
+    # dependencies live in an explicitly configured site-packages directory.
+    $sourcePath = Join-Path $Root 'backend'
+    $env:PYTHONPATH = if ($oldPythonPath) { $sourcePath + [IO.Path]::PathSeparator + $oldPythonPath } else { $sourcePath }
     $arguments = @('-m', 'app.archive.application_cli', 'restore')
   }
   $arguments += @($Backup, '--data-dir', $DataDir, '--report', $report)

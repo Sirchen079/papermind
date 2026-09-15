@@ -72,6 +72,9 @@ datas += [
       for path in (BACKEND / "migrations").rglob("*")
       if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}],
     (str(BACKEND / "user_skills"), "backend/user_skills"),
+    (str(BACKEND / "research_skills"), "backend/research_skills"),
+    (str(REPO / "third_party"), "third_party"),
+    (str(REPO / "THIRD_PARTY_NOTICES.md"), "."),
     (str(FRONTEND / "dist"), "frontend/dist"),
     (str(SPEC_DIR / "assets" / "papermind.ico"), "desktop"),
     (str(SPEC_DIR / "vendor" / "webview2"), "desktop/webview2"),
