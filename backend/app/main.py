@@ -76,6 +76,9 @@ def _upgrade_database() -> None:
     from app.config import get_settings
 
     cfg = Config(str(paths.alembic_ini()))
+    # The desktop host owns its rotating log. Alembic's console-only config
+    # otherwise discards it (windowed executables have no visible stderr).
+    cfg.attributes["configure_logger"] = False
     cfg.set_main_option("script_location", str(paths.migrations_dir()))
     settings = get_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +168,7 @@ def _create_app() -> FastAPI:
         finally:
             app.state.release_runtime_lease()
 
-    app = FastAPI(title="PaperMind", version="0.5.1", lifespan=lifespan)
+    app = FastAPI(title="PaperMind", version="0.5.2", lifespan=lifespan)
     from app.security.crypto import MissingKeyError
     from fastapi.responses import JSONResponse
 

@@ -158,6 +158,66 @@ def loading_page(message="正在打开你的研究空间…", *, error=False) ->
     {'' if error else '<div class="dot"></div>'}<h1>PaperMind</h1><p>{html.escape(message)}</p></html>"""
 
 
+def wait_for_event(event, cancelled, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while not cancelled.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if event.wait(min(.05, remaining)):
+            return not cancelled.is_set()
+    return False
+
+
+def open_workspace(window, backend, *, timeout=30, probe_timeout=5) -> bool:
+    """Serialize initial HTML and navigation; verify React actually mounted.
+
+    pywebview's start callback runs before the native window is created and
+    load_url only waits for Form.Shown, not WebView2 initialization. Waiting for
+    the initial document avoids racing NavigateToString with Source navigation.
+    JS calls also need a deadline: a dead renderer can block evaluate_js forever.
+    """
+    if not wait_for_event(window.events.loaded, backend.cancelled, timeout):
+        if backend.cancelled.is_set():
+            return False
+        raise TimeoutError("WebView2 初始化超时。")
+    logging.info("Desktop renderer ready")
+    for attempt in range(2):
+        if backend.cancelled.is_set():
+            return False
+        logging.info("Desktop navigating to workspace, attempt %s", attempt + 1)
+        window.events.loaded.clear()
+        window.load_url(backend.url)
+        if wait_for_event(window.events.loaded, backend.cancelled, timeout):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and not backend.cancelled.is_set():
+                done = threading.Event()
+                result = []
+
+                def probe(done=done, result=result):
+                    try:
+                        result.append(window.evaluate_js(
+                            "location.origin === " + json.dumps(backend.url) +
+                            " && !!document.querySelector('#root > *')"
+                        ))
+                    except Exception:
+                        logging.exception("Desktop page probe failed")
+                    finally:
+                        done.set()
+
+                threading.Thread(target=probe, daemon=True, name="desktop-page-probe").start()
+                if not wait_for_event(done, backend.cancelled, probe_timeout):
+                    break
+                if result and result[0] is True:
+                    logging.info("Desktop workspace rendered")
+                    return True
+                backend.cancelled.wait(.25)
+        logging.warning("Desktop page did not render, attempt %s", attempt + 1)
+    if backend.cancelled.is_set():
+        return False
+    raise TimeoutError("研究空间页面加载失败（已自动重试）。")
+
+
 def configure_desktop_logs(profile: Path) -> Path:
     profile.mkdir(parents=True, exist_ok=True)
     log_file = profile / "desktop.log"
@@ -174,6 +234,7 @@ def configure_desktop_logs(profile: Path) -> Path:
 def main() -> None:
     profile = default_data_dir().resolve() / "desktop"
     log_file = configure_desktop_logs(profile)
+    logging.info("Desktop starting: executable=%s", sys.executable)
     lock = InstanceLock(profile / "instance.lock")
     if not lock.acquire():
         return
@@ -205,25 +266,32 @@ def main() -> None:
             background_color="#F8FAFF",
         )
 
-        def on_close():
+        def on_closing():
             backend.cancelled.set()
             try:
                 state_path.write_text(json.dumps({"width":window.width,"height":window.height}), encoding="utf-8")
-            except OSError:
+            except (OSError, TypeError, KeyError):
                 logging.exception("Could not save window size")
 
         def boot():
-            backend.start()
             try:
+                backend.start()
                 if backend.wait_ready():
+                    logging.info("Desktop backend ready: %s", backend.url)
                     (profile / "session.json").write_text(json.dumps({"pid":os.getpid(),"url":backend.url}), encoding="utf-8")
-                    window.load_url(backend.url)
-            except Exception:
+                    open_workspace(window, backend)
+            except Exception as error:
                 logging.exception("Desktop initialization failed")
                 if not backend.cancelled.is_set():
-                    window.load_html(loading_page(f"打开失败。请关闭后重试；详细日志：{log_file}", error=True))
+                    # The renderer itself may be unavailable; report outside it.
+                    ctypes.windll.user32.MessageBoxW(None, f"PaperMind 打开失败：{error}\n\n详细日志：{log_file}", TITLE, 0x10)
+                    if not backend.cancelled.is_set():
+                        window.destroy()
 
-        window.events.closed += on_close
+        # closed runs after the native window was removed; get_size then
+        # returns None. Save geometry while the handle is still valid.
+        window.events.closing += on_closing
+        window.events.closed += backend.cancelled.set
         icon = (Path(sys._MEIPASS) / "desktop" if is_frozen() else exe_dir() / "build" / "assets") / "papermind.ico"
         webview.start(
             boot, gui="edgechromium", private_mode=False, storage_path=str(profile / "webview"),

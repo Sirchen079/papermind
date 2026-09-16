@@ -12,7 +12,7 @@ from app.config import get_settings
 
 config = context.config
 
-if config.config_file_name is not None:
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Use the app's resolved DB path unless the caller (test) sets sqlalchemy.url.
