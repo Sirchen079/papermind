@@ -10,6 +10,10 @@ os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--desktop-smoke-test"]:
+        from app.desktop import main as desktop_main
+        desktop_main(smoke_test=True)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == '--application-archive':
         from app.archive.application_cli import main as archive_main
         raise SystemExit(archive_main(sys.argv[2:]))
