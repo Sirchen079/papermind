@@ -1,7 +1,7 @@
 import json
-from threading import Lock
+from threading import Event, Lock
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -25,9 +25,79 @@ from app.models.base import utcnow
 from app.models.paper import parse_authors_json, parse_summary_json
 from app.providers.selection import pick_llm
 
+from app.agent.attachments import Attachment, MAX_FILE_BYTES, attach_content, prepare_attachment
+
 router = APIRouter()
+_cancel_events: dict[tuple[str, int], Event] = {}
 _active_turns: set[tuple[str, int]] = set()
 _turn_lock = Lock()
+
+
+def pick_chat_model(session, config_id):
+    if config_id is None:
+        return pick_llm(session, 'chat')
+    from app.models import Model
+    from app.providers.client import ProviderClient
+    from app.providers.shared import resolve
+    model = session.get(Model, config_id)
+    provider = session.get(Provider, model.provider_id) if model else None
+    if not model or model.role_default == 'embedding' or not provider or provider.is_deleted or not provider.enabled:
+        raise HTTPException(422, '所选模型不可用，请重新选择模型')
+    try:
+        actual, crypto = resolve(provider)
+    except LookupError as exc:
+        raise HTTPException(422, '模型连接已不可用，请检查设置') from exc
+    if not actual.enabled:
+        raise HTTPException(422, '模型连接已停用')
+    engine = session.get_bind()
+    return ProviderClient(lambda: Session(engine), crypto), actual, model.model_id
+
+
+def validate_images(session, ctx, attachments):
+    if not any(a.kind == 'image' for a in attachments) or ctx is None:
+        return
+    from app.models import Model
+    _, provider, model_id = ctx
+    row = session.exec(select(Model).where(Model.provider_id == provider.id, Model.model_id == model_id)).first()
+    if row is not None and row.supports_images is False:
+        raise HTTPException(422, '当前模型已设为不支持图片，请选择支持图片的模型；附件和草稿会保留。')
+
+
+@router.post('/chat/attachments')
+async def upload_attachment(file: UploadFile = File(...)):
+    raw = await file.read(MAX_FILE_BYTES + 1)
+    await file.close()
+    try:
+        return prepare_attachment(file.filename or '附件', raw).model_dump()
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get('/chat/models')
+def chat_models(session: Session = Depends(get_session)):
+    from app.models import Model
+    default = pick_llm(session, 'chat')
+    rows = []
+    for model, provider in session.exec(select(Model, Provider).join(Provider, Model.provider_id == Provider.id)
+            .where(Provider.enabled == True, Provider.is_deleted == False)).all():
+        if model.role_default == 'embedding':
+            continue
+        rows.append({'id': model.id, 'name': model.display_name or model.model_id,
+                     'provider': provider.name, 'context_window': _context_window(session, provider, model.model_id),
+                     'reasoning_effort': model.reasoning_effort, 'supports_images': model.supports_images,
+                     'is_default': bool(default and default[1].id == provider.id and default[2] == model.model_id)})
+    return rows
+
+
+@router.post('/chat/conversations/{cid}/stop')
+def stop_turn(cid: int, session: Session = Depends(get_session)):
+    if session.get(Conversation, cid) is None:
+        raise HTTPException(404, 'conversation not found')
+    with _turn_lock:
+        event = _cancel_events.get(_turn_key(session, cid))
+        if event:
+            event.set()
+    return {'stopping': event is not None}
 
 
 def _turn_key(session: Session, cid: int):
@@ -39,14 +109,19 @@ def _turn_key(session: Session, cid: int):
 def _release_turn(cid: int, session: Session):
     with _turn_lock:
         _active_turns.discard(_turn_key(session, cid))
+        _cancel_events.pop(_turn_key(session, cid), None)
 
 
-def _fail_turn(session: Session, message_id: int, error: str):
+def _fail_turn(session: Session, message_id: int, error: str, state: dict | None = None):
     session.rollback()
     row = session.get(Message, message_id)
     if row is not None and row.delivery_status == "pending":
         row.delivery_status = "failed"
         row.error_message = error
+        if state:
+            row.agent_state_json = json.dumps(state, ensure_ascii=False)
+            if state.get("sources"):
+                row.sources_json = json.dumps(state["sources"], ensure_ascii=False)
         session.add(row)
         session.commit()
 
@@ -58,6 +133,8 @@ _PAPER_CONTEXT_TOTAL_MAX = 9000
 
 
 class MessageIn(BaseModel):
+    attachments: list[Attachment] = Field(default_factory=list, max_length=4)
+    model_config_id: int | None = None
     content: str = ""
     retry_message_id: int | None = None
     clarification_response: ClarificationResponse | None = None
@@ -331,7 +408,8 @@ def _build_messages(
         content = m.content
         if m.role == "user" and m.model_context:
             content = m.model_context + "\n\n[本轮用户问题]\n" + content
-        msgs.append({"role": m.role, "content": content})
+        attachments = json.loads(m.request_json or "{}").get("attachments", []) if m.role == "user" else []
+        msgs.append({"role": m.role, "content": attach_content(content, attachments)})
     return msgs
 
 
@@ -443,10 +521,13 @@ def get_conversation(cid: int, session: Session = Depends(get_session)) -> dict:
                 "content": m.content,
                 "delivery_status": m.delivery_status,
                 "error_message": m.error_message,
+                "continuable": bool(m.role == "user" and m.agent_state_json and "evidence" in json.loads(m.agent_state_json)),
                 "retryable": m.role == "user" and m == msgs[-1] and m.delivery_status in {"pending", "failed"} and _turn_key(session, cid) not in _active_turns,
                 "model": m.model,
                 **public_sources(_parse_sources(m.sources_json)),
                 "clarification": _clarification(m),
+                "tools": json.loads(m.agent_state_json or "{}").get("tools", []),
+                "attachments": json.loads(m.request_json or "{}").get("attachments", []),
             }
             for m in msgs
         ],
@@ -476,9 +557,11 @@ def _resume_clarification(session: Session, conv: Conversation, body: MessageIn,
         "content": json.dumps({"user_response": response.model_dump(exclude={"message_id"}),
                                "content": body.content}, ensure_ascii=False),
     }]
+    if body.attachments:
+        messages.append({"role": "user", "content": attach_content("补充材料", [a.model_dump() for a in body.attachments])})
     row = Message(conversation_id=conv.id, role="user", content=body.content,
                   delivery_status="pending", request_json=body.model_dump_json(),
-                  agent_state_json=json.dumps({"messages": messages}, ensure_ascii=False),
+                  agent_state_json=json.dumps({**state, "messages": messages}, ensure_ascii=False),
                   sources_json=question.sources_json)
     session.add(row)
     session.flush()
@@ -497,15 +580,18 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
     conv = session.get(Conversation, cid)
     if conv is None:
         raise HTTPException(404, "conversation not found")
+    if not body.content.strip() and body.attachments:
+        body.content = "请分析所附材料。"
     if not body.content.strip() and body.clarification_response is None:
         raise HTTPException(422, "问题不能为空。")
-    ctx = pick_llm(session, "chat")
+    ctx = pick_chat_model(session, body.model_config_id)
     if ctx is None:
         raise HTTPException(400, "no LLM provider configured")
     with _turn_lock:
         if _turn_key(session, cid) in _active_turns:
             raise HTTPException(409, "该对话仍在生成回答，请等待完成或停止后再试。")
         _active_turns.add(_turn_key(session, cid))
+        _cancel_events[_turn_key(session, cid)] = Event()
     user_row = None
     persisted_id = None
     try:
@@ -515,7 +601,13 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
                     or user_row.delivery_status not in {"pending", "failed"} or user_row.content != body.content):
                 raise HTTPException(409, "只能重试当前对话最后一条未完成的问题，请刷新对话。")
             # Reuse the exact original request; UI selection may have changed since failure.
+            requested_model = body.model_config_id
             body = MessageIn(**json.loads(user_row.request_json or json.dumps({"content": user_row.content})))
+            if requested_model is not None:
+                body.model_config_id = requested_model
+                user_row.request_json = body.model_dump_json()
+            ctx = pick_chat_model(session, body.model_config_id)
+            validate_images(session, ctx, body.attachments)
             if user_row.agent_state_json:
                 user_row.delivery_status = "pending"
                 user_row.error_message = None
@@ -534,8 +626,10 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
             if body.clarification_response is not None:
                 if last is None:
                     raise HTTPException(409, "当前对话没有待回答的提问。")
+                validate_images(session, ctx, body.attachments)
                 row, messages, sources = _resume_clarification(session, conv, body, last)
                 return conv, row, ctx, messages, sources
+        validate_images(session, ctx, body.attachments)
         from app.skills.activation import select_for_chat
         try:
             select_for_chat(session, body.content, body.skill_ids)
@@ -573,6 +667,10 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
             hits = []
             sources = _parse_sources(user_row.sources_json)
         messages = _build_messages(session, conv, body.content, hits, context_block, user_row.id, body.skill_ids)
+        historical_images = [a for m in session.exec(select(Message).where(Message.conversation_id == cid)).all()
+                             for a in json.loads(m.request_json or '{}').get('attachments', []) if a.get('kind') == 'image']
+        if historical_images:
+            validate_images(session, ctx, [Attachment(**a) for a in historical_images])
         return conv, user_row, ctx, messages, _parse_sources(user_row.sources_json)
     except Exception as exc:
         if persisted_id is not None:
@@ -611,20 +709,25 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
     from app.agent.loop import run_agent
     try:
         content, tokens, audit = "", 0, None
+        tools = json.loads(user_row.agent_state_json or "{}").get("tools", [])
         for kind, payload in run_agent(client, provider, model_id, messages, session,
                 context_window=_context_window(session, provider, model_id),
                 max_iters=_max_iters(session),
+                cancelled=_cancel_events.get(_turn_key(session, cid)),
+                continuation=json.loads(user_row.agent_state_json) if user_row.agent_state_json else None,
                 evidence_context=user_row.model_context if sources else None):
             if kind == "ask_user":
                 return _pause_turn(session, user_row, model_id, payload, sources, conv.title)
             elif kind == "tool":
                 merge_sources(sources, payload.get('sources', []))
+                tools.append({k: payload.get(k) for k in ("name", "args", "result", "ok")})
             elif kind == "done":
                 content, tokens = payload["content"], payload["tokens"]
                 audit=payload.get('evidence_review')
             elif kind == "error":
+                _fail_turn(session, user_row.id, payload["message"], ({**payload["state"], "sources": sources, "tools": tools} if payload.get("state") else None))
                 raise HTTPException(500, payload["message"])
-        msg = _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit} if audit else None)
+        msg = _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit, 'tools':tools})
         return {"role": "assistant", "content": msg.content, "model": model_id,
                 "tokens": tokens, **public_sources(sources), "title": conv.title}
     except Exception as exc:
@@ -643,6 +746,7 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
     def event_stream():
         from app.agent.loop import run_agent
         content, tokens, audit = "", 0, None
+        tools = json.loads(user_row.agent_state_json or "{}").get("tools", [])
         completed = False
         try:
             yield _sse("accepted", {"user_message_id": user_id, "content": user_row.content, "title": title,
@@ -650,14 +754,19 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
             for kind, payload in run_agent(client, provider, model_id, messages, session,
                     context_window=_context_window(session, provider, model_id),
                     max_iters=_max_iters(session),
+                    cancelled=_cancel_events.get(_turn_key(session, cid)),
+                    continuation=json.loads(user_row.agent_state_json) if user_row.agent_state_json else None,
                     evidence_context=user_row.model_context if sources else None):
                 if kind == "ask_user":
                     result = _pause_turn(session, user_row, model_id, payload, sources, title)
                     completed = True
                     yield _sse("ask_user", result)
                     return
+                elif kind == "status":
+                    yield _sse("status", payload)
                 elif kind == "tool":
                     merge_sources(sources, payload.get('sources', []))
+                    tools.append({k: payload.get(k) for k in ("name", "args", "result", "ok")})
                     yield _sse("tool", payload)
                 elif kind == "delta":
                     content = payload["content"]
@@ -666,10 +775,10 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
                     content, tokens = payload["content"], payload["tokens"]
                     audit=payload.get('evidence_review')
                 elif kind == "error":
-                    _fail_turn(session, user_id, payload["message"])
-                    yield _sse("error", {**payload, "user_message_id": user_id})
+                    _fail_turn(session, user_id, payload["message"], ({**payload["state"], "sources": sources, "tools": tools} if payload.get("state") else None))
+                    yield _sse("error", {**{k: v for k, v in payload.items() if k != "state"}, "user_message_id": user_id})
                     return
-            _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit} if audit else None)
+            _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit, 'tools':tools})
             completed = True
             yield _sse("done", {"content": content, "model": model_id, "tokens": tokens,
                                 **public_sources(sources), "title": title})

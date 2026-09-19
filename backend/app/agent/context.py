@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+from app.agent.attachments import text_content
 from typing import Any
 
 # Per-message framing overhead (role tags etc.), in tokens. Rough but stable.
@@ -33,13 +34,14 @@ def estimate_tokens(text: str) -> int:
 
 
 def _msg_tokens(m: dict[str, Any]) -> int:
-    body = m.get("content") or ""
+    body = text_content(m.get("content"))
+    images = sum(1 for b in m.get("content", []) if isinstance(b, dict) and b.get("type") == "image_url") if isinstance(m.get("content"), list) else 0
     body += m.get('reasoning_content') or ''
     # tool_calls carry their own JSON payload
     tc = m.get("tool_calls")
     if tc:
         body += json.dumps(tc, ensure_ascii=False)
-    return _PER_MSG_OVERHEAD + estimate_tokens(body)
+    return _PER_MSG_OVERHEAD + estimate_tokens(body) + images * 4096
 
 
 def total_tokens(messages: list[dict[str, Any]]) -> int:
@@ -84,7 +86,7 @@ def compact_history(
         return messages
 
     def excerpt(message):
-        body = message.get('content') or ''
+        body = text_content(message.get('content'))
         context, separator, question = body.rpartition('[本轮用户问题]\n')
         if message.get('role') == 'user' and separator:
             return question[:350] + '\n材料快照：' + context[:150]

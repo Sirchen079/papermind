@@ -1,7 +1,7 @@
-import { useApi } from '../workspaceContext';
+import { useApi, useWorkspace } from '../workspaceContext';
 import { useEffect, useRef, useState } from "react";
 import { MarkdownContent } from '../components/MarkdownContent';
-import { type Source, type TopicSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
+import { type ChatAttachment, type ChatModel, type Source, type TopicSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
 import { ChatTopicSources } from '../components/ChatTopicSources';
 import { AskUserCard } from "../components/AskUserCard";
 import { usePaperDraft } from '../components/usePaperDraft';
@@ -35,11 +35,14 @@ interface ToolStep {
   ok: boolean;
 }
 interface RetryTurn {
+  continuable?: boolean;
   text: string;
   serverId?: number;
   extra?: ChatMessageExtra;
 }
 interface Msg {
+  attachments?: ChatAttachment[];
+  status?: string;
   id: number;
   role: string;
   content: string;
@@ -55,6 +58,7 @@ interface Msg {
 
 // Stable, monotonically-increasing key per message so React can reconcile the
 // streamed list correctly (index keys break when the tail is replaced/removed).
+const attachmentDrafts = new Map<string, ChatAttachment[]>();
 let nextMsgId = 0;
 function mk(
   role: string,
@@ -94,6 +98,8 @@ export default function Chat({
   onContextLoaded: (id: number, context: PaperChatContext | null) => void;
 }) {
   const api = useApi();
+  const { workspace } = useWorkspace();
+  const draftKey = `${workspace.id}:${activeConv ?? 0}`;
   const [convs, setConvs] = useState<Conv[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [composerDraft, setComposerDraft] = usePaperDraft(activeConv ?? 0, {content:''}, 'chat-composer');
@@ -103,6 +109,57 @@ export default function Chat({
   const [manualSkillId, setManualSkillId] = useState("");
   useEffect(() => { let alive = true; api.listSkills().then(rows => { if (alive) setManualSkills(rows.filter(s => s.enabled && s.trigger === "manual" && ["instruction", "persona"].includes(s.type))); }).catch(() => {}); return () => { alive = false; }; }, []);
   const [busy, setBusy] = useState(false);
+  const [attachments, setAttachments] = useState<ChatAttachment[]>(() => attachmentDrafts.get(draftKey) || []);
+  const [uploading, setUploading] = useState(false);
+  const [models, setModels] = useState<ChatModel[]>([]);
+  const [modelId, setModelId] = useState("");
+  const [stopping, setStopping] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const conversationRef = useRef(activeConv);
+  conversationRef.current = activeConv;
+  const uploadRef = useRef(false);
+  const followRef = useRef(true);
+  const selectedModel = models.find(m => String(m.id) === modelId) ?? models.find(m => m.is_default);
+  function refreshModels() { api.chatModels().then(setModels).catch(e => toast.error(e.message)); }
+  useEffect(() => { refreshModels(); }, []);
+  useEffect(() => { setAttachments(attachmentDrafts.get(draftKey) || []); followRef.current = true; }, [draftKey]);
+  const attachmentKeyRef = useRef(draftKey);
+  useEffect(() => {
+    if (attachmentKeyRef.current === draftKey) attachmentDrafts.set(draftKey, attachments);
+    attachmentKeyRef.current = draftKey;
+  }, [attachments, draftKey]);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [contextDraft, setContextDraft] = useState("");
+  const [effortDraft, setEffortDraft] = useState("");
+  const [imageDraft, setImageDraft] = useState("auto");
+  const [configBusy, setConfigBusy] = useState(false);
+  async function saveConfig() {
+    if (!selectedModel) return;
+    const context = contextDraft.trim() ? Number(contextDraft) : null;
+    if (context !== null && (!Number.isInteger(context) || context <= 0)) { toast.error("上下文需填写正整数"); return; }
+    setConfigBusy(true);
+    try {
+      await api.patchModel(selectedModel.id, { context_window: context, reasoning_effort: effortDraft || null, supports_images: imageDraft === 'auto' ? null : imageDraft === 'true' });
+      const rows = await api.chatModels(); setModels(rows); setConfigOpen(false); toast.success("模型配置已保存");
+    } catch (e: any) { toast.error(e.message); }
+    finally { setConfigBusy(false); }
+  }
+  async function addFiles(files: File[]) {
+    if (!files.length) return;
+    if (uploadRef.current || busy) { toast.error("请等当前处理完成后再添加附件"); return; }
+    if (attachments.length + files.length > 4) { toast.error("每条消息最多添加 4 个附件"); return; }
+    const cid = activeConv;
+    uploadRef.current = true; setUploading(true);
+    try {
+      for (const file of files) {
+        try {
+          if (file.size > 10 * 1024 * 1024) throw new Error("每个附件最多 10 MB");
+          const item = await api.uploadChatAttachment(file);
+          if (mountedRef.current && conversationRef.current === cid) setAttachments(items => [...items, item]);
+        } catch (e: any) { toast.error(`${file.name}：${e.message}`); }
+      }
+    } finally { uploadRef.current = false; if (mountedRef.current) setUploading(false); }
+  }
   const [loading, setLoading] = useState(activeConv != null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
@@ -166,11 +223,11 @@ export default function Chat({
         if (alive)
           setMessages(
             c.messages.flatMap((m) => {
-              const row = mk(m.role, m.content, m.model, { sources: m.sources ?? [], topic_sources: m.topic_sources ?? [], clarification: m.clarification });
+              const row = mk(m.role, m.content, m.model, { sources: m.sources ?? [], topic_sources: m.topic_sources ?? [], clarification: m.clarification, attachments: m.attachments, tools: m.tools });
               if (m.role !== "user" || !["failed", "pending"].includes(m.delivery_status ?? "")) return [row];
               return [row, mk("assistant", "", "", {
                 error: m.error_message || (m.delivery_status==='pending'&&!m.retryable?'正在生成回答…':"上次回答尚未完成。"),
-                retry: m.retryable ? { text: m.content, serverId: m.id } : undefined,
+                retry: m.retryable ? { text: m.content, serverId: m.id, continuable: m.continuable } : undefined,
               })];
             }),
           );
@@ -190,7 +247,7 @@ export default function Chat({
   useEffect(() => { setManualSkillId(""); }, [activeConv]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   // Auto-grow the textarea up to a few lines, then scroll.
@@ -254,8 +311,11 @@ export default function Chat({
     }
   }
 
-  function stop() {
-    abortRef.current?.abort();
+  async function stop() {
+    if (activeConv == null || stopping) return;
+    setStopping(true);
+    try { await api.stopChat(activeConv); }
+    catch (e: any) { setStopping(false); toast.error(`停止请求未送达：${e.message}`); }
   }
 
   function copyMessage(m: Msg) {
@@ -325,19 +385,20 @@ export default function Chat({
   async function sendTurn(failedMessage?: Msg, answer?: ClarificationResponse, answerText?: string) {
     const retry = failedMessage?.retry;
     let text = retry?.text ?? answerText ?? input;
-    if (activeConv == null || !text.trim() || busy || abortRef.current || loading || loadError || creating) return;
+    if (!text.trim() && attachments.length) text = "请分析所附材料。";
+    if (activeConv == null || !text.trim() || busy || abortRef.current || loading || loadError || creating || uploading) return;
     const ac = new AbortController();
     abortRef.current = ac;
-    setBusy(true);
+    setBusy(true); setStopping(false); followRef.current = true;
     let serverId = retry?.serverId;
-    const extra: ChatMessageExtra = retry?.extra ?? (answer ? { clarification_response: answer } :
-      { ...chatMessagePayload(text, paperContext), skill_ids: manualSkillId ? [Number(manualSkillId)] : [] });
+    const extra: ChatMessageExtra = retry?.extra ?? { attachments, model_config_id: modelId ? Number(modelId) : undefined, ...(answer ? { clarification_response: answer } :
+      { ...chatMessagePayload(text, paperContext), skill_ids: manualSkillId ? [Number(manualSkillId)] : [] }) };
     let placeholderId: number | null = null;
     let userPlaceholderId: number | null = null;
     let completed = false;
-    const fail = (message: string) => {
+    const fail = (message: string, continuable = false) => {
       if (!mountedRef.current) return;
-      setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, error: message, retry: { text, serverId, extra } } : row));
+      setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, error: message, retry: { text, serverId, extra, continuable } } : row));
     };
     try {
       if (retry) {
@@ -355,7 +416,7 @@ export default function Chat({
       }
       if (!mountedRef.current || ac.signal.aborted) return;
       const placeholder = mk("assistant");
-      const userPlaceholder = mk("user", text);
+      const userPlaceholder = mk("user", text, "", { attachments: extra.attachments });
       userPlaceholderId = userPlaceholder.id;
       placeholderId = placeholder.id;
       setMessages(rows => {
@@ -363,12 +424,13 @@ export default function Chat({
         // A retry reuses the visible and persisted question.
         return [...kept, ...(failedMessage ? [] : [userPlaceholder]), placeholder];
       });
-      if (!retry && answerText === undefined) setInput("");
+      // Clear the draft only after the server acknowledges the message.
       if (!retry && !answer && paperContext?.selectedText) onSelectionConsumed();
-      for await (const { event, data } of api.streamMessage(activeConv, text, ac.signal, { ...extra, retry_message_id: serverId })) {
+      for await (const { event, data } of api.streamMessage(activeConv, text, ac.signal, { ...extra, model_config_id: modelId ? Number(modelId) : extra.model_config_id, retry_message_id: serverId })) {
         if (ac.signal.aborted) break;
         if (!mountedRef.current) continue;
         if (event === "accepted") {
+          if (!retry && answerText === undefined) { setInput(""); setAttachments([]); }
           serverId = data.user_message_id;
           text = data.content ?? text;
           const response = data.clarification_response ?? extra.clarification_response;
@@ -380,6 +442,9 @@ export default function Chat({
             return row;
           }));
           if (data.title) await loadConvs();
+        } else if (event === "status") {
+          const stage = data.phase === "tool" ? `正在执行 ${data.name}` : data.phase === "review" ? "正在整理并核对回答" : "正在等待模型响应";
+          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, status: `${stage} · ${data.step}/${data.max_steps} 轮` } : row));
         } else if (event === "tool") {
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, tools: [...(row.tools ?? []), { name: data.name, args: data.args ?? {}, result: data.result ?? "", ok: data.ok }] } : row));
         } else if (event === "delta") {
@@ -395,7 +460,7 @@ export default function Chat({
           if (data.title) await loadConvs();
         } else if (event === "error") {
           serverId = data.user_message_id ?? serverId;
-          fail(data.message ?? "回答生成失败，请重试。");
+          fail(data.message ?? "回答生成失败，请重试。", !!data.continuable);
           completed = true;
           break;
         }
@@ -417,7 +482,7 @@ export default function Chat({
       else toast.error(message);
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
-      if (mountedRef.current) setBusy(false);
+      if (mountedRef.current) { setBusy(false); setStopping(false); }
     }
   }
 
@@ -544,7 +609,7 @@ export default function Chat({
           />
         ) : (
           <>
-            <div className="chat-messages flex-1 space-y-6 overflow-auto p-4">
+            <div className="chat-messages flex-1 space-y-6 overflow-auto p-4" onScroll={e => { const el = e.currentTarget; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }}>
               {loading && <p role="status" className="text-sm text-muted">正在加载对话…</p>}
               {loadError && <div role="alert" className="text-sm">无法加载对话：{loadError}<button className="btn-ghost ml-2" onClick={() => setLoadRevision(n => n + 1)}>重试</button></div>}
               {messages.length===0&&<div className="chat-starters"><ResearchMotif icon={<MessageSquare size={24}/>}/><h2>想从哪篇论文聊起？</h2><p className="text-sm text-muted">写下问题，或从一个方向开始。</p><div className="flex flex-wrap justify-center gap-2">{['解释论文中的一个概念','比较几篇论文的方法','根据原文总结局限'].map(prompt=><button key={prompt} className="btn-ghost text-xs" onClick={()=>{setInput(prompt);taRef.current?.focus();}}>{prompt}</button>)}</div></div>}
@@ -568,6 +633,7 @@ export default function Chat({
                         : { backgroundColor: "transparent" }
                     }
                   >
+                    {m.attachments?.length ? <div className="mb-2 flex flex-wrap gap-2 justify-end">{m.attachments.map((a, i) => <AttachmentChip key={i} attachment={a} />)}</div> : null}
                     {m.tools?.map((t, i) => (
                       <details key={i} className="tool-card">
                         <summary title={t.ok ? "工具执行成功" : "工具执行失败"}>
@@ -580,7 +646,7 @@ export default function Chat({
                         <div className="tool-result">{t.result}</div>
                       </details>
                     ))}
-                    {m.error && <div role="alert" className="mb-2 text-sm text-[var(--danger)]"><p>回答未完成：{m.error}</p>{m.retry && <button type="button" className="btn-ghost mt-2 text-xs" disabled={busy || loading} onClick={() => void sendTurn(m)}>重试原问题</button>}</div>}
+                    {m.error && <div role="alert" className="mb-2 text-sm text-[var(--danger)]"><p>回答未完成：{m.error}</p>{m.retry && <button type="button" className="btn-ghost mt-2 text-xs" disabled={busy || loading} onClick={() => void sendTurn(m)}>{m.retry.continuable ? "从已保存进度继续" : "重试原问题"}</button>}</div>}
                     {m.clarification ? <AskUserCard request={m.clarification} conversationId={activeConv}
                       disabled={busy || loading || !!loadError || creating}
                       onAnswer={(response, text) => void sendTurn(undefined, response, text)} /> : m.role === "assistant" ? (
@@ -588,7 +654,7 @@ export default function Chat({
                         <MarkdownContent content={m.content} />
                       ) : busy && !m.error ? (
                         <span className="text-sm text-faint">
-                          思考中…
+                          {stopping ? "正在停止，等待当前请求结束；不会继续调用工具…" : m.status || "正在连接模型…"}
                         </span>
                       ) : m.stopped ? (
                         <span className="text-sm italic text-faint">
@@ -702,17 +768,41 @@ export default function Chat({
               </select>
               <span>选择后随提问应用；可随时取消。</span>
             </label>}
+            <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs text-muted">
+              <label>对话模型 <select aria-label="对话模型" className="input w-auto" value={modelId} disabled={busy} onFocus={refreshModels} onChange={e => setModelId(e.target.value)}>
+                <option value="">默认模型{models.find(m => m.is_default) ? ` · ${models.find(m => m.is_default)!.name}` : "（请在设置中添加）"}</option>
+                {models.map(m => <option key={m.id} value={m.id}>{m.provider} · {m.name}</option>)}
+              </select></label>
+              {selectedModel && <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => { setContextDraft(selectedModel.context_window?.toString() || ''); setEffortDraft(selectedModel.reasoning_effort || ''); setImageDraft(selectedModel.supports_images == null ? 'auto' : String(selectedModel.supports_images)); setConfigOpen(!configOpen); }}>配置模型</button>}
+              {selectedModel && <span>上下文 {selectedModel.context_window ? `${Math.round(selectedModel.context_window / 1000)}k` : "自动"} · 思考 {selectedModel.reasoning_effort || "自动"} · {selectedModel.supports_images === true ? "支持图片" : selectedModel.supports_images === false ? "仅文本" : "图片能力未声明"}</span>}
+            </div>
+            {configOpen && selectedModel && <div className="mx-3 rounded-lg border border-[var(--border)] p-3 flex flex-wrap items-end gap-3 text-xs">
+              <label>上下文 tokens<input aria-label="上下文 tokens" type="number" min="1" className="input" value={contextDraft} onChange={e => setContextDraft(e.target.value)} placeholder="自动" /></label>
+              <label>思考等级<select aria-label="思考等级" className="input" value={effortDraft} onChange={e => setEffortDraft(e.target.value)}><option value="">自动</option>{['low','medium','high','xhigh','max'].map(v => <option key={v}>{v}</option>)}</select></label>
+              <label>图片输入<select aria-label="图片输入" className="input" value={imageDraft} onChange={e => setImageDraft(e.target.value)}><option value="auto">未声明</option><option value="true">支持</option><option value="false">不支持</option></select></label>
+              <button className="btn-primary" disabled={configBusy || busy} onClick={() => void saveConfig()}>保存模型配置</button>
+              <button className="btn-ghost" onClick={() => setConfigOpen(false)}>取消</button>
+              <p className="w-full text-faint">设置应用于此模型的后续调用；共享连接会同步。思考等级需与服务商支持的参数一致。</p>
+            </div>}
+            {attachments.length > 0 && <div className="flex flex-wrap gap-2 px-3 py-2">{attachments.map((a, i) => <AttachmentChip key={i} attachment={a} onRemove={() => setAttachments(items => items.filter((_, index) => index !== i))} />)}</div>}
+            {attachments.some(a => a.kind === 'text') && <p className="px-3 pb-1 text-xs text-faint">文件按提取的文字发送，可点击附件预览；PDF、Word 中的图表请另附截图。</p>}
+            {attachments.some(a => a.kind === 'image') && selectedModel?.supports_images === false && <p role="alert" className="px-3 text-sm text-[var(--danger)]">当前模型仅支持文本，请切换支持图片的模型后发送。</p>}
             <div
+              onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }}
+              onDrop={e => { if (e.dataTransfer.files.length) { e.preventDefault(); void addFiles(Array.from(e.dataTransfer.files)); } }}
               className="chat-composer flex items-end gap-2"
 
             >
+              <input ref={fileRef} type="file" multiple className="hidden" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.docx,.txt,.md,.csv,.tsv,.json,.log,.py,.js,.ts,.tex,.bib,.yaml,.yml,.xml,.html,.css,.r" onChange={e => { void addFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
+              <button type="button" className="btn-ghost shrink-0" disabled={uploading || busy || loading} onClick={() => fileRef.current?.click()} title="添加图片、PDF、Word 或文本；每个最多 10 MB">{uploading ? "读取中…" : "+ 附件"}</button>
               <textarea
+                onPaste={e => { const files = Array.from(e.clipboardData.items).filter(i => i.kind === 'file').map(i => i.getAsFile()).filter((f): f is File => !!f); if (files.length) { e.preventDefault(); void addFiles(files); } }}
                 ref={taRef}
                 disabled={loading || !!loadError || creating}
                 aria-label="向论文库提问"
                 className="input resize-none"
                 rows={1}
-                placeholder={pendingQuestion ? "直接补充信息或调整需求，AI 会继续处理…" : "向论文库提问，支持 Markdown / LaTeX…（Shift+回车换行）"}
+                placeholder={pendingQuestion ? "直接补充信息或调整需求，AI 会继续处理…" : "输入问题，Ctrl+V 粘贴截图，或拖入文件…（Shift+回车换行）"}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -726,14 +816,15 @@ export default function Chat({
                 <button
                   onClick={stop}
                   className="btn-ghost shrink-0 px-5"
-                  title="停止生成"
+                  title="停止后不再发起工具调用；已发送的模型请求可能需要等待返回"
+                  disabled={stopping}
                 >
-                  <SquareIcon size={12} /> 停止
+                  <SquareIcon size={12} /> {stopping ? "停止中…" : "停止"}
                 </button>
               ) : (
                 <button
                   onClick={send}
-                  disabled={!input.trim() || loading || !!loadError || creating}
+                  disabled={(!input.trim() && !attachments.length) || uploading || loading || !!loadError || creating || (attachments.some(a => a.kind === "image") && selectedModel?.supports_images === false)}
                   className="btn-primary shrink-0 px-5"
                 >
                   发送
@@ -846,4 +937,16 @@ function CapturePanel({
       )}
     </div>
   );
+}
+
+function AttachmentChip({ attachment: a, onRemove }: { attachment: ChatAttachment; onRemove?: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-2 text-left text-xs max-w-full">
+    <button type="button" className="flex items-center gap-2" onClick={() => setExpanded(!expanded)} title="查看附件">
+      {a.kind === 'image' && <img src={a.data_url} alt={a.name} className="h-12 w-16 rounded object-contain" />}
+      <span className="max-w-[220px] truncate">{a.name}</span><span className="text-faint">{a.kind === 'text' ? `${a.text.length} 字符` : '图片'}</span>
+    </button>
+    {expanded && (a.kind === 'image' ? <img src={a.data_url} alt={a.name} className="mt-2 max-h-96 max-w-full object-contain" /> : <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{a.text}</pre>)}
+    {onRemove && <button type="button" className="btn-ghost text-xs mt-1" aria-label={`移除 ${a.name}`} onClick={onRemove}>移除</button>}
+  </div>;
 }
