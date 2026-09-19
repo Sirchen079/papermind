@@ -12,6 +12,7 @@
     "noEmit": false
   },
   "include": [
+    "src/pages/chatQueueModel.ts",
     "src/pages/markdownModel.ts",
     "src/pages/onboardingModel.ts",
     "src/pages/graphModel.ts",

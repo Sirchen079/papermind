@@ -4,6 +4,9 @@ import { MarkdownContent } from '../components/MarkdownContent';
 import { type ChatAttachment, type ChatModel, type Source, type TopicSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
 import { ChatTopicSources } from '../components/ChatTopicSources';
 import { AskUserCard } from "../components/AskUserCard";
+import { useChatDraft } from '../components/useChatDraft';
+import { appendQueued, nextQueued, finishQueued } from './chatQueueModel';
+import { libraryScope } from '../components/usePaperDraft';
 import { usePaperDraft } from '../components/usePaperDraft';
 import { AlertTriangle, BookOpen, Check, Copy, Lightbulb, Menu, MessageSquare, Pencil, Save, SquareIcon, Wrench, X } from "../icons";
 import { useToast } from "../components/ui/Toast";
@@ -35,11 +38,14 @@ interface ToolStep {
   ok: boolean;
 }
 interface RetryTurn {
+  queueId?: string;
   continuable?: boolean;
   text: string;
   serverId?: number;
   extra?: ChatMessageExtra;
 }
+interface QueuedTurn { id: string; state: 'waiting' | 'sending'; text: string; extra: ChatMessageExtra; }
+interface ComposerMaterials { attachments: ChatAttachment[]; queue: QueuedTurn[]; }
 interface Msg {
   attachments?: ChatAttachment[];
   status?: string;
@@ -58,7 +64,6 @@ interface Msg {
 
 // Stable, monotonically-increasing key per message so React can reconcile the
 // streamed list correctly (index keys break when the tail is replaced/removed).
-const attachmentDrafts = new Map<string, ChatAttachment[]>();
 let nextMsgId = 0;
 function mk(
   role: string,
@@ -99,35 +104,37 @@ export default function Chat({
 }) {
   const api = useApi();
   const { workspace } = useWorkspace();
-  const draftKey = `${workspace.id}:${activeConv ?? 0}`;
+  const draftKey = `${libraryScope()}:${workspace.id}:${activeConv ?? 0}`;
   const [convs, setConvs] = useState<Conv[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
-  const [composerDraft, setComposerDraft] = usePaperDraft(activeConv ?? 0, {content:''}, 'chat-composer');
+  const [composerDraft, setComposerDraft, clearComposerDraft] = usePaperDraft(activeConv ?? 0, {content:''}, 'chat-composer');
   const input=composerDraft.content;
   const setInput=(content:string)=>setComposerDraft({content});
   const [manualSkills, setManualSkills] = useState<{id: number; name: string}[]>([]);
   const [manualSkillId, setManualSkillId] = useState("");
   useEffect(() => { let alive = true; api.listSkills().then(rows => { if (alive) setManualSkills(rows.filter(s => s.enabled && s.trigger === "manual" && ["instruction", "persona"].includes(s.type))); }).catch(() => {}); return () => { alive = false; }; }, []);
   const [busy, setBusy] = useState(false);
-  const [attachments, setAttachments] = useState<ChatAttachment[]>(() => attachmentDrafts.get(draftKey) || []);
+  const materials = useChatDraft<ComposerMaterials>(draftKey, { attachments: [], queue: [] });
+  const { attachments, queue } = materials.value;
+  function setAttachments(value: ChatAttachment[] | ((items: ChatAttachment[]) => ChatAttachment[])) {
+    materials.update(previous => ({ ...previous, attachments: typeof value === 'function' ? value(previous.attachments) : value }));
+  }
+  const [queuePaused, setQueuePaused] = useState(true);
+  const pauseRef = useRef(true);
+  function pauseQueue() { pauseRef.current = true; setQueuePaused(true); }
+  const scopeRef = useRef(draftKey); scopeRef.current = draftKey;
+  const [contextUsage, setContextUsage] = useState<{before: number; after: number; window: number; compacted: boolean; summarized: boolean} | null>(null);
   const [uploading, setUploading] = useState(false);
   const [models, setModels] = useState<ChatModel[]>([]);
   const [modelId, setModelId] = useState("");
   const [stopping, setStopping] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const conversationRef = useRef(activeConv);
-  conversationRef.current = activeConv;
   const uploadRef = useRef(false);
   const followRef = useRef(true);
   const selectedModel = models.find(m => String(m.id) === modelId) ?? models.find(m => m.is_default);
   function refreshModels() { api.chatModels().then(setModels).catch(e => toast.error(e.message)); }
   useEffect(() => { refreshModels(); }, []);
-  useEffect(() => { setAttachments(attachmentDrafts.get(draftKey) || []); followRef.current = true; }, [draftKey]);
-  const attachmentKeyRef = useRef(draftKey);
-  useEffect(() => {
-    if (attachmentKeyRef.current === draftKey) attachmentDrafts.set(draftKey, attachments);
-    attachmentKeyRef.current = draftKey;
-  }, [attachments, draftKey]);
+  useEffect(() => { pauseQueue(); setContextUsage(null); setBusy(false); setStopping(false); abortRef.current = null; followRef.current = true; }, [draftKey]);
   const [configOpen, setConfigOpen] = useState(false);
   const [contextDraft, setContextDraft] = useState("");
   const [effortDraft, setEffortDraft] = useState("");
@@ -146,20 +153,21 @@ export default function Chat({
   }
   async function addFiles(files: File[]) {
     if (!files.length) return;
-    if (uploadRef.current || busy) { toast.error("请等当前处理完成后再添加附件"); return; }
+    if (uploadRef.current || !materials.ready) { toast.error("请等当前处理完成后再添加附件"); return; }
     if (attachments.length + files.length > 4) { toast.error("每条消息最多添加 4 个附件"); return; }
-    const cid = activeConv;
+    const scope = draftKey;
     uploadRef.current = true; setUploading(true);
     try {
       for (const file of files) {
         try {
           if (file.size > 10 * 1024 * 1024) throw new Error("每个附件最多 10 MB");
           const item = await api.uploadChatAttachment(file);
-          if (mountedRef.current && conversationRef.current === cid) setAttachments(items => [...items, item]);
+          if (mountedRef.current && scopeRef.current === scope) setAttachments(items => [...items, item]);
         } catch (e: any) { toast.error(`${file.name}：${e.message}`); }
       }
     } finally { uploadRef.current = false; if (mountedRef.current) setUploading(false); }
   }
+  const [serverPending, setServerPending] = useState(false);
   const [loading, setLoading] = useState(activeConv != null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadRevision, setLoadRevision] = useState(0);
@@ -216,6 +224,11 @@ export default function Chat({
       .getConversation(activeConv)
       .then((c) => {
         const last=c.messages[c.messages.length-1];
+        if (alive) {
+          const pending = last?.role === "user" && last.delivery_status === "pending" && !last.retryable;
+          setServerPending(pending);
+          if (!pending) setStopping(false);
+        }
         if(alive&&last?.role==='user'&&last.delivery_status==='pending'&&!last.retryable){
           pollTimer=setTimeout(()=>{if(alive)setLoadRevision(n=>n+1);},1500);
         }
@@ -226,7 +239,9 @@ export default function Chat({
               const row = mk(m.role, m.content, m.model, { sources: m.sources ?? [], topic_sources: m.topic_sources ?? [], clarification: m.clarification, attachments: m.attachments, tools: m.tools });
               if (m.role !== "user" || !["failed", "pending"].includes(m.delivery_status ?? "")) return [row];
               return [row, mk("assistant", "", "", {
-                error: m.error_message || (m.delivery_status==='pending'&&!m.retryable?'正在生成回答…':"上次回答尚未完成。"),
+                ...(m.delivery_status === 'pending' && !m.retryable
+                  ? { status: '后台正在生成回答…' }
+                  : { error: m.error_message || '上次回答尚未完成。' }),
                 retry: m.retryable ? { text: m.content, serverId: m.id, continuable: m.continuable } : undefined,
               })];
             }),
@@ -313,16 +328,18 @@ export default function Chat({
 
   async function stop() {
     if (activeConv == null || stopping) return;
+    pauseQueue();
     setStopping(true);
     try { await api.stopChat(activeConv); }
     catch (e: any) { setStopping(false); toast.error(`停止请求未送达：${e.message}`); }
   }
 
   function copyMessage(m: Msg) {
-    navigator.clipboard?.writeText(m.content).then(() => {
+    if (!navigator.clipboard) { toast.error("当前环境不支持复制，请手动选择文字复制。"); return; }
+    navigator.clipboard.writeText(m.content).then(() => {
       setCopiedId(m.id);
       setTimeout(() => setCopiedId((id) => (id === m.id ? null : id)), 1500);
-    });
+    }).catch(() => toast.error("复制失败，请检查剪贴板权限或手动复制。"));
   }
 
   // ---- T6：回答回流 ----
@@ -378,29 +395,67 @@ export default function Chat({
 
   const pendingQuestion = messages.find(m => m.clarification?.status === "pending")?.clarification;
 
+  useEffect(() => {
+    const next = nextQueued(queue, queuePaused || pauseRef.current, busy || serverPending || uploading || loading || !!loadError || !materials.ready || !!pendingQuestion || !!abortRef.current);
+    if (next && activeConv != null) void sendTurn(undefined, undefined, next.text, next.extra.attachments ?? [], String(next.extra.model_config_id ?? ''), next);
+  }, [busy, queue, queuePaused, activeConv, loading, loadError, materials.ready, pendingQuestion, serverPending, uploading]);
+
+  function queueCurrentTurn() {
+    if ((!input.trim() && !attachments.length) || uploading || !materials.ready) return;
+    if (attachments.some(a => a.kind === 'image') && selectedModel?.supports_images === false) { toast.error("请先选择支持图片的模型"); return; }
+    if (paperContext && selectedTextOverLimit(paperContext.selectedText)) { toast.error("选中文本过长，请缩短后发送"); return; }
+    const item: QueuedTurn = { id: crypto.randomUUID(), state: 'waiting', text: input.trim() || "请分析所附材料。", extra: {
+      ...chatMessagePayload(input, paperContext), attachments, model_config_id: selectedModel?.id,
+      skill_ids: manualSkillId ? [Number(manualSkillId)] : [],
+    } };
+    try {
+      materials.update(previous => ({ attachments: [], queue: appendQueued(previous.queue, item) }));
+      clearComposerDraft(composerDraft);
+      if (paperContext?.selectedText) onSelectionConsumed();
+      // Only a currently successful foreground run can drain a fresh queue.
+      if (busy && !stopping && !queue.length) { pauseRef.current = false; setQueuePaused(false); }
+    } catch (e: any) { toast.error(e.message); }
+  }
+
   async function send() {
+    if (busy || serverPending) { queueCurrentTurn(); return; }
     await sendTurn(undefined, pendingQuestion ? { message_id: pendingQuestion.message_id, free_text: input } : undefined);
   }
 
-  async function sendTurn(failedMessage?: Msg, answer?: ClarificationResponse, answerText?: string) {
+  async function sendTurn(failedMessage?: Msg, answer?: ClarificationResponse, answerText?: string, turnAttachments = attachments, turnModelId = modelId, queued?: QueuedTurn) {
+    const origin = draftKey;
     const retry = failedMessage?.retry;
     let text = retry?.text ?? answerText ?? input;
-    if (!text.trim() && attachments.length) text = "请分析所附材料。";
-    if (activeConv == null || !text.trim() || busy || abortRef.current || loading || loadError || creating || uploading) return;
+    if (!text.trim() && turnAttachments.length) text = "请分析所附材料。";
+    if (activeConv == null || !text.trim() || busy || serverPending || abortRef.current || loading || loadError || creating || uploading || !materials.ready) return;
+    if (queued && (pauseRef.current || scopeRef.current !== origin)) return;
+    if (!retry && !queued && attachments.some(a => a.kind === 'image') && selectedModel?.supports_images === false) { toast.error("请先选择支持图片的模型"); return; }
     const ac = new AbortController();
     abortRef.current = ac;
-    setBusy(true); setStopping(false); followRef.current = true;
+    setBusy(true); setStopping(false); setContextUsage(null); followRef.current = true;
     let serverId = retry?.serverId;
-    const extra: ChatMessageExtra = retry?.extra ?? { attachments, model_config_id: modelId ? Number(modelId) : undefined, ...(answer ? { clarification_response: answer } :
+    const extra: ChatMessageExtra = retry?.extra ?? queued?.extra ?? { attachments: turnAttachments, model_config_id: turnModelId ? Number(turnModelId) : undefined, ...(answer ? { clarification_response: answer } :
       { ...chatMessagePayload(text, paperContext), skill_ids: manualSkillId ? [Number(manualSkillId)] : [] }) };
     let placeholderId: number | null = null;
     let userPlaceholderId: number | null = null;
     let completed = false;
+    let succeeded = false;
     const fail = (message: string, continuable = false) => {
-      if (!mountedRef.current) return;
-      setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, error: message, retry: { text, serverId, extra, continuable } } : row));
+      if (!mountedRef.current || scopeRef.current !== origin) return;
+      setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, error: message, retry: { text, serverId, extra, continuable, queueId: queued?.id ?? retry?.queueId } } : row));
     };
     try {
+      if (queued) {
+        const saved = await materials.update(previous => ({ ...previous, queue: previous.queue.map(item => item.id === queued.id ? { ...item, state: 'sending' } : item) }));
+        if (!saved) {
+          materials.update(previous => ({ ...previous, queue: previous.queue.map(item => item.id === queued.id ? { ...item, state: 'waiting' } : item) }));
+          throw new Error("未能保存排队发送状态，已暂停，修复草稿存储后可继续。");
+        }
+        if (pauseRef.current || !mountedRef.current || scopeRef.current !== origin) {
+          materials.update(previous => ({ ...previous, queue: previous.queue.map(item => item.id === queued.id ? { ...item, state: 'waiting' } : item) }));
+          return;
+        }
+      }
       if (retry) {
         // A network failure can happen after the server accepted the question.
         // Resolve its persisted identity before retrying to avoid a duplicate turn.
@@ -414,7 +469,7 @@ export default function Chat({
           return;
         }
       }
-      if (!mountedRef.current || ac.signal.aborted) return;
+      if (!mountedRef.current || scopeRef.current !== origin || ac.signal.aborted) return;
       const placeholder = mk("assistant");
       const userPlaceholder = mk("user", text, "", { attachments: extra.attachments });
       userPlaceholderId = userPlaceholder.id;
@@ -425,12 +480,21 @@ export default function Chat({
         return [...kept, ...(failedMessage ? [] : [userPlaceholder]), placeholder];
       });
       // Clear the draft only after the server acknowledges the message.
-      if (!retry && !answer && paperContext?.selectedText) onSelectionConsumed();
-      for await (const { event, data } of api.streamMessage(activeConv, text, ac.signal, { ...extra, model_config_id: modelId ? Number(modelId) : extra.model_config_id, retry_message_id: serverId })) {
+      if (!retry && !answer && !queued && paperContext?.selectedText) onSelectionConsumed();
+      for await (const { event, data } of api.streamMessage(activeConv, text, ac.signal, { ...extra, model_config_id: turnModelId ? Number(turnModelId) : extra.model_config_id, retry_message_id: serverId })) {
         if (ac.signal.aborted) break;
-        if (!mountedRef.current) continue;
+        // Acknowledgements must update the originating durable draft even if
+        // the page has been left. Never touch the newly selected conversation.
         if (event === "accepted") {
-          if (!retry && answerText === undefined) { setInput(""); setAttachments([]); }
+          const acceptedQueueId = queued?.id ?? retry?.queueId;
+          if (acceptedQueueId) materials.update(previous => ({ ...previous, queue: finishQueued(previous.queue, acceptedQueueId) }));
+          if (!retry && answerText === undefined) {
+            clearComposerDraft(composerDraft);
+            materials.update(previous => ({ ...previous, attachments: previous.attachments.filter(item => !turnAttachments.includes(item)) }));
+          }
+        }
+        if (!mountedRef.current || scopeRef.current !== origin) continue;
+        if (event === "accepted") {
           serverId = data.user_message_id;
           text = data.content ?? text;
           const response = data.clarification_response ?? extra.clarification_response;
@@ -443,6 +507,7 @@ export default function Chat({
           }));
           if (data.title) await loadConvs();
         } else if (event === "status") {
+          if (data.context) setContextUsage(previous => ({ ...data.context, compacted: !!data.context.compacted || !!previous?.compacted, summarized: data.context.compacted ? data.context.summarized : previous?.summarized ?? false }));
           const stage = data.phase === "tool" ? `正在执行 ${data.name}` : data.phase === "review" ? "正在整理并核对回答" : "正在等待模型响应";
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, status: `${stage} · ${data.step}/${data.max_steps} 轮` } : row));
         } else if (event === "tool") {
@@ -456,6 +521,7 @@ export default function Chat({
           break;
         } else if (event === "done") {
           completed = true;
+          succeeded = true;
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, content: data.content, model: data.model, sources: data.sources ?? [], topic_sources: data.topic_sources ?? [] } : row));
           if (data.title) await loadConvs();
         } else if (event === "error") {
@@ -467,7 +533,7 @@ export default function Chat({
       }
       if (!completed) fail(ac.signal.aborted ? "已停止回答，可重试原问题。" : "连接已结束，未收到完整回答。请重试原问题。");
     } catch (e: any) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || scopeRef.current !== origin) return;
       const message = e?.name === "AbortError" ? "已停止回答，可重试原问题。" : e.message || "回答生成失败，请重试。";
       if (extra.clarification_response && serverId == null) {
         // Resolve an uncertain submission against durable state. The card's
@@ -482,7 +548,10 @@ export default function Chat({
       else toast.error(message);
     } finally {
       if (abortRef.current === ac) abortRef.current = null;
-      if (mountedRef.current) { setBusy(false); setStopping(false); }
+      if (mountedRef.current && scopeRef.current === origin) {
+        if (!succeeded) pauseQueue();
+        setBusy(false); setStopping(false);
+      }
     }
   }
 
@@ -646,13 +715,13 @@ export default function Chat({
                         <div className="tool-result">{t.result}</div>
                       </details>
                     ))}
-                    {m.error && <div role="alert" className="mb-2 text-sm text-[var(--danger)]"><p>回答未完成：{m.error}</p>{m.retry && <button type="button" className="btn-ghost mt-2 text-xs" disabled={busy || loading} onClick={() => void sendTurn(m)}>{m.retry.continuable ? "从已保存进度继续" : "重试原问题"}</button>}</div>}
+                    {m.error && <div role="alert" className="mb-2 text-sm text-[var(--danger)]"><p>回答未完成：{m.error}</p>{m.retry && <button type="button" className="btn-ghost mt-2 text-xs" disabled={busy || serverPending || loading} onClick={() => void sendTurn(m)}>{m.retry.continuable ? "从已保存进度继续" : "重试原问题"}</button>}</div>}
                     {m.clarification ? <AskUserCard request={m.clarification} conversationId={activeConv}
                       disabled={busy || loading || !!loadError || creating}
                       onAnswer={(response, text) => void sendTurn(undefined, response, text)} /> : m.role === "assistant" ? (
                       m.content ? (
                         <MarkdownContent content={m.content} />
-                      ) : busy && !m.error ? (
+                      ) : (busy || serverPending) && !m.error ? (
                         <span className="text-sm text-faint">
                           {stopping ? "正在停止，等待当前请求结束；不会继续调用工具…" : m.status || "正在连接模型…"}
                         </span>
@@ -762,19 +831,21 @@ export default function Chat({
             )}
             {manualSkills.length > 0 && <label className="flex items-center gap-2 px-3 py-2 text-xs text-muted">
               本轮技能
-              <select aria-label="本轮手动技能" className="input w-auto" disabled={busy || loading} value={manualSkillId} onChange={e => setManualSkillId(e.target.value)}>
+              <select aria-label="本轮手动技能" className="input w-auto" disabled={loading} value={manualSkillId} onChange={e => setManualSkillId(e.target.value)}>
                 <option value="">不使用手动技能</option>
                 {manualSkills.map(skill => <option key={skill.id} value={skill.id}>{skill.name}</option>)}
               </select>
               <span>选择后随提问应用；可随时取消。</span>
             </label>}
             <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs text-muted">
-              <label>对话模型 <select aria-label="对话模型" className="input w-auto" value={modelId} disabled={busy} onFocus={refreshModels} onChange={e => setModelId(e.target.value)}>
+              <label>对话模型 <select aria-label="对话模型" className="input w-auto" value={modelId} disabled={loading} onFocus={refreshModels} onChange={e => setModelId(e.target.value)}>
                 <option value="">默认模型{models.find(m => m.is_default) ? ` · ${models.find(m => m.is_default)!.name}` : "（请在设置中添加）"}</option>
                 {models.map(m => <option key={m.id} value={m.id}>{m.provider} · {m.name}</option>)}
               </select></label>
               {selectedModel && <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => { setContextDraft(selectedModel.context_window?.toString() || ''); setEffortDraft(selectedModel.reasoning_effort || ''); setImageDraft(selectedModel.supports_images == null ? 'auto' : String(selectedModel.supports_images)); setConfigOpen(!configOpen); }}>配置模型</button>}
               {selectedModel && <span>上下文 {selectedModel.context_window ? `${Math.round(selectedModel.context_window / 1000)}k` : "自动"} · 思考 {selectedModel.reasoning_effort || "自动"} · {selectedModel.supports_images === true ? "支持图片" : selectedModel.supports_images === false ? "仅文本" : "图片能力未声明"}</span>}
+              {contextUsage && <span title="上次请求的服务端消息估算，含系统提示、材料和工具结果；不含工具定义和输出预留，图片按固定值估算，并非服务商精确用量">上次请求约 {contextUsage.after.toLocaleString()} / {contextUsage.window.toLocaleString()} tokens</span>}
+              {contextUsage?.compacted && <span role="status">较早消息已{contextUsage.summarized ? '压缩为摘要' : '移出本次上下文'}，完整历史仍保留</span>}
             </div>
             {configOpen && selectedModel && <div className="mx-3 rounded-lg border border-[var(--border)] p-3 flex flex-wrap items-end gap-3 text-xs">
               <label>上下文 tokens<input aria-label="上下文 tokens" type="number" min="1" className="input" value={contextDraft} onChange={e => setContextDraft(e.target.value)} placeholder="自动" /></label>
@@ -783,6 +854,28 @@ export default function Chat({
               <button className="btn-primary" disabled={configBusy || busy} onClick={() => void saveConfig()}>保存模型配置</button>
               <button className="btn-ghost" onClick={() => setConfigOpen(false)}>取消</button>
               <p className="w-full text-faint">设置应用于此模型的后续调用；共享连接会同步。思考等级需与服务商支持的参数一致。</p>
+            </div>}
+            {!materials.ready && <p role="status" className="px-3 text-xs">正在恢复附件和排队草稿…</p>}
+            {materials.error && <p role="alert" className="px-3 text-xs text-[var(--danger)]">附件或排队草稿未能保存到本机，请勿关闭页面。<button className="btn-ghost" onClick={() => materials.update(value => ({ ...value }))}>重试保存</button></p>}
+            {materials.saving && <p role="status" className="px-3 text-xs text-faint">正在保存草稿…</p>}
+            {queue.length > 0 && <div className="mx-3 max-h-40 overflow-auto rounded-lg border border-[var(--border)] p-2 text-xs" aria-label="待发送队列">
+              <div className="flex items-center gap-2"><span>已排队 {queue.length} 条 · {queuePaused ? '已暂停' : '当前回答成功后依次发送'}</span>
+                {queuePaused ? <button className="btn-ghost" disabled={busy || loading || !!loadError || serverPending || !!pendingQuestion || queue[0].state === 'sending'} onClick={() => { pauseRef.current = false; setQueuePaused(false); }}>继续队列</button> : <button className="btn-ghost" onClick={pauseQueue}>暂停队列</button>}
+              </div>
+              {queue.map((item, index) => <div key={item.id} className="flex items-center gap-2 py-1">
+                <span className="min-w-0 flex-1 truncate" title={item.text}>{index + 1}. {item.text} · {item.extra.attachments?.length ?? 0} 个附件</span>
+                {item.state === 'sending' && <span>发送状态待确认，请检查历史并使用原消息重试</span>}
+                {item.state === 'waiting' && <button className="btn-ghost" disabled={!!input.trim() || !!attachments.length || uploading} onClick={() => {
+                  setInput(item.text);
+                  setModelId(String(item.extra.model_config_id ?? ''));
+                  setManualSkillId(String(item.extra.skill_ids?.[0] ?? ''));
+                  onContextLoaded(activeConv!, item.extra.paper_id == null ? null : {paperId: item.extra.paper_id, paperTitle: null, selectedText: item.extra.selected_text ?? null});
+                  materials.update(previous => ({ attachments: item.extra.attachments ?? [], queue: finishQueued(previous.queue, item.id) }));
+                  pauseQueue();
+                }} aria-label={`编辑排队消息 ${index + 1}`}>编辑</button>}
+                <button className="btn-ghost" disabled={busy && item.state === 'sending'} onClick={() => materials.update(previous => ({ ...previous, queue: finishQueued(previous.queue, item.id) }))} aria-label={`移除排队消息 ${index + 1}`}>移除</button>
+              </div>)}
+              {pendingQuestion && <p>请先回答 AI 的补充问题，再继续队列。</p>}
             </div>}
             {attachments.length > 0 && <div className="flex flex-wrap gap-2 px-3 py-2">{attachments.map((a, i) => <AttachmentChip key={i} attachment={a} onRemove={() => setAttachments(items => items.filter((_, index) => index !== i))} />)}</div>}
             {attachments.some(a => a.kind === 'text') && <p className="px-3 pb-1 text-xs text-faint">文件按提取的文字发送，可点击附件预览；PDF、Word 中的图表请另附截图。</p>}
@@ -794,11 +887,11 @@ export default function Chat({
 
             >
               <input ref={fileRef} type="file" multiple className="hidden" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.docx,.txt,.md,.csv,.tsv,.json,.log,.py,.js,.ts,.tex,.bib,.yaml,.yml,.xml,.html,.css,.r" onChange={e => { void addFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
-              <button type="button" className="btn-ghost shrink-0" disabled={uploading || busy || loading} onClick={() => fileRef.current?.click()} title="添加图片、PDF、Word 或文本；每个最多 10 MB">{uploading ? "读取中…" : "+ 附件"}</button>
+              <button type="button" className="btn-ghost shrink-0" disabled={uploading || loading || !materials.ready} onClick={() => fileRef.current?.click()} title="添加图片、PDF、Word 或文本；每个最多 10 MB">{uploading ? "读取中…" : "+ 附件"}</button>
               <textarea
                 onPaste={e => { const files = Array.from(e.clipboardData.items).filter(i => i.kind === 'file').map(i => i.getAsFile()).filter((f): f is File => !!f); if (files.length) { e.preventDefault(); void addFiles(files); } }}
                 ref={taRef}
-                disabled={loading || !!loadError || creating}
+                disabled={loading || !!loadError || creating || !materials.ready}
                 aria-label="向论文库提问"
                 className="input resize-none"
                 rows={1}
@@ -812,19 +905,17 @@ export default function Chat({
                   }
                 }}
               />
-              {busy ? (
-                <button
-                  onClick={stop}
-                  className="btn-ghost shrink-0 px-5"
-                  title="停止后不再发起工具调用；已发送的模型请求可能需要等待返回"
-                  disabled={stopping}
-                >
-                  <SquareIcon size={12} /> {stopping ? "停止中…" : "停止"}
-                </button>
+              {busy || serverPending ? (
+                <div className="flex gap-2 shrink-0">
+                  <button type="button" onClick={queueCurrentTurn} className="btn-ghost px-3" disabled={(!input.trim() && !attachments.length) || uploading || !materials.ready} title="当前回答结束后发送这条问题">排队发送</button>
+                  <button onClick={stop} className="btn-ghost px-4" title="停止后不再发起工具调用；已发送的模型请求可能需要等待返回" disabled={stopping}>
+                    <SquareIcon size={12} /> {stopping ? "停止中…" : "停止"}
+                  </button>
+                </div>
               ) : (
                 <button
                   onClick={send}
-                  disabled={(!input.trim() && !attachments.length) || uploading || loading || !!loadError || creating || (attachments.some(a => a.kind === "image") && selectedModel?.supports_images === false)}
+                  disabled={(!input.trim() && !attachments.length) || !materials.ready || uploading || loading || !!loadError || creating || (attachments.some(a => a.kind === "image") && selectedModel?.supports_images === false)}
                   className="btn-primary shrink-0 px-5"
                 >
                   发送
