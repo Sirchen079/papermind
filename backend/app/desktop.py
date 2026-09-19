@@ -231,7 +231,17 @@ def configure_desktop_logs(profile: Path) -> Path:
     return log_file
 
 
-def main() -> None:
+def startup_error_message(error: Exception, log_file: Path) -> str:
+    if isinstance(error, ImportError):
+        reason = "安装包的桌面组件缺失或损坏，请使用修复版安装包覆盖安装。"
+    else:
+        reason = "桌面初始化失败，请查看下方错误与日志。"
+    return f"PaperMind 无法启动。{reason}\n\n{type(error).__name__}: {error}\n\n日志：{log_file}"
+
+
+def main(*, smoke_test=False) -> None:
+    if smoke_test and not os.environ.get("PAPERMIND_DATA_DIR"):
+        raise ValueError("Desktop smoke test requires an isolated PAPERMIND_DATA_DIR")
     profile = default_data_dir().resolve() / "desktop"
     log_file = configure_desktop_logs(profile)
     logging.info("Desktop starting: executable=%s", sys.executable)
@@ -239,6 +249,7 @@ def main() -> None:
     if not lock.acquire():
         return
     backend = None
+    smoke_passed = threading.Event()
     try:
         import webview
         runtime = (Path(sys._MEIPASS) / "desktop" if is_frozen() else exe_dir() / "build" / "vendor") / "webview2"
@@ -279,9 +290,14 @@ def main() -> None:
                 if backend.wait_ready():
                     logging.info("Desktop backend ready: %s", backend.url)
                     (profile / "session.json").write_text(json.dumps({"pid":os.getpid(),"url":backend.url}), encoding="utf-8")
-                    open_workspace(window, backend)
+                    if open_workspace(window, backend) and smoke_test:
+                        smoke_passed.set()
+                        window.destroy()
             except Exception as error:
                 logging.exception("Desktop initialization failed")
+                if smoke_test:
+                    window.destroy()
+                    return
                 if not backend.cancelled.is_set():
                     # The renderer itself may be unavailable; report outside it.
                     ctypes.windll.user32.MessageBoxW(None, f"PaperMind 打开失败：{error}\n\n详细日志：{log_file}", TITLE, 0x10)
@@ -297,10 +313,13 @@ def main() -> None:
             boot, gui="edgechromium", private_mode=False, storage_path=str(profile / "webview"),
             icon=str(icon), localization={"global.quit":"退出","global.cancel":"取消","global.ok":"确定","global.saveFile":"保存文件","windows.fileFilter.allFiles":"所有文件"},
         )
-    except Exception:
+    except Exception as error:
         logging.exception("Desktop window failed")
-        ctypes.windll.user32.MessageBoxW(None, f"PaperMind 无法启动。请确认已安装 Microsoft Edge WebView2 运行时。\n\n日志：{log_file}", TITLE, 0x10)
+        if not smoke_test:
+            ctypes.windll.user32.MessageBoxW(None, startup_error_message(error, log_file), TITLE, 0x10)
     finally:
         if backend:
             backend.stop()
         lock.close()
+    if smoke_test and not smoke_passed.is_set():
+        raise SystemExit(1)

@@ -74,3 +74,9 @@
 .\build\build.ps1                       # 只产出裸 exe
 & ISCC.exe .\build\installer.iss   # 再编译安装程序
 ```
+
+## 桌面发布检查
+
+构建环境必须安装 `backend[desktop]`（例如在 backend 目录运行 `python -m pip install -e ".[desktop,dev]"`）。spec 与构建脚本均在缺少桌面依赖时终止。
+
+`build/verify_desktop.py <PaperMind.exe>` 使用独立数据目录，连续验证首次启动和再次启动的真实 WebView2 页面挂载及正常退出。构建脚本自动执行此检查，通过后才编译安装包；发布前还需对解压的便携包及安装后的程序重复执行。后台健康检查不能替代桌面检查。

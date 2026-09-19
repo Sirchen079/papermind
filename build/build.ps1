@@ -28,6 +28,8 @@ $NpmReg   = if ($env:PAPERMIND_NPM_REGISTRY) { $env:PAPERMIND_NPM_REGISTRY } els
 function Section($t) { Write-Host "`n=== $t ===" -ForegroundColor Cyan }
 
 if (-not (Test-Path $VenvPy)) { throw "未找到后端 venv：$VenvPy。请先运行 .\start.ps1 建立环境。" }
+& $VenvPy -c "import webview, proxy_tools, bottle, pythonnet, clr_loader, clr"
+if ($LASTEXITCODE -ne 0) { throw '桌面依赖不完整。请在构建环境安装 backend[desktop] 后重试。' }
 if (-not (Test-Path -LiteralPath (Join-Path $Build 'vendor\webview2\msedgewebview2.exe'))) {
   throw "缺少离线桌面运行时。请先准备 build\vendor\webview2（包含 msedgewebview2.exe），再运行打包脚本。此资源目录由 Git 忽略。"
 }
@@ -77,8 +79,11 @@ try {
 Section "完成"
 $exe = Join-Path $pyiDist "PaperMind\PaperMind.exe"
 if (-not (Test-Path $exe)) { throw "未找到产物：$exe" }
+& $VenvPy (Join-Path $Build 'verify_desktop.py') $exe
+if ($LASTEXITCODE -ne 0) { throw '真实桌面启动验证失败，禁止生成安装包。' }
 Copy-Item -LiteralPath (Join-Path $Root 'restore.ps1') -Destination (Join-Path (Split-Path -Parent $exe) 'restore.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $Root 'restore-all.ps1') -Destination (Join-Path (Split-Path -Parent $exe) 'restore-all.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $Build 'start-portable.cmd') -Destination (Split-Path -Parent $exe) -Force
 foreach ($notice in @('README.md', 'THIRD_PARTY_NOTICES.md')) {
   Copy-Item -LiteralPath (Join-Path $Root $notice) -Destination (Join-Path (Split-Path -Parent $exe) $notice) -Force
 }

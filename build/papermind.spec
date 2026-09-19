@@ -20,6 +20,7 @@ defaults it to %LOCALAPPDATA%/PaperMind/data when frozen.
 
 import os
 from pathlib import Path
+import importlib
 
 from PyInstaller.utils.hooks import (
     collect_all,
@@ -37,6 +38,12 @@ FRONTEND = REPO / "frontend"
 datas = []
 binaries = []
 hiddenimports = []
+
+# A backend-only environment must never produce a desktop release. Importing
+# these also verifies pywebview's transitive Python/.NET dependencies.
+for module in ("webview", "proxy_tools", "bottle", "pythonnet", "clr_loader", "clr"):
+    importlib.import_module(module)
+    hiddenimports.append(module)
 
 # Packages whose runtime dynamic imports / C extensions / data files the
 # static analysis tends to miss. collect_all pulls modules + datas + binaries
@@ -59,6 +66,8 @@ for pkg in (
     try:
         d, b, h = collect_all(pkg)
     except Exception as exc:  # pragma: no cover - environment dependent
+        if pkg == "webview":
+            raise RuntimeError("Cannot build without the desktop dependencies") from exc
         print(f"[spec] collect_all({pkg!r}) failed: {exc}")
         continue
     datas += d
