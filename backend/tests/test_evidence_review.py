@@ -52,8 +52,11 @@ def test_agent_emits_only_source_checked_revision(monkeypatch):
         complete_with_tools=lambda *a,**k:SimpleNamespace(content='没有做外部验证',tool_calls=[],total_tokens=2),
         complete=lambda *a,**k:SimpleNamespace(content=json.dumps({'edits':[EDIT]},ensure_ascii=False),total_tokens=3))
     events=list(run_agent(client,None,'m',[{'role':'user','content':'是否验证'}],None,evidence_context=SOURCE[0]['text']))
-    assert [kind for kind,_ in events]==['delta','done']
-    assert all(body['content']==EDIT['after'] for _,body in events)
+    # Progress is observable, but only reviewed answer text may be emitted.
+    assert any(kind == 'status' for kind, _ in events)
+    answer_events = [(kind, body) for kind, body in events if kind != 'status']
+    assert [kind for kind, _ in answer_events] == ['delta', 'done']
+    assert all(body['content'] == EDIT['after'] for _, body in answer_events)
     assert events[-1][1]['tokens']==5
     assert events[-1][1]['evidence_review']['edits']==[EDIT]
 
