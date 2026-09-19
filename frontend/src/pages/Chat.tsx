@@ -838,7 +838,7 @@ export default function Chat({
               <span>选择后随提问应用；可随时取消。</span>
             </label>}
             <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-xs text-muted">
-              <label>对话模型 <select aria-label="对话模型" className="input w-auto" value={modelId} disabled={loading} onFocus={refreshModels} onChange={e => setModelId(e.target.value)}>
+              <label className="flex max-w-full flex-wrap items-center gap-2">对话模型 <select aria-label="对话模型" className="input w-auto max-w-full" value={modelId} disabled={loading} onFocus={refreshModels} onChange={e => setModelId(e.target.value)}>
                 <option value="">默认模型{models.find(m => m.is_default) ? ` · ${models.find(m => m.is_default)!.name}` : "（请在设置中添加）"}</option>
                 {models.map(m => <option key={m.id} value={m.id}>{m.provider} · {m.name}</option>)}
               </select></label>
@@ -883,7 +883,7 @@ export default function Chat({
             <div
               onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }}
               onDrop={e => { if (e.dataTransfer.files.length) { e.preventDefault(); void addFiles(Array.from(e.dataTransfer.files)); } }}
-              className="chat-composer flex items-end gap-2"
+              className="chat-composer flex flex-wrap items-end gap-2"
 
             >
               <input ref={fileRef} type="file" multiple className="hidden" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.docx,.txt,.md,.csv,.tsv,.json,.log,.py,.js,.ts,.tex,.bib,.yaml,.yml,.xml,.html,.css,.r" onChange={e => { void addFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
@@ -893,7 +893,7 @@ export default function Chat({
                 ref={taRef}
                 disabled={loading || !!loadError || creating || !materials.ready}
                 aria-label="向论文库提问"
-                className="input resize-none"
+                className="input order-first min-w-0 basis-full resize-none"
                 rows={1}
                 placeholder={pendingQuestion ? "直接补充信息或调整需求，AI 会继续处理…" : "输入问题，Ctrl+V 粘贴截图，或拖入文件…（Shift+回车换行）"}
                 value={input}
@@ -906,7 +906,7 @@ export default function Chat({
                 }}
               />
               {busy || serverPending ? (
-                <div className="flex gap-2 shrink-0">
+                <div className="ml-auto flex gap-2 shrink-0">
                   <button type="button" onClick={queueCurrentTurn} className="btn-ghost px-3" disabled={(!input.trim() && !attachments.length) || uploading || !materials.ready} title="当前回答结束后发送这条问题">排队发送</button>
                   <button onClick={stop} className="btn-ghost px-4" title="停止后不再发起工具调用；已发送的模型请求可能需要等待返回" disabled={stopping}>
                     <SquareIcon size={12} /> {stopping ? "停止中…" : "停止"}
@@ -916,7 +916,7 @@ export default function Chat({
                 <button
                   onClick={send}
                   disabled={(!input.trim() && !attachments.length) || !materials.ready || uploading || loading || !!loadError || creating || (attachments.some(a => a.kind === "image") && selectedModel?.supports_images === false)}
-                  className="btn-primary shrink-0 px-5"
+                  className="btn-primary ml-auto shrink-0 px-5"
                 >
                   发送
                 </button>
