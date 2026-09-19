@@ -164,7 +164,9 @@ def refresh_models(pid: int, session: Session = Depends(get_session)) -> dict:
             session.add(row)
             existing[mi.model_id] = row
         row.display_name = mi.display_name
-        row.context_window = mi.context_window
+        # A missing upstream value must not clobber a manually configured window.
+        if mi.context_window is not None:
+            row.context_window = mi.context_window
         row.fetched_at = now
         row.is_manual = False
     session.commit()
@@ -179,6 +181,8 @@ def list_provider_models(pid: int, session: Session = Depends(get_session)) -> l
             "model_id": m.model_id,
             "display_name": m.display_name,
             "context_window": m.context_window,
+            "supports_images": m.supports_images,
+            "reasoning_effort": m.reasoning_effort,
             "role_default": m.role_default,
         }
         for m in session.exec(select(Model).where(Model.provider_id == pid)).all()
@@ -188,6 +192,7 @@ def list_provider_models(pid: int, session: Session = Depends(get_session)) -> l
 class ManualModelIn(BaseModel):
     model_id: str
     display_name: str | None = None
+    context_window: int | None = None
     role_default: str | None = None
 
 
@@ -213,10 +218,13 @@ def add_manual_model(pid: int, body: ManualModelIn, session: Session = Depends(g
         for other in session.exec(select(Model).where(Model.role_default == body.role_default)).all():
             other.role_default = None
             session.add(other)
+    if body.context_window is not None and body.context_window <= 0:
+        raise HTTPException(422, "context_window 必须是正整数")
     m = Model(
         provider_id=pid,
         model_id=body.model_id,
         display_name=body.display_name,
+        context_window=body.context_window,
         role_default=body.role_default,
         is_manual=True,
     )
@@ -228,5 +236,7 @@ def add_manual_model(pid: int, body: ManualModelIn, session: Session = Depends(g
         "model_id": m.model_id,
         "display_name": m.display_name,
         "context_window": m.context_window,
+        "supports_images": m.supports_images,
+        "reasoning_effort": m.reasoning_effort,
         "role_default": m.role_default,
     }

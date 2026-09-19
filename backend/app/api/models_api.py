@@ -8,9 +8,15 @@ from app.models import Model, Provider
 router = APIRouter()
 
 
+REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+
+
 class ModelPatch(BaseModel):
     role_default: str | None = None
     display_name: str | None = None
+    context_window: int | None = None
+    supports_images: bool | None = None
+    reasoning_effort: str | None = None
 
 
 @router.get("/models")
@@ -24,6 +30,8 @@ def list_models(session: Session = Depends(get_session)) -> list[dict]:
                 "model_id": m.model_id,
                 "display_name": m.display_name,
                 "context_window": m.context_window,
+                "supports_images": m.supports_images,
+                "reasoning_effort": m.reasoning_effort,
                 "role_default": m.role_default,
                 "provider_id": m.provider_id,
                 "provider_name": p.name if p else None,
@@ -53,7 +61,24 @@ def patch_model(mid: int, body: ModelPatch, session: Session = Depends(get_sessi
         m.role_default = new_role
     if body.display_name is not None:
         m.display_name = body.display_name
+    if 'context_window' in body.model_fields_set:
+        if body.context_window is not None and body.context_window <= 0:
+            raise HTTPException(422, "context_window 必须是正整数")
+        m.context_window = body.context_window
+    if 'supports_images' in body.model_fields_set:
+        m.supports_images = body.supports_images
+    if 'reasoning_effort' in body.model_fields_set:
+        if body.reasoning_effort is not None and body.reasoning_effort not in REASONING_EFFORTS:
+            raise HTTPException(422, "reasoning_effort 必须是 low、medium、high、xhigh 或 max")
+        m.reasoning_effort = body.reasoning_effort
     session.add(m)
     session.commit()
     session.refresh(m)
-    return {"id": m.id, "role_default": m.role_default, "display_name": m.display_name}
+    return {
+        "id": m.id,
+        "display_name": m.display_name,
+        "context_window": m.context_window,
+        "supports_images": m.supports_images,
+        "reasoning_effort": m.reasoning_effort,
+        "role_default": m.role_default,
+    }

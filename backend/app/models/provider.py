@@ -29,6 +29,8 @@ class Model(SQLModel, table=True):
     context_window: int | None = None
     supports_tools: bool | None = None
     supports_streaming: bool | None = None
+    supports_images: bool | None = None
+    reasoning_effort: str | None = None  # thinking level override: low | medium | high | max; None = auto
     role_default: str | None = None  # chat (default LLM: convo + summarize + extract) | embedding
     fetched_at: datetime | None = None
     is_manual: bool = False

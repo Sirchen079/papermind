@@ -16,6 +16,7 @@ PaperMind includes two **adapted** research workflows. They are not the complete
 
 - Project: https://github.com/K-Dense-AI/scientific-agent-skills
 - Copyright (c) 2025 K-Dense Inc.
+- Upstream paper: Kassis, T., Agarwal, V., He, Y., Patel, D., & Brueckner, A. M. (2026). _Scientific Agent Skills: A Library of Procedural Knowledge for Research Agents_. https://doi.org/10.48550/arXiv.2609.00065
 - Pinned revision: `330c8e764435a731eff571e3efdda70b363d0792`.
 - Original license and full permission notice: [MIT](third_party/research_skills/kdense/LICENSE.md).
 - Original files retained unchanged: `skills/scientific-critical-thinking/SKILL.md` and `references/core_capabilities.md`, under [the upstream snapshot](third_party/research_skills/kdense/skills/scientific-critical-thinking/).

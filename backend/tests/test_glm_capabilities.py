@@ -33,9 +33,81 @@ def test_vendor_options_never_leak_to_other_endpoints(host):
     assert reasoning_options(provider(host),'glm-5.3','low')=={}
     assert known_context_window(provider(host),'glm-5.3') is None
 
-def test_known_window_and_unsupported_effort():
+def test_known_window_and_effort_mapping():
     assert known_context_window(provider(),'glm-5.3')==1_000_000
-    with pytest.raises(ValueError):reasoning_options(provider(),'glm-5.3','medium')
+    # GLM-5.3 documents low/high/max only; in-between tiers map up instead of failing.
+    assert reasoning_options(provider(),'glm-5.3','medium')['extra_body']['reasoning_effort']=='high'
+    assert reasoning_options(provider(),'glm-5.3','xhigh')['extra_body']['reasoning_effort']=='max'
+    assert reasoning_options(provider(),'glm-5.3','max')['extra_body']['reasoning_effort']=='max'
+    with pytest.raises(ValueError):reasoning_options(provider(),'glm-5.3','extreme')
+
+
+def test_configured_effort_flows_to_tool_calls(monkeypatch):
+    """The model-row thinking level replaces the hardcoded default in agent steps."""
+    sent=[]
+    def completion(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='answer',reasoning_content=None,tool_calls=[]))],usage=None)
+    monkeypatch.setattr('litellm.completion',completion)
+    monkeypatch.setattr('litellm.supports_reasoning',lambda **k:False)
+    c=ProviderClient(None,None)
+    monkeypatch.setattr(c,'_record_usage',lambda *a,**k:None)
+    monkeypatch.setattr(c,'_configured_effort',lambda p,m:None)
+    c.complete_with_tools(provider(),'glm-5.3',[{'role':'user','content':'q'}],'chat')
+    assert sent[0]['extra_body']['reasoning_effort']=='low'
+    monkeypatch.setattr(c,'_configured_effort',lambda p,m:'max')
+    c.complete_with_tools(provider(),'glm-5.3',[{'role':'user','content':'q'}],'chat')
+    assert sent[-1]['extra_body']['reasoning_effort']=='max'
+    monkeypatch.setattr(c,'_configured_effort',lambda p,m:'medium')
+    c.complete_with_tools(provider(),'glm-5.3',[{'role':'user','content':'q'}],'chat')
+    assert sent[-1]['extra_body']['reasoning_effort']=='high'
+
+
+def test_configured_effort_wins_over_caller_default(monkeypatch):
+    sent=[]
+    def completion(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='answer',tool_calls=[]))],usage=None)
+    monkeypatch.setattr('litellm.completion',completion)
+    c=ProviderClient(None,None)
+    monkeypatch.setattr(c,'_record_usage',lambda *a,**k:None)
+    monkeypatch.setattr(c,'_configured_effort',lambda p,m:'low')
+    c.complete(provider(),'glm-5.3',[{'role':'user','content':'q'}],'research',reasoning_effort='high')
+    assert sent[0]['extra_body']['reasoning_effort']=='low'
+
+
+def test_generic_model_configured_effort_only_when_supported(monkeypatch):
+    sent=[]
+    def completion(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='answer',tool_calls=[]))],usage=None)
+    monkeypatch.setattr('litellm.completion',completion)
+    c=ProviderClient(None,None)
+    monkeypatch.setattr(c,'_record_usage',lambda *a,**k:None)
+    monkeypatch.setattr(c,'_configured_effort',lambda p,m:'high')
+    p=Provider(id=1,name='t',type='openai_chat',base_url='https://api.openai.com/v1')
+    monkeypatch.setattr('litellm.supports_reasoning',lambda **k:True)
+    c.complete_with_tools(p,'o3',[{'role':'user','content':'q'}],'chat')
+    assert sent[0]['reasoning_effort']=='high'
+    monkeypatch.setattr('litellm.supports_reasoning',lambda **k:False)
+    c.complete_with_tools(p,'gpt-4o',[{'role':'user','content':'q'}],'chat')
+    assert 'reasoning_effort' not in sent[-1]
+
+
+def test_configured_effort_reads_model_row(client):
+    from sqlmodel import Session
+    from app.db.engine import get_engine
+    from app.models import Model
+    pid=client.post('/api/providers',json={'name':'eff','type':'openai_chat'}).json()['id']
+    with Session(get_engine()) as s:
+        s.add(Model(provider_id=pid,model_id='glm-5.3',reasoning_effort='xhigh'))
+        s.add(Model(provider_id=pid,model_id='other',reasoning_effort='bogus'))
+        s.commit()
+    c=ProviderClient(session_factory=lambda:Session(get_engine()),crypto=None)
+    p=Provider(id=pid,name='eff',type='openai_chat',base_url=None)
+    assert c._configured_effort(p,'glm-5.3')=='xhigh'
+    assert c._configured_effort(p,'other') is None  # unknown value ignored
+    assert c._configured_effort(p,'missing') is None
 
 
 @pytest.mark.parametrize('kind,timeout',[('evidence_review',300),('wiki_update',180),('research',90)])

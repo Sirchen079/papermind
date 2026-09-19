@@ -29,3 +29,20 @@ def test_blank_final_answer_is_a_retryable_failure():
 def test_step_exhaustion_is_not_saved_as_a_successful_answer():
     events = list(run_agent(None, None, 'synthetic', [], None, max_iters=0))
     assert [kind for kind, _ in events] == ['error']
+
+
+def test_default_step_budget_is_100():
+    """The default tool-step budget was raised from 8 (easily hit mid-research)."""
+    calls = []
+    turn = SimpleNamespace(content='', reasoning_content=None, total_tokens=1,
+                           tool_calls=[SimpleNamespace(id='c', name='nonexistent_tool', arguments={})])
+
+    def complete(*args, **kwargs):
+        calls.append(1)
+        return turn
+
+    events = list(run_agent(SimpleNamespace(complete_with_tools=complete), None, 'synthetic',
+                            [{'role': 'user', 'content': 'q'}], None))
+    assert len(calls) == 100
+    assert events[-1][0] == 'error'
+    assert '步数上限' in events[-1][1]['message']
