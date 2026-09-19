@@ -76,7 +76,7 @@ def test_configured_effort_wins_over_caller_default(monkeypatch):
     assert sent[0]['extra_body']['reasoning_effort']=='low'
 
 
-def test_generic_model_configured_effort_only_when_supported(monkeypatch):
+def test_explicit_effort_is_not_silently_dropped_for_custom_models(monkeypatch):
     sent=[]
     def completion(**kwargs):
         sent.append(kwargs)
@@ -91,7 +91,7 @@ def test_generic_model_configured_effort_only_when_supported(monkeypatch):
     assert sent[0]['reasoning_effort']=='high'
     monkeypatch.setattr('litellm.supports_reasoning',lambda **k:False)
     c.complete_with_tools(p,'gpt-4o',[{'role':'user','content':'q'}],'chat')
-    assert 'reasoning_effort' not in sent[-1]
+    assert sent[-1]['reasoning_effort'] == 'high'
 
 
 def test_configured_effort_reads_model_row(client):

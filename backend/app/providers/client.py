@@ -9,6 +9,7 @@ import litellm
 from sqlmodel import Session, select
 
 from app.models import Model, Provider, TokenUsage
+from app.agent.attachments import responses_content
 from app.providers.routing import anthropic_api_base, route_completion
 from app.providers.capabilities import reasoning_options
 from app.providers.prompt_cache import cache_options, cache_usage, marker_count, prepare_messages, prepare_tools, token_usage
@@ -162,11 +163,12 @@ class ProviderClient:
         route = route_completion(provider.type, model_id, provider.base_url)
         # A user-configured thinking level on the model row wins over the
         # caller's purpose default (evidence review 'high', research 'low').
-        reasoning_effort = self._configured_effort(provider, model_id) or reasoning_effort
+        configured_effort = self._configured_effort(provider, model_id)
+        reasoning_effort = configured_effort or reasoning_effort
         documented=reasoning_options(provider,model_id,reasoning_effort)
         # Unknown/custom models use provider defaults. Never send a reasoning
         # knob solely because the caller happens to be a research workflow.
-        if reasoning_effort and not documented:
+        if reasoning_effort and not documented and not configured_effort:
             try:
                 if not litellm.supports_reasoning(model=route.litellm_model):
                     reasoning_effort = None
@@ -194,7 +196,7 @@ class ProviderClient:
             kwargs["timeout"] = 300 if request_kind == "evidence_review" else 180
             kwargs["num_retries"] = 0
         if route.call == "responses":
-            kwargs["input"] = kwargs.pop("messages")
+            kwargs["input"] = [{**m, "content": responses_content(m.get("content"))} for m in kwargs.pop("messages")]
             if max_tokens is not None:
                 kwargs["max_output_tokens"] = max_tokens
             if reasoning_effort:
@@ -256,14 +258,6 @@ class ProviderClient:
         kwargs.update(documented)
         if documented:
             effort = None
-        elif effort:
-            # Unknown/custom models use provider defaults. Never send a
-            # reasoning knob solely because the model row has one configured.
-            try:
-                if not litellm.supports_reasoning(model=route.litellm_model):
-                    effort = None
-            except Exception:
-                effort = None
         if route.call == "responses":
             converted = []
             for message in kwargs['messages']:
@@ -271,7 +265,7 @@ class ProviderClient:
                     converted.append({"type":"function_call_output","call_id":message["tool_call_id"],"output":message.get("content","")})
                     continue
                 if message.get("content"):
-                    converted.append({"role":message["role"],"content":message["content"]})
+                    converted.append({"role":message["role"],"content":responses_content(message["content"])})
                 for call in message.get("tool_calls",[]) or []:
                     converted.append({"type":"function_call","call_id":call["id"],"name":call["function"]["name"],"arguments":call["function"]["arguments"]})
             kwargs.pop("messages")

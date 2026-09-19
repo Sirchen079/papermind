@@ -752,18 +752,11 @@ export default function Settings() {
                             ))}
                           </select>
                         </label>
-                        <label
-                          className="flex items-center gap-2 self-end pb-1"
-                          title="能力标记：记录该模型能否接收图片输入；当前版本尚未接入图片发送。"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!!m.supports_images}
-                            onChange={(e) =>
-                              patchModelField(p.id, m.id, { supports_images: e.target.checked })
-                            }
-                          />
-                          <span className="text-xs text-muted">支持图片输入</span>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-muted">图片输入</span>
+                          <select className="input" value={m.supports_images == null ? "auto" : String(m.supports_images)} onChange={e => patchModelField(p.id, m.id, { supports_images: e.target.value === 'auto' ? null : e.target.value === 'true' })}>
+                            <option value="auto">未声明（可尝试发送）</option><option value="true">支持图片</option><option value="false">不支持图片</option>
+                          </select>
                         </label>
                       </div>
                     )}

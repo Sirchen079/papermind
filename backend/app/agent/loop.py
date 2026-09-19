@@ -16,6 +16,7 @@ loop degrades to a single plain completion so the assistant still answers.
 from __future__ import annotations
 
 import json
+from app.agent.attachments import text_content
 from collections.abc import Iterator
 from typing import Any
 
@@ -69,18 +70,26 @@ def run_agent(
     context_window: int | None = None,
     max_iters: int = MAX_ITERS,
     evidence_context: str | None = None,
+    cancelled=None,
+    continuation: dict | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield agent events until a final answer or the step limit."""
     schemas = tool_schemas()
     use_tools = bool(schemas)
     msgs = list(messages)
-    tokens_used = 0
-    partial_full_text = False
-    coverage_checked = False
+    tokens_used = (continuation or {}).get("tokens", 0)
+    partial_full_text = (continuation or {}).get("partial_full_text", False)
+    coverage_checked = (continuation or {}).get("coverage_checked", False)
     evidence=[{'text':evidence_context,'coverage':'provided context; distinguish original excerpts and notes'}] if evidence_context else []
-    question=next((m.get('content','').split('[本轮用户问题]\n')[-1] for m in reversed(messages) if m.get('role')=='user'),'')
+    if continuation and continuation.get('evidence'):
+        evidence = continuation['evidence']
+    question=next((text_content(m.get('content','')).split('[本轮用户问题]\n')[-1] for m in reversed(messages) if m.get('role')=='user'),'')
 
     for _ in range(max_iters):
+        if cancelled is not None and cancelled.is_set():
+            yield ("error", {"message": "已停止，不再执行后续工具调用。"})
+            return
+        yield ("status", {"phase": "thinking", "step": _ + 1, "max_steps": max_iters, "model": model_id})
         msgs = compact_history(msgs, client, provider, model_id, context_window)
         try:
             turn = client.complete_with_tools(
@@ -91,6 +100,9 @@ def run_agent(
                 use_tools = False
                 continue
             yield ("error", {"message": str(exc)})
+            return
+        if cancelled is not None and cancelled.is_set():
+            yield ("error", {"message": "已停止，不再执行后续工具调用。"})
             return
         tokens_used += turn.total_tokens
 
@@ -115,9 +127,13 @@ def run_agent(
                 if error is not None:
                     continue
                 yield ("ask_user", {"request": request,
-                    "state": {"messages": msgs, "tool_call_id": pending.id}, "tokens": tokens_used})
+                    "state": {"messages": msgs, "tool_call_id": pending.id, "evidence": evidence, "tokens": tokens_used, "partial_full_text": partial_full_text, "coverage_checked": coverage_checked}, "tokens": tokens_used})
                 return
             for tc in turn.tool_calls:
+                if cancelled is not None and cancelled.is_set():
+                    yield ("error", {"message": "已停止，不再执行后续工具调用。"})
+                    return
+                yield ("status", {"phase": "tool", "name": tc.name, "step": _ + 1, "max_steps": max_iters})
                 tool = get_tool(tc.name)
                 if tool is None:
                     result, ok = f"unknown tool: {tc.name}", False
@@ -160,15 +176,20 @@ def run_agent(
         if not content.strip():
             yield ("error", {"message": "模型未返回回答内容，原问题已保留，可以重试。"})
             return
+        yield ("status", {"phase": "review", "step": _ + 1, "max_steps": max_iters})
         try:
             content,review_tokens,audit=review_answer(client,provider,model_id,question,content,evidence,context_window)
             tokens_used+=review_tokens
         except Exception as exc:
             yield ('error',{'message':str(exc)})
             return
+        if cancelled is not None and cancelled.is_set():
+            yield ('error', {'message': '已停止，原问题已保留。'})
+            return
         yield ("delta", {"content": content, "tokens": tokens_used})
         yield ("done", {"content": content, "tokens": tokens_used,'evidence_review':audit})
         return
 
     # Exhausted the step budget without a plain answer.
-    yield ("error", {"message": "本轮工具调用已达步数上限，尚未完成回答。原问题已保留，可以缩小范围后继续。"})
+    yield ("error", {"message": "已到本轮调用上限，进度已保存。点击继续可从已有工具结果接着处理。",
+        "continuable": True, "state": {"messages": msgs, "evidence": evidence, "tokens": tokens_used, "partial_full_text": partial_full_text, "coverage_checked": coverage_checked}})

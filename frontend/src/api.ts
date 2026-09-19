@@ -38,7 +38,11 @@ export interface Clarification {
   status: "pending" | "answered" | "skipped";
   response?: Omit<ClarificationResponse, "message_id">;
 }
+export interface ChatAttachment { name: string; kind: "image" | "text"; text: string; data_url: string; size: number; }
+export interface ChatModel { id: number; name: string; provider: string; context_window: number | null; reasoning_effort: string | null; supports_images: boolean | null; is_default: boolean; }
 export interface ChatMessageExtra {
+  attachments?: ChatAttachment[];
+  model_config_id?: number;
   paper_id?: number;
   selected_text?: string;
   skill_ids?: number[];
@@ -968,6 +972,12 @@ return {
     req<PaperClaim>(`/papers/${id}/claims`, { method: "POST", body: JSON.stringify(body) }),
   deleteClaim: (claimId: number) => req(`/claims/${claimId}`, { method: "DELETE" }),
   // chat
+  chatModels: () => req<ChatModel[]>("/chat/models"),
+  stopChat: (id: number) => req(`/chat/conversations/${id}/stop`, { method: "POST" }),
+  uploadChatAttachment: (file: File) => {
+    const form = new FormData(); form.append("file", file);
+    return req<ChatAttachment>("/chat/attachments", { method: "POST", body: form });
+  },
   listConversations: () => req<{ id: number; title: string }[]>("/chat/conversations"),
   createConversation: (paperId?: number) => req<{ id: number; title: string }>("/chat/conversations", { method: "POST", body: JSON.stringify({ paper_id: paperId }) }),
   clearConversationPaper: (id: number) => req(`/chat/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ paper_id: null }) }),
@@ -981,7 +991,7 @@ return {
     req<{
       id: number;
       title: string;
-      messages: { id: number; role: string; content: string; model: string; sources: Source[]; topic_sources?: TopicSource[]; delivery_status?: string; error_message?: string | null; retryable?: boolean; clarification?: Clarification | null }[];
+      messages: { tools?: { name: string; args: Record<string, unknown>; result: string; ok: boolean }[]; attachments?: ChatAttachment[]; id: number; role: string; content: string; model: string; sources: Source[]; topic_sources?: TopicSource[]; delivery_status?: string; error_message?: string | null; retryable?: boolean; continuable?: boolean; clarification?: Clarification | null }[];
       paper_id: number | null;
       paper_title: string | null;
     }>(`/chat/conversations/${id}`),

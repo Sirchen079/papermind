@@ -17,6 +17,7 @@ dependencies = [
   "bibtexparser>=1.4,<2",
   "sqlite-vec>=0.1.6",
   "python-pptx>=1.0",
+  "Pillow>=10",
 ]
 
 [project.optional-dependencies]
