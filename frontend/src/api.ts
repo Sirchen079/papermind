@@ -325,7 +325,7 @@ export interface Provider {
 
 export interface SharedConnection {
   id:string; name:string; type:string; base_url:string|null; enabled:boolean; version:number; updated_at:string;
-  models:{model_id:string;display_name:string|null;context_window:number|null;role_default:string|null}[];
+  models:{model_id:string;display_name:string|null;context_window:number|null;supports_images:boolean|null;reasoning_effort:string|null;role_default:string|null}[];
 }
 
 export interface Model {
@@ -333,6 +333,8 @@ export interface Model {
   model_id: string;
   display_name: string | null;
   context_window: number | null;
+  supports_images: boolean | null;
+  reasoning_effort: string | null;
   role_default: string | null;
 }
 
@@ -1007,11 +1009,13 @@ return {
     req<Provider>(`/providers/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProvider: (id: number) => req(`/providers/${id}`, { method: "DELETE" }),
   refreshModels: (id: number) => req<{ count: number }>(`/providers/${id}/models/refresh`, { method: "POST" }),
-  addModel: (pid: number, body: { model_id: string; display_name?: string; role_default?: string }) =>
+  addModel: (pid: number, body: { model_id: string; display_name?: string; context_window?: number; role_default?: string }) =>
     req<Model>(`/providers/${pid}/models`, { method: "POST", body: JSON.stringify(body) }),
   providerModels: (id: number) => req<Model[]>(`/providers/${id}/models`),
   setModelRole: (id: number, role_default: string) =>
     req(`/models/${id}`, { method: "PATCH", body: JSON.stringify({ role_default }) }),
+  patchModel: (id: number, body: Partial<Pick<Model, "display_name" | "context_window" | "supports_images" | "reasoning_effort">>) =>
+    req<Model>(`/models/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   // usage
   usage: (days = 30) =>
     req<{

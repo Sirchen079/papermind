@@ -348,6 +348,19 @@ def _context_window(session: Session, provider: Provider, model_id: str) -> int 
     return (row.context_window if row else None) or known_context_window(provider,model_id)
 
 
+def _max_iters(session: Session) -> int:
+    """Agent tool-step budget from the `agent_max_iters` setting, clamped to a sane range."""
+    from app.agent.loop import MAX_ITERS
+    from app.models import Setting
+
+    raw = session.get(Setting, "agent_max_iters")
+    try:
+        value = int(raw.value) if raw and raw.value else MAX_ITERS
+    except (TypeError, ValueError):
+        value = MAX_ITERS
+    return max(4, min(200, value))
+
+
 def _auto_title(text: str) -> str:
     """Derive a short conversation title from the first user message.
 
@@ -600,6 +613,7 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
         content, tokens, audit = "", 0, None
         for kind, payload in run_agent(client, provider, model_id, messages, session,
                 context_window=_context_window(session, provider, model_id),
+                max_iters=_max_iters(session),
                 evidence_context=user_row.model_context if sources else None):
             if kind == "ask_user":
                 return _pause_turn(session, user_row, model_id, payload, sources, conv.title)
@@ -635,6 +649,7 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
                                     "clarification_response": body.clarification_response.model_dump() if body.clarification_response else None})
             for kind, payload in run_agent(client, provider, model_id, messages, session,
                     context_window=_context_window(session, provider, model_id),
+                    max_iters=_max_iters(session),
                     evidence_context=user_row.model_context if sources else None):
                 if kind == "ask_user":
                     result = _pause_turn(session, user_row, model_id, payload, sources, title)

@@ -17,6 +17,10 @@ def reasoning_options(provider,model_id,effort=None):
     if not official_glm53(provider,model_id):
         return {}
     effort=effort or 'low'
+    if effort in ('medium','xhigh'):
+        # GLM-5.3 documents low/high/max only; map the in-between tiers to the
+        # nearest documented level instead of failing with a vendor 400.
+        effort='high' if effort=='medium' else 'max'
     if effort not in {'low','high','max'}:
         raise ValueError('GLM-5.3 的推理强度必须为 low、high 或 max')
     # Send documented vendor fields through extra_body: older LiteLLM model

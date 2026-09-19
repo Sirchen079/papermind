@@ -25,7 +25,7 @@ from app.agent.clarification import question_request
 from app.agent.provenance import tool_sources
 from app.agent.evidence_review import review_answer
 
-MAX_ITERS = 8
+MAX_ITERS = 100
 
 
 def _tools_unsupported(exc: Exception) -> bool:

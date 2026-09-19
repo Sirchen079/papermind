@@ -6,9 +6,9 @@ import math
 from typing import Any
 
 import litellm
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from app.models import Provider, TokenUsage
+from app.models import Model, Provider, TokenUsage
 from app.providers.routing import anthropic_api_base, route_completion
 from app.providers.capabilities import reasoning_options
 from app.providers.prompt_cache import cache_options, cache_usage, marker_count, prepare_messages, prepare_tools, token_usage
@@ -129,6 +129,26 @@ class ProviderClient:
             return None
         return self._crypto.decrypt(provider.api_key_encrypted)
 
+    def _configured_effort(self, provider: Provider, model_id: str) -> str | None:
+        """The user-configured thinking level on the model row, if any.
+
+        Resolved here — the single choke point both completion entry points
+        share — so every call path (chat agent, wiki, research, evidence
+        review) honors the setting without per-caller plumbing. A DB hiccup
+        or unknown value must not fail the LLM call: fall back to None.
+        """
+        try:
+            with self._session_factory() as session:
+                row = session.exec(
+                    select(Model).where(
+                        Model.provider_id == provider.id, Model.model_id == model_id
+                    )
+                ).first()
+                effort = getattr(row, "reasoning_effort", None)
+                return effort if effort in {"low", "medium", "high", "xhigh", "max"} else None
+        except Exception:
+            return None
+
     def complete(
         self,
         provider: Provider,
@@ -140,6 +160,9 @@ class ProviderClient:
         reasoning_effort: str | None = None,
     ) -> CompletionResult:
         route = route_completion(provider.type, model_id, provider.base_url)
+        # A user-configured thinking level on the model row wins over the
+        # caller's purpose default (evidence review 'high', research 'low').
+        reasoning_effort = self._configured_effort(provider, model_id) or reasoning_effort
         documented=reasoning_options(provider,model_id,reasoning_effort)
         # Unknown/custom models use provider defaults. Never send a reasoning
         # knob solely because the caller happens to be a research workflow.
@@ -228,7 +251,19 @@ class ProviderClient:
             kwargs["tool_choice"] = "auto"
 
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
-        kwargs.update(reasoning_options(provider,model_id))
+        effort = self._configured_effort(provider, model_id)
+        documented = reasoning_options(provider, model_id, effort)
+        kwargs.update(documented)
+        if documented:
+            effort = None
+        elif effort:
+            # Unknown/custom models use provider defaults. Never send a
+            # reasoning knob solely because the model row has one configured.
+            try:
+                if not litellm.supports_reasoning(model=route.litellm_model):
+                    effort = None
+            except Exception:
+                effort = None
         if route.call == "responses":
             converted = []
             for message in kwargs['messages']:
@@ -243,6 +278,8 @@ class ProviderClient:
             kwargs["input"] = converted
             if tools:
                 kwargs["tools"] = [{"type":"function",**tool["function"]} for tool in tools]
+            if effort:
+                kwargs["reasoning"] = {"effort": effort}
             resp = litellm.responses(**kwargs)
             output = getattr(resp,"output",[]) or []
             tool_calls = []
@@ -263,6 +300,8 @@ class ProviderClient:
                 raise ValueError("Responses 未返回最终文本或工具请求")
             return ToolTurn(content,tool_calls,prompt_t,completion_t,total_t)
 
+        if effort:
+            kwargs["reasoning_effort"] = effort
         resp = litellm.completion(**kwargs)
         msg = resp.choices[0].message
         content = getattr(msg, "content", None) or ""

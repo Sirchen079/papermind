@@ -81,7 +81,7 @@ def resolve(provider):
 def publish(session, provider):
     if provider.shared_connection_id:
         return public(get(provider.shared_connection_id))
-    models=[{k:getattr(m,k) for k in ('model_id','display_name','context_window','role_default')}
+    models=[{k:getattr(m,k) for k in ('model_id','display_name','context_window','supports_images','reasoning_effort','role_default')}
             for m in session.exec(select(Model).where(Model.provider_id==provider.id)).all()]
     # Stable across an uncertain response/retry; changes to the source create a
     # distinct publication, rather than overwriting an existing shared entry.

@@ -89,6 +89,37 @@ def test_refresh_preserves_role_assignments(client):
     assert models[0]["role_default"] == "chat"
 
 
+def test_refresh_preserves_manual_context_window(client):
+    """A fetched `context_window: None` must not clobber a manually set one."""
+    pid = client.post(
+        "/api/providers",
+        json={
+            "name": "ds",
+            "type": "openai_compat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": FAKE_KEY,
+        },
+    ).json()["id"]
+    no_window = [ModelInfo(model_id="deepseek-chat", display_name="deepseek-chat")]
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=no_window):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    mid = client.get(f"/api/providers/{pid}/models").json()[0]["id"]
+    client.patch(f"/api/models/{mid}", json={"context_window": 64000})
+
+    # Refresh again without an upstream window → keep the manual value.
+    with patch("app.api.providers_api.ProviderClient.list_models", return_value=no_window):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    assert client.get(f"/api/providers/{pid}/models").json()[0]["context_window"] == 64000
+
+    # A real upstream value still updates the row.
+    with patch(
+        "app.api.providers_api.ProviderClient.list_models",
+        return_value=[ModelInfo(model_id="deepseek-chat", display_name="deepseek-chat", context_window=32000)],
+    ):
+        client.post(f"/api/providers/{pid}/models/refresh")
+    assert client.get(f"/api/providers/{pid}/models").json()[0]["context_window"] == 32000
+
+
 def test_add_manual_model(client):
     pid = client.post(
         "/api/providers", json={"name": "ollama", "type": "openai_compat", "base_url": "http://localhost:11434/v1"}

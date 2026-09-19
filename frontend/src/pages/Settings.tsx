@@ -31,6 +31,16 @@ const ROLE_LABELS: Record<string, string> = {
   chat: "文本 AI（对话 / 总结 / 抽取）",
   embedding: "全文检索（向量模型）",
 };
+// thinking 模型的思考等级（Model.reasoning_effort）；空 = 自动（各调用场景的默认值）。
+// xhigh：OpenAI 部分模型（o3-pro / GPT-5.x）支持的档位；官方 GLM 端点会映射为 max。
+const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const EFFORT_LABELS: Record<string, string> = {
+  low: "低（快）",
+  medium: "中",
+  high: "高",
+  xhigh: "超高",
+  max: "最高（最慢）",
+};
 
 const ARCHIVE_TONE_COLOR: Record<ArchiveTone, string> = {
   success: "var(--success)",
@@ -146,6 +156,12 @@ export default function Settings() {
   const toast = useToast();
   const confirm = useConfirm();
   const [newModel, setNewModel] = useState<Record<number, { model_id: string; role: string }>>({});
+  // 模型行的「配置」展开区：当前展开的模型 id + 上下文窗口输入草稿（失焦才保存）。
+  const [expandedModel, setExpandedModel] = useState<number | null>(null);
+  const [modelDraft, setModelDraft] = useState<Record<number, string>>({});
+  // 论文问答工具步数上限（Setting: agent_max_iters），空字符串 = 默认 16。
+  const [agentMaxIters, setAgentMaxIters] = useState("");
+  const [agentItersSaving, setAgentItersSaving] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
   const [editForm, setEditForm] = useState({ name: "", base_url: "", api_key: "" });
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
@@ -195,6 +211,7 @@ export default function Settings() {
       setRadarStatus(nextRadarStatus);
       setInterests(nextSettings.research_interests ?? "");
       setClaimExtraction((nextSettings.claim_extraction_enabled ?? "").trim().toLowerCase() === "true");
+      setAgentMaxIters(nextSettings.agent_max_iters ?? "");
     } catch (e: any) {
       toast.error(e.message);
     } finally {
@@ -291,6 +308,50 @@ export default function Settings() {
   async function setRole(id: number, mid: number, role: string) {
     await api.setModelRole(mid, role);
     setModels({ ...models, [id]: await api.providerModels(id) });
+  }
+
+  async function patchModelField(pid: number, mid: number, body: Record<string, unknown>) {
+    try {
+      await api.patchModel(mid, body);
+      setModels({ ...models, [pid]: await api.providerModels(pid) });
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  async function saveContextWindow(pid: number, m: Model) {
+    const raw = (modelDraft[m.id] ?? "").trim();
+    let value: number | null = null;
+    if (raw !== "") {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        toast.warn("上下文窗口必须是正整数，留空表示自动。");
+        setModelDraft({ ...modelDraft, [m.id]: m.context_window?.toString() ?? "" });
+        return;
+      }
+      value = n;
+    }
+    await patchModelField(pid, m.id, { context_window: value });
+  }
+
+  async function saveAgentIters() {
+    const raw = agentMaxIters.trim();
+    if (raw !== "") {
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 4 || n > 200) {
+        toast.warn("步数上限必须是 4–200 的整数，留空使用默认 100。");
+        return;
+      }
+    }
+    setAgentItersSaving(true);
+    try {
+      await api.putSetting("agent_max_iters", raw);
+      toast.success("已保存问答步数上限。");
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setAgentItersSaving(false);
+    }
   }
 
   async function addSubscription() {
@@ -631,18 +692,81 @@ export default function Settings() {
               )}
               <div className="space-y-1">
                 {(models[p.id] ?? []).map((m) => (
-                  <div key={m.id} className="flex items-center gap-2 text-sm">
-                    <span className="min-w-0 flex-1 break-all font-mono">{m.display_name ?? m.model_id}</span>
-                    <select
-                      className="input w-32 py-1 text-xs"
-                      value={m.role_default ?? ""}
-                      onChange={(e) => setRole(p.id, m.id, e.target.value)}
-                    >
-                      <option value="">— 角色 —</option>
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>{ROLE_LABELS[r] ?? r}</option>
-                      ))}
-                    </select>
+                  <div key={m.id}>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="min-w-0 flex-1 break-all font-mono">{m.display_name ?? m.model_id}</span>
+                      <button
+                        className="btn-ghost py-1 text-xs"
+                        onClick={() => {
+                          const next = expandedModel === m.id ? null : m.id;
+                          if (next !== null) {
+                            setModelDraft({ ...modelDraft, [m.id]: m.context_window?.toString() ?? "" });
+                          }
+                          setExpandedModel(next);
+                        }}
+                      >
+                        {expandedModel === m.id ? "收起" : "配置"}
+                      </button>
+                      <select
+                        className="input w-32 py-1 text-xs"
+                        value={m.role_default ?? ""}
+                        onChange={(e) => setRole(p.id, m.id, e.target.value)}
+                      >
+                        <option value="">— 角色 —</option>
+                        {ROLES.map((r) => (
+                          <option key={r} value={r}>{ROLE_LABELS[r] ?? r}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {expandedModel === m.id && (
+                      <div
+                        className="mt-1 grid grid-cols-1 gap-2 rounded-lg p-2 text-sm md:grid-cols-3"
+                        style={{ backgroundColor: "var(--surface-2)" }}
+                      >
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-muted">上下文窗口（tokens，留空自动）</span>
+                          <input
+                            className="input py-1 text-xs"
+                            type="number"
+                            min={1000}
+                            value={modelDraft[m.id] ?? ""}
+                            onChange={(e) => setModelDraft({ ...modelDraft, [m.id]: e.target.value })}
+                            onBlur={() => saveContextWindow(p.id, m)}
+                            onKeyDown={(e) =>
+                              shouldSubmitOnEnter(e.key, false, e.nativeEvent.isComposing) && saveContextWindow(p.id, m)
+                            }
+                          />
+                        </label>
+                        <label className="flex flex-col gap-1">
+                          <span className="text-xs text-muted">思考等级（thinking 模型）</span>
+                          <select
+                            className="input py-1 text-xs"
+                            value={m.reasoning_effort ?? ""}
+                            onChange={(e) =>
+                              patchModelField(p.id, m.id, { reasoning_effort: e.target.value || null })
+                            }
+                          >
+                            <option value="">自动</option>
+                            {EFFORTS.map((v) => (
+                              <option key={v} value={v}>{EFFORT_LABELS[v] ?? v}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label
+                          className="flex items-center gap-2 self-end pb-1"
+                          title="能力标记：记录该模型能否接收图片输入；当前版本尚未接入图片发送。"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={!!m.supports_images}
+                            onChange={(e) =>
+                              patchModelField(p.id, m.id, { supports_images: e.target.checked })
+                            }
+                          />
+                          <span className="text-xs text-muted">支持图片输入</span>
+                        </label>
+                      </div>
+                    )}
                   </div>
                 ))}
                 {p.id in models && models[p.id].length === 0 && (
@@ -739,6 +863,32 @@ export default function Settings() {
           （「图谱」页的论断图与「建议中心」的论断矛盾提醒依赖它）。默认关闭以节省 token；
           已入库论文可用详情页「重新分析」补抽。
         </p>
+      </section>
+
+      <section className="card">
+        <h3 className="mb-1 font-semibold">论文问答</h3>
+        <p className="mb-2 text-sm text-muted">
+          每轮问答中 AI 调用工具（检索、读原文、核对证据等）的最大步数。问题越复杂、资料越多，需要的步数越多；
+          上限越大单轮消耗的 token 也越多。达到上限时原问题会保留，可缩小范围后继续。
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            className="input w-24 py-1 text-sm"
+            type="number"
+            min={4}
+            max={200}
+            placeholder="100"
+            value={agentMaxIters}
+            onChange={(e) => setAgentMaxIters(e.target.value)}
+            onKeyDown={(e) =>
+              shouldSubmitOnEnter(e.key, false, e.nativeEvent.isComposing) && saveAgentIters()
+            }
+          />
+          <button onClick={saveAgentIters} disabled={agentItersSaving} className="btn-primary py-1 text-sm">
+            {agentItersSaving ? "保存中…" : "保存"}
+          </button>
+          <span className="text-xs text-faint">范围 4–200，留空使用默认 100。</span>
+        </div>
       </section>
 
       <section className="card">
