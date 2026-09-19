@@ -188,3 +188,29 @@ def test_provider_boundary_keeps_image_payload(monkeypatch, provider_type):
     key = 'input' if provider_type == 'openai_responses' else 'messages'
     blocks = payloads[0][key][0]['content']
     assert any(b.get('type') == ('input_image' if provider_type == 'openai_responses' else 'image_url') for b in blocks)
+
+
+def test_context_status_reports_material_payload_and_compaction(monkeypatch):
+    current = {'role': 'user', 'content': '本轮问题'}
+    history = [{'role': 'system', 'content': 'system'}, {'role': 'user', 'content': '很长的旧材料' * 8000}, current]
+    client = SimpleNamespace(complete=lambda *a, **k: SimpleNamespace(content='历史摘要'),
+                             complete_with_tools=lambda *a, **k: ToolTurn('回答', [], 1, 1, 2))
+    events = list(run_agent(client, None, 'x', history, None, context_window=12000))
+    status = next(data['context'] for event, data in events if event == 'status' and 'context' in data)
+    assert status['before'] == total_tokens(history)
+    assert status['after'] < status['before']
+    assert status['compacted'] and status['summarized']
+    assert status['window'] == 12000
+
+
+def test_stop_during_compaction_prevents_provider_call(monkeypatch):
+    stop = Event()
+    called = []
+    def compact(messages, *args):
+        stop.set()
+        return messages
+    monkeypatch.setattr('app.agent.loop.compact_history', compact)
+    client = SimpleNamespace(complete_with_tools=lambda *a, **k: called.append(True))
+    events = list(run_agent(client, None, 'x', [{'role': 'user', 'content': 'q'}], None, cancelled=stop))
+    assert not called
+    assert events[-1][0] == 'error'

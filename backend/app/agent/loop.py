@@ -20,7 +20,7 @@ from app.agent.attachments import text_content
 from collections.abc import Iterator
 from typing import Any
 
-from app.agent.context import compact_history
+from app.agent.context import compact_history, total_tokens, DEFAULT_CONTEXT_WINDOW
 from app.agent.tools import get_tool, tool_schemas
 from app.agent.clarification import question_request
 from app.agent.provenance import tool_sources
@@ -90,7 +90,19 @@ def run_agent(
             yield ("error", {"message": "已停止，不再执行后续工具调用。"})
             return
         yield ("status", {"phase": "thinking", "step": _ + 1, "max_steps": max_iters, "model": model_id})
+        before = total_tokens(msgs)
+        original = msgs
         msgs = compact_history(msgs, client, provider, model_id, context_window)
+        yield ("status", {"phase": "thinking", "step": _ + 1, "max_steps": max_iters, "model": model_id,
+                          "context": {"before": before, "after": total_tokens(msgs),
+                                      "window": context_window or DEFAULT_CONTEXT_WINDOW,
+                                      "compacted": msgs is not original,
+                                      "summarized": msgs is not original and any(
+                                          m.get("role") == "system" and str(m.get("content", "")).startswith("Summary of earlier in this conversation:")
+                                          for m in msgs[1:])}})
+        if cancelled is not None and cancelled.is_set():
+            yield ("error", {"message": "已停止，不再执行后续工具调用。"})
+            return
         try:
             turn = client.complete_with_tools(
                 provider, model_id, msgs, "chat", tools=schemas if use_tools else None
