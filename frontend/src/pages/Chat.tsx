@@ -4,6 +4,7 @@ import { MarkdownContent } from '../components/MarkdownContent';
 import { type ChatAttachment, type ChatModel, type Source, type TopicSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
 import { ChatTopicSources } from '../components/ChatTopicSources';
 import { AskUserCard } from "../components/AskUserCard";
+import { DiscussionPapers } from '../components/DiscussionPapers';
 import { useChatDraft } from '../components/useChatDraft';
 import { appendQueued, nextQueued, finishQueued } from './chatQueueModel';
 import { libraryScope } from '../components/usePaperDraft';
@@ -16,6 +17,8 @@ import { ResearchMotif } from '../components/ui/ResearchMotif';
 import { shouldSubmitOnEnter } from "./keyGuardModel";
 import {
   chatMessagePayload,
+  conversationPaperContext,
+  paperSetContext,
   contextBadgeLabel,
   selectedTextOverLimit,
   type PaperChatContext,
@@ -233,7 +236,7 @@ export default function Chat({
         if(alive&&last?.role==='user'&&last.delivery_status==='pending'&&!last.retryable){
           pollTimer=setTimeout(()=>{if(alive)setLoadRevision(n=>n+1);},1500);
         }
-        if (alive) onContextLoaded(c.id, c.paper_id == null ? null : { paperId: c.paper_id, paperTitle: c.paper_title, selectedText: null });
+        if (alive) onContextLoaded(c.id, conversationPaperContext(c));
         if (alive)
           setMessages(
             c.messages.flatMap((m) => {
@@ -361,7 +364,7 @@ export default function Chat({
     if (!captureFor || captureBusy) return;
     const message = messages.find((m) => m.id === captureFor.msgId);
     if (!message?.content) return;
-    const flow = captureFlow(paperContext?.paperId ?? null, message.sources ?? []);
+    const flow = captureFlow(paperContext?.papers ? null : paperContext?.paperId ?? null, message.sources ?? []);
     const paper = resolveCapturePaper(flow, chosenPaperId);
     if (captureFor.mode === "note" && paper === "required") {
       setCaptureError("请先选择要保存到哪篇论文。");
@@ -795,8 +798,8 @@ export default function Chat({
                           <CapturePanel
                             mode={captureFor.mode}
                             message={m}
-                            contextPaperId={paperContext?.paperId ?? null}
-                            contextTitle={paperContext?.paperTitle ?? null}
+                            contextPaperId={paperContext?.papers ? null : paperContext?.paperId ?? null}
+                            contextTitle={paperContext?.papers ? null : paperContext?.paperTitle ?? null}
                             chosenPaperId={chosenPaperId}
                             onChoose={setChosenPaperId}
                             busy={captureBusy}
@@ -823,11 +826,12 @@ export default function Chat({
                 <span className="text-faint">
                   {selectedTextOverLimit(paperContext.selectedText)
                     ? "选中文本过长，本次提问将只携带论文上下文"
-                    : "回答会优先基于这篇论文的摘要、审阅矩阵、你的笔记与摘录"}
+                    : paperContext.papers ? '优先围绕所选论文讨论，可连续追问、比较方法和探索 idea；需要时读取全文。' : "回答会优先基于这篇论文的摘要、审阅矩阵、你的笔记与摘录"}
                 </span>
-                <button onClick={onClearPaperContext} className="btn-ghost ml-auto py-0.5 text-xs">
+                <button onClick={onClearPaperContext} disabled={busy || queue.length > 0} className="btn-ghost ml-auto py-0.5 text-xs">
                   退出论文上下文
                 </button>
+                {paperContext.papers && <DiscussionPapers papers={paperContext.papers} onOpenPaper={onOpenPaper} />}
               </div>
             )}
             {manualSkills.length > 0 && <label className="flex items-center gap-2 px-3 py-2 text-xs text-muted">
@@ -874,7 +878,7 @@ export default function Chat({
                   setModelId(String(item.extra.model_config_id ?? ''));
                   setReviewEvidence(!!item.extra.review_evidence);
                   setManualSkillId(String(item.extra.skill_ids?.[0] ?? ''));
-                  onContextLoaded(activeConv!, item.extra.paper_id == null ? null : {paperId: item.extra.paper_id, paperTitle: null, selectedText: item.extra.selected_text ?? null});
+                  onContextLoaded(activeConv!, item.extra.paper_ids?.length ? paperSetContext(item.extra.paper_ids.map(id => ({id, title: paperContext?.papers?.find(p => p.id === id)?.title ?? null}))) : item.extra.paper_id == null ? null : {paperId: item.extra.paper_id, paperTitle: null, selectedText: item.extra.selected_text ?? null});
                   materials.update(previous => ({ attachments: item.extra.attachments ?? [], queue: finishQueued(previous.queue, item.id) }));
                   pauseQueue();
                 }} aria-label={`编辑排队消息 ${index + 1}`}>编辑</button>}

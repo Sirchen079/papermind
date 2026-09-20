@@ -8,6 +8,17 @@ function compile(path){return ts.transpileModule(readFileSync(new URL(path,impor
 const storageModel=url(compile('../src/pages/draftStorageModel.ts'));
 const {readConversationContext:read,saveConversationContext:save,restoreConversationContext:restore}=await import(url(compile('../src/pages/conversationDraftModel.ts').replace("'./draftStorageModel'",JSON.stringify(storageModel))));
 
+test('selected paper sets survive reload and cannot inherit a single-paper excerpt', () => {
+  const data = new Map();
+  const storage = {getItem: key => data.get(key) ?? null, setItem: (key, value) => data.set(key, value)};
+  const group = {paperId: 1, paperTitle: 'A', selectedText: null, papers: [{id: 1, title: 'A'}, {id: 2, title: 'B'}]};
+  save(storage, 'group-app', 'A', 10, group);
+  assert.deepEqual(read(storage, 'group-app', 'A', 10), group);
+  assert.equal(read(storage, 'group-app', 'B', 10), null);
+  assert.equal(restore({paperId: 1, paperTitle: 'A', selectedText: 'stale quote'}, group).selectedText, null);
+  assert.deepEqual(restore(group, {...group, papers: [{id: 1, title: 'renamed A'}]}).papers, [{id: 1, title: 'renamed A'}]);
+});
+
 test('unsent excerpts survive switches and reloads with same IDs in separate projects',()=>{
   const data=new Map();
   const storage={getItem:key=>data.get(key)??null,setItem:(key,value)=>data.set(key,value),removeItem:key=>data.delete(key)};
