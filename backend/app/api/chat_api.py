@@ -28,6 +28,19 @@ from app.providers.selection import pick_llm
 from app.agent.attachments import Attachment, MAX_FILE_BYTES, attach_content, prepare_attachment
 
 router = APIRouter()
+
+
+@router.get('/chat/documents/{filename}')
+def download_chat_document(filename: str):
+    from pathlib import Path
+    from fastapi.responses import FileResponse
+    from app.config import get_settings
+    root = (Path(get_settings().data_dir) / 'exports').resolve()
+    path = (root / filename).resolve()
+    if path.parent != root or path.suffix.lower() not in {'.md', '.txt'} or not path.is_file():
+        raise HTTPException(404, 'document not found')
+    return FileResponse(path, filename=path.name)
+
 _cancel_events: dict[tuple[str, int], Event] = {}
 _active_turns: set[tuple[str, int]] = set()
 _turn_lock = Lock()
@@ -340,6 +353,10 @@ def _parse_sources(value: str | None) -> list:
 from app.skills.research_evidence import research_skill_prompt
 
 CHAT_SYSTEM_PROMPT = (
+    "所有对话入口具有相同的研究和行动能力；当前论文或论文集合只是初始背景，不限制可用工具。"
+    "需要外部资料时可以 search_web 和 read_webpage，读取用户指定的本地文件可用 read_local_file；上传的文件和图片直接参考消息材料。"
+    "用户要求保存灵感、记笔记或整理文档时，使用 save_research_idea、save_paper_note 或 save_document 当场执行，"
+    "不要求切换页面或重复确认已明确的请求。只有目标、内容等关键要素不清楚时才澄清。保存完成后报告工具返回的位置或记录 ID，不能假称已保存。\n\n"
     "你是一名帮助研究者提高效率的科研助手。优先直接回答用户当前的问题，给出具体分析、可讨论的 idea 和可执行的实验建议。"
     "讨论假设、机制、选题和实验设计时可以基于通用知识推理，不要求先取得论文证据；"
     "自然地区分原文事实、分析推断和待验证假设。缺少证据不等于不能讨论，也不等于假设不成立。"

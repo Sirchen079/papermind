@@ -14,7 +14,9 @@ import { useToast } from "../components/ui/Toast";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { EmptyState } from "../components/ui/EmptyState";
 import { ResearchMotif } from '../components/ui/ResearchMotif';
-import { shouldSubmitOnEnter } from "./keyGuardModel";
+import { AgentActivity } from '../components/AgentActivity';
+import { agentActivityLabel } from './agentActivityModel';
+import { chatEnterAction, shouldSubmitOnEnter } from "./keyGuardModel";
 import {
   chatMessagePayload,
   conversationPaperContext,
@@ -95,7 +97,15 @@ export default function Chat({
   onSelectionConsumed,
   onConversationDeleted,
   onContextLoaded,
+  embedded = false,
+  onModelSelected,
+  initialDraft,
+  onInitialDraftConsumed,
 }: {
+  embedded?: boolean;
+  onModelSelected?: (id: number | undefined) => void;
+  initialDraft?: string;
+  onInitialDraftConsumed?: () => void;
   activeConv: number | null;
   setActiveConv: (id: number | null) => void;
   onOpenPaper: (id: number) => void;
@@ -111,6 +121,10 @@ export default function Chat({
   const [convs, setConvs] = useState<Conv[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [composerDraft, setComposerDraft, clearComposerDraft] = usePaperDraft(activeConv ?? 0, {content:''}, 'chat-composer');
+  useEffect(() => {
+    if (initialDraft && !composerDraft.content) setComposerDraft({content: initialDraft});
+    if (initialDraft) onInitialDraftConsumed?.();
+  }, []);
   const input=composerDraft.content;
   const setInput=(content:string)=>setComposerDraft({content});
   const [manualSkills, setManualSkills] = useState<{id: number; name: string}[]>([]);
@@ -136,6 +150,7 @@ export default function Chat({
   const uploadRef = useRef(false);
   const followRef = useRef(true);
   const selectedModel = models.find(m => String(m.id) === modelId) ?? models.find(m => m.is_default);
+  useEffect(() => { onModelSelected?.(selectedModel?.id); }, [selectedModel?.id, onModelSelected]);
   function refreshModels() { api.chatModels().then(setModels).catch(e => toast.error(e.message)); }
   useEffect(() => { refreshModels(); }, []);
   useEffect(() => { pauseQueue(); setContextUsage(null); setBusy(false); setStopping(false); abortRef.current = null; followRef.current = true; }, [draftKey]);
@@ -266,7 +281,7 @@ export default function Chat({
   useEffect(() => { setManualSkillId(""); setReviewEvidence(false); }, [draftKey]);
 
   useEffect(() => {
-    if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (followRef.current) endRef.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'nearest' });
   }, [messages]);
 
   // Auto-grow the textarea up to a few lines, then scroll.
@@ -512,7 +527,7 @@ export default function Chat({
           if (data.title) await loadConvs();
         } else if (event === "status") {
           if (data.context) setContextUsage(previous => ({ ...data.context, compacted: !!data.context.compacted || !!previous?.compacted, summarized: data.context.compacted ? data.context.summarized : previous?.summarized ?? false }));
-          const stage = data.phase === "tool" ? `正在执行 ${data.name}` : data.phase === "review" ? "正在整理并核对回答" : "正在等待模型响应";
+          const stage = agentActivityLabel(data.phase, data.name, text);
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, status: `${stage} · ${data.step}/${data.max_steps} 轮` } : row));
         } else if (event === "tool") {
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, tools: [...(row.tools ?? []), { name: data.name, args: data.args ?? {}, result: data.result ?? "", ok: data.ok }] } : row));
@@ -560,8 +575,8 @@ export default function Chat({
   }
 
   return (
-    <div className="chat-workspace relative flex gap-4 px-4 sm:px-6 lg:px-10">
-      <aside
+    <div className={`chat-workspace relative flex gap-4 ${embedded ? "chat-embedded" : "px-4 sm:px-6 lg:px-10"}`}>
+      {!embedded && <aside
         className={`conversation-list absolute inset-y-0 left-0 z-20 flex w-64 shrink-0 flex-col overflow-hidden p-0 transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 ${
           navOpen ? "translate-x-0 visible" : "-translate-x-full invisible md:visible"
         }`}
@@ -649,9 +664,9 @@ export default function Chat({
             );
           })}
         </div>
-      </aside>
+      </aside>}
 
-      {navOpen && (
+      {!embedded && navOpen && (
         <div
           className="modal-overlay z-10 md:hidden"
           onClick={() => setNavOpen(false)}
@@ -660,14 +675,14 @@ export default function Chat({
       )}
 
       <section className="chat-canvas flex min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex items-center gap-2 p-2 md:hidden border-b border-[var(--border)]">
+        {!embedded && <div className="flex items-center gap-2 p-2 md:hidden border-b border-[var(--border)]">
           <button onClick={() => setNavOpen(true)} className="btn-ghost p-1.5" aria-label="打开对话列表">
             <Menu size={16} />
           </button>
           <span className="text-sm text-muted">
             {activeConv == null ? "选择或新建对话" : "当前对话"}
           </span>
-        </div>
+        </div>}
         {activeConv == null ? (
           <EmptyState
             className="chat-welcome flex-1"
@@ -684,13 +699,14 @@ export default function Chat({
           <>
             <div className="chat-messages flex-1 space-y-6 overflow-auto p-4" onScroll={e => { const el = e.currentTarget; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }}>
               {loading && <p role="status" className="text-sm text-muted">正在加载对话…</p>}
-              {loadError && <div role="alert" className="text-sm">无法加载对话：{loadError}<button className="btn-ghost ml-2" onClick={() => setLoadRevision(n => n + 1)}>重试</button></div>}
+              {loadError && <div role="alert" className="text-sm">无法加载对话：{loadError}<button className="btn-ghost ml-2" onClick={() => setLoadRevision(n => n + 1)}>重试</button>{embedded && <button className="btn-ghost" onClick={() => setActiveConv(null)}>开始新的伴读对话</button>}</div>}
               {messages.length===0&&<div className="chat-starters"><ResearchMotif icon={<MessageSquare size={24}/>}/><h2>想讨论什么研究问题？</h2><p className="text-sm text-muted">写下问题，或从一个方向开始。</p><div className="flex flex-wrap justify-center gap-2">{['一起梳理我的研究背景与目标','讨论一个研究 idea 的可行性','比较几篇论文的方法'].map(prompt=><button key={prompt} className="btn-ghost text-xs" onClick={()=>{setInput(prompt);taRef.current?.focus();}}>{prompt}</button>)}</div></div>}
               {messages.map((m) => (
                 <div
                   key={m.id}
-                  className={m.role === "user" ? "text-right" : "group/msg"}
+                  className={`chat-turn ${m.role === "user" ? "chat-turn-user text-right" : "chat-turn-assistant group/msg"}`}
                 >
+                  <div className="chat-role"><span className="chat-avatar" aria-hidden="true">{m.role === 'user' ? '你' : 'AI'}</span><span>{m.role === 'user' ? '你' : '研究助手'}</span>{m.role === 'assistant' && m.model && <span className="chat-model-name">{m.model}</span>}</div>
                   <div
                     className={
                       m.role === "user"
@@ -726,9 +742,7 @@ export default function Chat({
                       m.content ? (
                         <MarkdownContent content={m.content} />
                       ) : (busy || serverPending) && !m.error ? (
-                        <span className="text-sm text-faint">
-                          {stopping ? "正在停止，等待当前请求结束；不会继续调用工具…" : m.status || "正在连接模型…"}
-                        </span>
+                        <AgentActivity stopping={stopping} label={stopping ? '正在停止' : m.status || '正在连接模型'} />
                       ) : m.stopped ? (
                         <span className="text-sm italic text-faint">
                           （已停止）
@@ -815,7 +829,7 @@ export default function Chat({
               ))}
               <div ref={endRef} />
             </div>
-            {paperContext && (
+            {paperContext && (!embedded || paperContext.selectedText || paperContext.papers) && (
               <div
                 className="flex flex-wrap items-center gap-2 border-t px-3 py-2 text-xs"
                 style={{ borderColor: "var(--border)", backgroundColor: "var(--surface-2)" }}
@@ -829,11 +843,13 @@ export default function Chat({
                     : paperContext.papers ? '优先围绕所选论文讨论，可连续追问、比较方法和探索 idea；需要时读取全文。' : "回答会优先基于这篇论文的摘要、审阅矩阵、你的笔记与摘录"}
                 </span>
                 <button onClick={onClearPaperContext} disabled={busy || queue.length > 0} className="btn-ghost ml-auto py-0.5 text-xs">
-                  退出论文上下文
+                  {embedded && paperContext.selectedText ? '取消选文' : '退出论文上下文'}
                 </button>
                 {paperContext.papers && <DiscussionPapers papers={paperContext.papers} onOpenPaper={onOpenPaper} />}
               </div>
             )}
+            <details className="chat-settings" open={embedded ? undefined : true}>
+              <summary className="chat-settings-summary">{selectedModel?.name ?? '默认模型'} · 模型与工具设置</summary>
             {manualSkills.length > 0 && <label className="flex items-center gap-2 px-3 py-2 text-xs text-muted">
               本轮技能
               <select aria-label="本轮手动技能" className="input w-auto" disabled={loading} value={manualSkillId} onChange={e => setManualSkillId(e.target.value)}>
@@ -863,6 +879,7 @@ export default function Chat({
               <button className="btn-ghost" onClick={() => setConfigOpen(false)}>取消</button>
               <p className="w-full text-faint">设置应用于此模型的后续调用；共享连接会同步。思考等级需与服务商支持的参数一致。</p>
             </div>}
+            </details>
             {!materials.ready && <p role="status" className="px-3 text-xs">正在恢复附件和排队草稿…</p>}
             {materials.error && <p role="alert" className="px-3 text-xs text-[var(--danger)]">附件或排队草稿未能保存到本机，请勿关闭页面。<button className="btn-ghost" onClick={() => materials.update(value => ({ ...value }))}>重试保存</button></p>}
             {materials.saving && <p role="status" className="px-3 text-xs text-faint">正在保存草稿…</p>}
@@ -904,16 +921,24 @@ export default function Chat({
                 aria-label="向论文库提问"
                 className="input order-first min-w-0 basis-full resize-none"
                 rows={1}
-                placeholder={pendingQuestion ? "直接补充信息或调整需求，AI 会继续处理…" : "输入问题，Ctrl+V 粘贴截图，或拖入文件…（Shift+回车换行）"}
+                placeholder={pendingQuestion ? "直接补充信息或调整需求，AI 会继续处理…" : embedded ? "讨论这篇论文，或让助手搜索、保存灵感…" : "输入问题，粘贴截图或拖入文件…"}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (shouldSubmitOnEnter(e.key, e.shiftKey, e.nativeEvent.isComposing)) {
+                  const action = chatEnterAction({...e, isComposing: e.nativeEvent.isComposing, keyCode: e.nativeEvent.keyCode});
+                  if (action === 'newline') {
+                    e.preventDefault();
+                    const element = e.currentTarget;
+                    const start = element.selectionStart, end = element.selectionEnd;
+                    setInput(input.slice(0, start) + '\n' + input.slice(end));
+                    requestAnimationFrame(() => element.setSelectionRange(start + 1, start + 1));
+                  } else if (action === 'send') {
                     e.preventDefault();
                     send();
                   }
                 }}
               />
+              <span className="chat-key-hint text-xs text-faint">Enter 发送 · Ctrl+Enter 换行</span>
               {busy || serverPending ? (
                 <div className="ml-auto flex gap-2 shrink-0">
                   <button type="button" onClick={queueCurrentTurn} className="btn-ghost px-3" disabled={(!input.trim() && !attachments.length) || uploading || !materials.ready} title="当前回答结束后发送这条问题">排队发送</button>

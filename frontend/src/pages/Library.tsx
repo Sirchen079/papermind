@@ -3083,12 +3083,26 @@ export default function Library({
           onSaveExcerpt={saveReaderExcerpt}
           onSaveExcerptNote={saveReaderExcerptNote}
           onCreateNote={createReaderNote}
+          onRefreshNotes={async () => {
+            const id = selected.id;
+            try {
+              const reading = await api.getReadingWorkspace(id);
+              setWorkspace(current => current?.state.paper_id === id ? {...current, notes: reading.notes, excerpts: reading.excerpts} : current);
+            } catch (e: any) { toast.error(e.message); }
+          }}
           onAskAi={(text) => onAskAboutPaper?.(selected.id, selected.title, text)}
           notes={workspace?.notes ?? []}
           excerpts={workspace?.excerpts ?? []}
           initialPage={workspace?.state?.last_page ?? null}
           onProgress={commitReaderProgress}
           onClose={closeReader}
+          onOpenPaper={async id => {
+            try {
+              const [paper, reading] = await Promise.all([api.getPaper(id), api.getReadingWorkspace(id)]);
+              closeReader(); setSelected(paper); setWorkspace(reading);
+              setMetadataDraft(metadataDraftFromPaper(paper));
+            } catch (e: any) { toast.error(e.message); }
+          }}
         />
       )}
 

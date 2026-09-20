@@ -76,7 +76,7 @@ def test_full_text_can_reach_late_sections_without_repeating_prefix():
 
 def test_tool_schemas_and_lookup():
     schemas = tool_schemas()
-    assert len(schemas) == len(TOOLS) == 10
+    assert len(schemas) == len(TOOLS) == 16
     assert get_tool("ask_user") is not None
     assert all(s["type"] == "function" for s in schemas)
     assert get_tool("search_library") is not None

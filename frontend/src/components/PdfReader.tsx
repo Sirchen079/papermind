@@ -62,6 +62,8 @@ interface PdfReaderProps {
   /** P11.5：翻页后上报进度（父级做 2s 防抖节流写回）。 */
   onProgress: (page: number) => void;
   onClose: () => void;
+  onOpenPaper: (id: number) => void;
+  onRefreshNotes: () => Promise<void>;
 }
 
 /** 划选状态：选中文本 + 浮动按钮锚点（视口坐标）。 */
@@ -87,6 +89,8 @@ export default function PdfReader({
   initialPage,
   onProgress,
   onClose,
+  onOpenPaper,
+  onRefreshNotes,
 }: PdfReaderProps) {
   const {base}=useWorkspace();
   const api = useApi();
@@ -546,19 +550,19 @@ export default function PdfReader({
         </div>
         <aside
           id="pdf-reader-notes"
-          className={`${notesOpen ? "block" : "hidden"} w-[380px] max-w-[85vw] max-md:absolute max-md:right-0 max-md:top-0 max-md:bottom-0 max-md:z-20 shrink-0 overflow-y-auto border-l`}
+          className={`${notesOpen ? "flex" : "hidden"} flex-col min-h-0 w-[420px] max-w-[90vw] max-md:absolute max-md:right-0 max-md:top-0 max-md:bottom-0 max-md:z-20 shrink-0 overflow-hidden border-l`}
           style={{ borderColor: "var(--border)", backgroundColor: "var(--surface)" }}
           aria-label="阅读侧栏"
         >
-          <div className="flex gap-2 border-b p-2">
+          <div className="reader-tabs flex shrink-0 gap-2 border-b p-2">
             <button className="btn-ghost text-xs" aria-pressed={tab === 'ai'} onClick={() => setTab('ai')}>AI 伴读</button>
-            <button className="btn-ghost text-xs" aria-pressed={tab === 'notes'} onClick={() => setTab('notes')}>笔记与摘录</button>
+            <button className="btn-ghost text-xs" aria-pressed={tab === 'notes'} onClick={() => { setTab('notes'); void onRefreshNotes(); }}>笔记与摘录</button>
             <button className="btn-ghost ml-auto text-xs md:hidden" onClick={() => setNotesOpen(false)}>收起</button>
           </div>
-          <div className={tab === 'ai' ? 'h-[calc(100%-48px)]' : 'hidden'}>
-            <ReadingCompanion key={paperId} paperId={paperId} selection={readingSelection} preparation={preparation} />
+          <div className={tab === 'ai' ? 'min-h-0 flex-1' : 'hidden'}>
+            <ReadingCompanion key={paperId} paperId={paperId} title={title} selection={readingSelection} preparation={preparation} onOpenPaper={id => { void leaveReader(() => onOpenPaper(id)); }} />
           </div>
-          <div className={tab === 'notes' ? 'p-3' : 'hidden'}>
+          <div className={tab === 'notes' ? 'min-h-0 flex-1 overflow-auto p-3' : 'hidden'}>
             <h4 className="mb-2 text-sm font-semibold">笔记与摘录</h4>
             <section className="mb-4">
               <h5 className="mb-1.5 text-xs font-medium text-muted">摘录（{excerpts.length}）</h5>
