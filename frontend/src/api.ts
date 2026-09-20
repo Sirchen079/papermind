@@ -973,7 +973,9 @@ return {
     req<PaperClaim>(`/papers/${id}/claims`, { method: "POST", body: JSON.stringify(body) }),
   deleteClaim: (claimId: number) => req(`/claims/${claimId}`, { method: "DELETE" }),
   // chat
-  chatModels: () => req<ChatModel[]>("/chat/models"),
+    prepareReading: (id: number, retry = false) => req<{status: string; message: string}>(`/papers/${id}/prepare-reading?retry=${retry}`, {method: "POST"}),
+    translateSelection: (id: number, text: string, target: string, model_config_id?: number) => req<{text: string; model: string}>(`/papers/${id}/translate`, {method: "POST", body: JSON.stringify({text, target, model_config_id})}),
+    chatModels: () => req<ChatModel[]>("/chat/models"),
   stopChat: (id: number) => req(`/chat/conversations/${id}/stop`, { method: "POST" }),
   uploadChatAttachment: (file: File) => {
     const form = new FormData(); form.append("file", file);
