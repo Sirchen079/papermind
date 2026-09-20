@@ -91,3 +91,55 @@ def test_partial_read_gets_one_completion_checkpoint_before_publication(monkeypa
     assert events[-1][0]=='done' and '12 小时' in events[-1][1]['content']
     assert len([m for m in calls[-1] if '回答前检索完整性检查' in m.get('content','')])==1
     assert not any('当前片段缺少' in body.get('content','') for kind,body in events if kind in ('delta','done'))
+
+@pytest.mark.parametrize('raw', ['{"edits":[]}', '```json\n{"edits":[]}\n```', '复核结果如下：\n{"edits":[]}\n以上为核对结果。'])
+def test_review_accepts_json_wrappers(raw):
+    from app.agent.evidence_review import parse_review_response
+    assert parse_review_response(raw) == {'edits': []}
+
+
+@pytest.mark.parametrize('raw', ['', 'not JSON', '{"edits":[', '{"edits":[]} {"edits":[{}]}'])
+def test_review_does_not_guess_invalid_or_conflicting_json(raw):
+    from app.agent.evidence_review import parse_review_response
+    with pytest.raises(ValueError):
+        parse_review_response(raw)
+
+
+@pytest.mark.parametrize('failure', ['blank', 'format', 'timeout', 'invalid_edit', 'capacity'])
+def test_chat_review_failure_preserves_answer_with_explicit_notice(monkeypatch, failure):
+    from app.agent.loop import run_agent
+    monkeypatch.setattr('app.agent.loop.tool_schemas', lambda: [])
+    calls = []
+    draft = '基于提供材料的回答。[S1]'
+    def review(*args, **kwargs):
+        calls.append(1)
+        if failure == 'timeout':
+            raise TimeoutError('private provider detail')
+        raw = '' if failure == 'blank' else json.dumps({'edits': [{**EDIT, 'block_id': 'B999'}]}) if failure == 'invalid_edit' else 'bad JSON'
+        return SimpleNamespace(content=raw, total_tokens=2)
+    client = SimpleNamespace(complete_with_tools=lambda *a, **k: SimpleNamespace(content=draft, tool_calls=[], total_tokens=3), complete=review)
+    events = list(run_agent(client, None, 'm', [{'role': 'user', 'content': 'q'}], None,
+                            evidence_context=SOURCE[0]['text'], context_window=1000 if failure == 'capacity' else None))
+    assert events[-1][0] == 'done'
+    assert not any(kind == 'error' for kind, _ in events)
+    result = events[-1][1]
+    assert result['content'].endswith(draft)
+    assert result['content'].startswith('> 自动证据复核未完成')
+    assert 'private provider detail' not in result['content']
+    assert result['evidence_review']['status'] == 'unavailable'
+    assert result['evidence_review']['edits'] == []
+    assert len(calls) <= 2
+
+
+def test_stop_during_failed_review_still_stops_answer(monkeypatch):
+    from threading import Event
+    from app.agent.loop import run_agent
+    stop = Event()
+    def review(*a, **k):
+        stop.set()
+        raise TimeoutError('stopped')
+    monkeypatch.setattr('app.agent.loop.review_answer', review)
+    client = SimpleNamespace(complete_with_tools=lambda *a, **k: SimpleNamespace(content='draft', tool_calls=[], total_tokens=1))
+    events = list(run_agent(client, None, 'm', [{'role': 'user', 'content': 'q'}], None, cancelled=stop))
+    assert events[-1][0] == 'error'
+    assert not any(kind in {'delta', 'done'} for kind, _ in events)

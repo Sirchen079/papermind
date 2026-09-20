@@ -16,6 +16,8 @@ loop degrades to a single plain completion so the assistant still answers.
 from __future__ import annotations
 
 import json
+import logging
+import hashlib
 from app.agent.attachments import text_content
 from collections.abc import Iterator
 from typing import Any
@@ -193,8 +195,13 @@ def run_agent(
             content,review_tokens,audit=review_answer(client,provider,model_id,question,content,evidence,context_window)
             tokens_used+=review_tokens
         except Exception as exc:
-            yield ('error',{'message':str(exc)})
-            return
+            # The answer already exists. A review outage or malformed edit is
+            # not a generation failure and must not discard the user's work.
+            # Keep this fallback chat-only: wiki adoption still requires review.
+            logging.getLogger(__name__).warning('Chat evidence review unavailable (%s)', type(exc).__name__)
+            audit = {'version': 2, 'status': 'unavailable', 'error_type': type(exc).__name__,
+                     'draft_sha256': hashlib.sha256(content.encode()).hexdigest(), 'edits': []}
+            content = ('> 自动证据复核未完成，以下回答仍可阅读；引用、数值和关键结论尚未经过额外复核，请结合原文确认。\n\n' + content)
         if cancelled is not None and cancelled.is_set():
             yield ('error', {'message': '已停止，原问题已保留。'})
             return
