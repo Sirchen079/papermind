@@ -214,3 +214,22 @@ def test_stop_during_compaction_prevents_provider_call(monkeypatch):
     events = list(run_agent(client, None, 'x', [{'role': 'user', 'content': 'q'}], None, cancelled=stop))
     assert not called
     assert events[-1][0] == 'error'
+
+@pytest.mark.parametrize('streaming', [False, True])
+def test_review_outage_saves_readable_answer_and_does_not_request_retry(client, monkeypatch, streaming):
+    vision, _ = seed()
+    cid = client.post('/api/chat/conversations').json()['id']
+    monkeypatch.setattr('app.providers.client.ProviderClient.complete_with_tools', lambda *a, **k: ToolTurn('可阅读的回答。[S1]', [], 1, 1, 2))
+    def unavailable(*a, **k):
+        raise ValueError('Expecting value: line 1 column 1 (char 0)')
+    monkeypatch.setattr('app.agent.loop.review_answer', unavailable)
+    suffix = 'messages/stream' if streaming else 'messages'
+    result = client.post(f'/api/chat/conversations/{cid}/{suffix}', json={'content': '解释一下', 'model_config_id': vision})
+    assert result.status_code == 200
+    if streaming:
+        assert 'event: done' in result.text and 'event: error' not in result.text
+    history = client.get(f'/api/chat/conversations/{cid}').json()['messages']
+    assert history[-2]['delivery_status'] == 'complete'
+    assert history[-1]['role'] == 'assistant'
+    assert '自动证据复核未完成' in history[-1]['content']
+    assert history[-1]['content'].endswith('可阅读的回答。[S1]')

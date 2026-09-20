@@ -57,6 +57,28 @@ def apply_edits(draft, parsed, evidence):
     return result
 
 
+def parse_review_response(raw):
+    """Accept prose/fences around one JSON object without repairing its claims."""
+    raw = (raw or '').strip()
+    if not raw:
+        raise ValueError('复核模型未返回正文')
+    wrapped = re.fullmatch(r'```(?:json)?\s*(\{[\s\S]*\})\s*```', raw, re.I)
+    if wrapped:
+        raw = wrapped.group(1)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Providers sometimes prepend an explanation. Require a single complete
+        # object; never guess truncated JSON or pick among contradictory edits.
+        start, end = raw.find('{'), raw.rfind('}')
+        if start >= 0 and end > start:
+            try:
+                return json.loads(raw[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        raise ValueError('复核模型未返回完整的 JSON 修改列表') from None
+
+
 def review_answer(client,provider,model_id,question,draft,records,context_window=None):
     if not records:
         return draft,0,None
@@ -84,10 +106,9 @@ def review_answer(client,provider,model_id,question,draft,records,context_window
     for attempt in range(2):
         result=client.complete(provider,model_id,messages,request_kind='evidence_review',max_tokens=output,reasoning_effort='high')
         tokens+=result.total_tokens
-        raw=result.content.strip()
-        wrapped=re.fullmatch(r'```(?:json)?\s*(\{[\s\S]*\})\s*```',raw,re.I)
+        raw=(result.content or '').strip()
         try:
-            parsed=json.loads(wrapped.group(1) if wrapped else raw)
+            parsed=parse_review_response(raw)
             reviewed=apply_edits(draft,parsed,evidence)
             return reviewed,tokens,{'version':2,'draft_sha256':hashlib.sha256(draft.encode()).hexdigest(),
                                    'edits':parsed['edits'],'api_calls':attempt+1,'evidence_snapshots':evidence,
