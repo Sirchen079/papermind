@@ -70,12 +70,14 @@ def run_agent(
     session: Any,
     *,
     context_window: int | None = None,
+    review_evidence: bool = False,
     max_iters: int = MAX_ITERS,
     evidence_context: str | None = None,
     cancelled=None,
     continuation: dict | None = None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield agent events until a final answer or the step limit."""
+    review_evidence = (continuation or {}).get("review_evidence", review_evidence)
     schemas = tool_schemas()
     use_tools = bool(schemas)
     msgs = list(messages)
@@ -141,7 +143,7 @@ def run_agent(
                 if error is not None:
                     continue
                 yield ("ask_user", {"request": request,
-                    "state": {"messages": msgs, "tool_call_id": pending.id, "evidence": evidence, "tokens": tokens_used, "partial_full_text": partial_full_text, "coverage_checked": coverage_checked}, "tokens": tokens_used})
+                    "state": {"messages": msgs, "tool_call_id": pending.id, "evidence": evidence, "tokens": tokens_used, "partial_full_text": partial_full_text, "coverage_checked": coverage_checked, "review_evidence": review_evidence}, "tokens": tokens_used})
                 return
             for tc in turn.tool_calls:
                 if cancelled is not None and cancelled.is_set():
@@ -174,7 +176,7 @@ def run_agent(
             continue
 
         # No tool calls (or tools disabled) → terminal answer.
-        if use_tools and partial_full_text and not coverage_checked and _ < max_iters - 1:
+        if review_evidence and use_tools and partial_full_text and not coverage_checked and _ < max_iters - 1:
             # A truthful "not in this excerpt" is still incomplete if a requested
             # fact can be located in the available paper. Give the agent one
             # bounded retrieval checkpoint before evidence review/publication.
@@ -190,18 +192,20 @@ def run_agent(
         if not content.strip():
             yield ("error", {"message": "模型未返回回答内容，原问题已保留，可以重试。"})
             return
-        yield ("status", {"phase": "review", "step": _ + 1, "max_steps": max_iters})
-        try:
-            content,review_tokens,audit=review_answer(client,provider,model_id,question,content,evidence,context_window)
-            tokens_used+=review_tokens
-        except Exception as exc:
-            # The answer already exists. A review outage or malformed edit is
-            # not a generation failure and must not discard the user's work.
-            # Keep this fallback chat-only: wiki adoption still requires review.
-            logging.getLogger(__name__).warning('Chat evidence review unavailable (%s)', type(exc).__name__)
-            audit = {'version': 2, 'status': 'unavailable', 'error_type': type(exc).__name__,
-                     'draft_sha256': hashlib.sha256(content.encode()).hexdigest(), 'edits': []}
-            content = ('> 自动证据复核未完成，以下回答仍可阅读；引用、数值和关键结论尚未经过额外复核，请结合原文确认。\n\n' + content)
+        audit = None
+        if review_evidence and evidence:
+            yield ("status", {"phase": "review", "step": _ + 1, "max_steps": max_iters})
+            try:
+                content,review_tokens,audit=review_answer(client,provider,model_id,question,content,evidence,context_window)
+                tokens_used+=review_tokens
+            except Exception as exc:
+                # The answer already exists. A review outage or malformed edit is
+                # not a generation failure and must not discard the user's work.
+                # Keep this fallback chat-only: wiki adoption still requires review.
+                logging.getLogger(__name__).warning('Chat evidence review unavailable (%s)', type(exc).__name__)
+                audit = {'version': 2, 'status': 'unavailable', 'error_type': type(exc).__name__,
+                         'draft_sha256': hashlib.sha256(content.encode()).hexdigest(), 'edits': []}
+                content = ('> 自动证据复核未完成，以下回答仍可阅读；引用、数值和关键结论尚未经过额外复核，请结合原文确认。\n\n' + content)
         if cancelled is not None and cancelled.is_set():
             yield ('error', {'message': '已停止，原问题已保留。'})
             return
@@ -211,4 +215,4 @@ def run_agent(
 
     # Exhausted the step budget without a plain answer.
     yield ("error", {"message": "已到本轮调用上限，进度已保存。点击继续可从已有工具结果接着处理。",
-        "continuable": True, "state": {"messages": msgs, "evidence": evidence, "tokens": tokens_used, "partial_full_text": partial_full_text, "coverage_checked": coverage_checked}})
+        "continuable": True, "state": {"messages": msgs, "evidence": evidence, "tokens": tokens_used, "partial_full_text": partial_full_text, "coverage_checked": coverage_checked, "review_evidence": review_evidence}})
