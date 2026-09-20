@@ -18,7 +18,8 @@ import { X } from "../icons";
 import { useToast } from "./ui/Toast";
 import { useConfirm } from "./ui/ConfirmDialog";
 import type { PaperExcerpt, PaperNote } from "../api";
-import { useWorkspace } from '../workspaceContext';
+import { useApi, useWorkspace } from '../workspaceContext';
+import { ReadingCompanion, type ReadingSelection } from './ReadingCompanion';
 import { shouldSubmitOnEnter } from "../pages/keyGuardModel";
 import {
   READER_NOTE_KINDS,
@@ -81,7 +82,6 @@ export default function PdfReader({
   onSaveExcerpt,
   onSaveExcerptNote,
   onCreateNote,
-  onAskAi,
   notes,
   excerpts,
   initialPage,
@@ -89,6 +89,32 @@ export default function PdfReader({
   onClose,
 }: PdfReaderProps) {
   const {base}=useWorkspace();
+  const api = useApi();
+  const [tab, setTab] = useState<'ai' | 'notes'>('ai');
+  const [readingSelection, setReadingSelection] = useState<ReadingSelection | null>(null);
+  const [preparation, setPreparation] = useState({status: 'loading', message: '论文加载中…'});
+  const [prepareAttempt, setPrepareAttempt] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    let timer: ReturnType<typeof setTimeout>;
+    setPreparation({status: 'loading', message: '论文加载中…'});
+    async function poll(retry = false) {
+      try {
+        const result = await api.prepareReading(paperId, retry);
+        if (!alive) return;
+        setPreparation(result);
+        if (result.status === 'loading') timer = setTimeout(() => void poll(), 1200);
+      } catch (e: any) { if (alive) setPreparation({status: 'error', message: e.message}); }
+    }
+    void poll(prepareAttempt > 0);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [api, paperId, prepareAttempt]);
+  function useSelection(action: 'ask' | 'translate') {
+    if (!selection) return;
+    setReadingSelection({text: selection.text, page: currentPage, action, nonce: Date.now()});
+    setTab('ai'); setNotesOpen(true); setSelection(null);
+    window.getSelection()?.removeAllRanges();
+  }
   const toast = useToast();
   const confirm = useConfirm();
   const [loading, setLoading] = useState(true);
@@ -271,7 +297,7 @@ export default function PdfReader({
   const handleTextSelection = useCallback(() => {
     const sel = window.getSelection();
     const text = sel?.toString().replace(/\s+/g, " ").trim() ?? "";
-    if (!sel || sel.isCollapsed || !text) {
+    if (!sel || sel.isCollapsed || !text || !textLayerRef.current?.contains(sel.anchorNode) || !textLayerRef.current?.contains(sel.focusNode)) {
       setSelection(null);
       return;
     }
@@ -484,18 +510,20 @@ export default function PdfReader({
             重置
           </button>
         </div>
+        <span className="max-w-40 truncate text-xs text-muted" role="status" title={preparation.message}>{preparation.message}</span>
+        {preparation.status === 'error' && <button className="btn-ghost text-xs" onClick={() => setPrepareAttempt(n => n + 1)}>重试加载</button>}
         <button className="btn-ghost shrink-0 py-1 text-xs" aria-expanded={notesOpen} aria-controls="pdf-reader-notes" onClick={() => setNotesOpen((open) => !open)}>
-          {notesOpen ? "收起笔记" : "笔记与摘录"}
+          {notesOpen ? "收起侧栏" : "AI 伴读 / 笔记"}
         </button>
         <button className="btn-subtle shrink-0 px-2" onClick={() => void leaveReader(onClose)} aria-label="退出阅读">
           <X size={18} />
         </button>
       </header>
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         <div
           ref={scrollRef}
           className="min-w-0 flex-1 overflow-auto"
-          onMouseUp={handleTextSelection}
+          onPointerUp={handleTextSelection}
         >
           {loading && (
             <p className="p-8 text-center text-sm text-muted">正在加载 PDF…</p>
@@ -518,11 +546,19 @@ export default function PdfReader({
         </div>
         <aside
           id="pdf-reader-notes"
-          className={`${notesOpen ? "block" : "hidden"} w-72 max-w-[75vw] shrink-0 overflow-y-auto border-l`}
+          className={`${notesOpen ? "block" : "hidden"} w-[380px] max-w-[85vw] max-md:absolute max-md:right-0 max-md:top-0 max-md:bottom-0 max-md:z-20 shrink-0 overflow-y-auto border-l`}
           style={{ borderColor: "var(--border)", backgroundColor: "var(--surface)" }}
-          aria-label="笔记与摘录"
+          aria-label="阅读侧栏"
         >
-          <div className="p-3">
+          <div className="flex gap-2 border-b p-2">
+            <button className="btn-ghost text-xs" aria-pressed={tab === 'ai'} onClick={() => setTab('ai')}>AI 伴读</button>
+            <button className="btn-ghost text-xs" aria-pressed={tab === 'notes'} onClick={() => setTab('notes')}>笔记与摘录</button>
+            <button className="btn-ghost ml-auto text-xs md:hidden" onClick={() => setNotesOpen(false)}>收起</button>
+          </div>
+          <div className={tab === 'ai' ? 'h-[calc(100%-48px)]' : 'hidden'}>
+            <ReadingCompanion key={paperId} paperId={paperId} selection={readingSelection} preparation={preparation} />
+          </div>
+          <div className={tab === 'notes' ? 'p-3' : 'hidden'}>
             <h4 className="mb-2 text-sm font-semibold">笔记与摘录</h4>
             <section className="mb-4">
               <h5 className="mb-1.5 text-xs font-medium text-muted">摘录（{excerpts.length}）</h5>
@@ -657,7 +693,7 @@ export default function PdfReader({
         <div
           className="fixed z-50 flex items-center gap-1 rounded-lg px-1.5 py-1"
           style={{
-            left: selection.x,
+            left: Math.max(120, Math.min(window.innerWidth - 120, selection.x)),
             top: Math.max(selection.y - 44, 8),
             transform: "translateX(-50%)",
             backgroundColor: "var(--surface)",
@@ -673,20 +709,8 @@ export default function PdfReader({
           >
             {savingSelection ? "保存中…" : "存为摘录"}
           </button>
-          {onAskAi && (
-            <button
-              className="rounded-md px-2 py-1 text-xs"
-              style={{ backgroundColor: "var(--surface-2)" }}
-              onClick={() => {
-                void leaveReader(() => onAskAi(selection.text));
-                setSelection(null);
-                window.getSelection()?.removeAllRanges();
-              }}
-              title="带着这段选中文本去对话（自动附带论文上下文）"
-            >
-              问 AI
-            </button>
-          )}
+          <button className="btn-ghost text-xs" onClick={() => useSelection('translate')}>翻译</button>
+          <button className="btn-ghost text-xs" onClick={() => useSelection('ask')}>问 AI</button>
         </div>
       )}
       {rendering && (
