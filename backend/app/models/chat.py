@@ -12,6 +12,7 @@ class Conversation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     title: str | None = None
     paper_id: int | None = Field(default=None, foreign_key="paper.id")
+    paper_ids_json: str = Field(default="[]")
     created_at: datetime = Field(default_factory=utcnow, nullable=False)
     updated_at: datetime = Field(default_factory=utcnow, nullable=False)
 

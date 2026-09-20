@@ -10,6 +10,7 @@ export function readConversationContext(storage: DraftStorage | null, scope: str
   if (!Number.isSafeInteger(value.paperId) || (value.paperId ?? 0) <= 0) return null;
   if (value.paperTitle !== null && typeof value.paperTitle !== 'string') return null;
   if (value.selectedText !== null && typeof value.selectedText !== 'string') return null;
+  if (value.papers !== undefined && (!Array.isArray(value.papers) || value.papers.some(p => !p || !Number.isSafeInteger(p.id) || p.id <= 0))) return null;
   return value as PaperChatContext;
 }
 
@@ -19,5 +20,5 @@ export function saveConversationContext(storage: DraftStorage | null, scope: str
 
 export function restoreConversationContext(saved: PaperChatContext | null, current: PaperChatContext | null): PaperChatContext | null {
   if (!current) return null;
-  return { ...current, selectedText: saved?.paperId === current.paperId ? saved.selectedText : null };
+  return { ...current, selectedText: !current.papers && !saved?.papers && saved?.paperId === current.paperId ? saved.selectedText : null };
 }

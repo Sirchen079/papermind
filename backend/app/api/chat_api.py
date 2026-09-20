@@ -133,6 +133,7 @@ _PAPER_CONTEXT_TOTAL_MAX = 9000
 
 
 class MessageIn(BaseModel):
+    paper_ids: list[int] | None = Field(default=None, max_length=100)
     review_evidence: bool = False
     attachments: list[Attachment] = Field(default_factory=list, max_length=4)
     model_config_id: int | None = None
@@ -145,12 +146,47 @@ class MessageIn(BaseModel):
 
 
 class ConvPatch(BaseModel):
+    paper_ids: list[int] | None = Field(default=None, max_length=100)
     title: str | None = None
     paper_id: int | None = None
 
 
 class ConvCreate(BaseModel):
+    paper_ids: list[int] | None = Field(default=None, max_length=100)
     paper_id: int | None = None
+
+
+def _conversation_papers(conv):
+    return json.loads(conv.paper_ids_json or '[]') or ([conv.paper_id] if conv.paper_id else [])
+
+
+def _validate_papers(session, ids):
+    ids = list(dict.fromkeys(ids))
+    for pid in ids:
+        paper = session.get(Paper, pid)
+        if paper is None or paper.is_deleted:
+            raise HTTPException(404, f"论文 #{pid} 不存在或已移除，请重新选择")
+    return ids
+
+
+def _group_context(session, ids):
+    roster, blocks = [], []
+    budget = max(120, 18000 // max(1, len(ids)))
+    for pid in ids:
+        paper = session.get(Paper, pid)
+        if paper is None or paper.is_deleted:
+            roster.append(f"paper_id={pid}：已移除，当前不可读取")
+            continue
+        ready = bool((paper.full_text or '').strip())
+        roster.append(f"paper_id={pid}：《{(paper.title or '无标题')[:200]}》；{'全文已就绪' if ready else '暂无可读全文，可使用摘要和笔记'}")
+        block = _paper_context(session, pid, None)
+        if paper.abstract:
+            block = f"摘要：{paper.abstract[:1500]}\n" + block
+        blocks.append(f"[paper_id={pid}]\n" + _clip(block, budget))
+    return ('[用户选择的论文讨论范围]\n' + '\n'.join(roster)
+            + '\n优先围绕以上论文持续讨论，按需要使用 get_paper_full_text 读取对应 paper_id 的全文。'
+            '比较或引用具体结论时注明论文标题，区分论文结论与你的推断；需要外部资料时说明其不属于所选论文。'
+            '可以讨论 idea、提出假设或询问研究背景，无需先完成固定比较报告。\n\n' + '\n\n'.join(blocks))
 
 
 def _sse(event: str, data: dict) -> str:
@@ -159,7 +195,7 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _retrieve_hits(
-    session: Session, user_message: str
+    session: Session, user_message: str, paper_ids: list[int] | None = None
 ) -> list[tuple[PaperChunk, float, Paper]]:
     """RAG retrieval: ranked ``(chunk, score, paper)`` triples for the question.
 
@@ -170,7 +206,8 @@ def _retrieve_hits(
     if not (user_message or "").strip():
         return []
     hits: list[tuple[PaperChunk, float, Paper]] = []
-    for chunk, score in retrieve(session, user_message):
+    retrieved = retrieve(session, user_message, paper_ids=paper_ids) if paper_ids is not None else retrieve(session, user_message)
+    for chunk, score in retrieved:
         hits.append((chunk, score, session.get(Paper, chunk.paper_id)))
     return hits
 
@@ -368,7 +405,7 @@ def _turn_context(
 
     if context_block:
         base += (
-            "\n\n用户正在就一篇特定论文提问。以下是该论文与用户自己的研究沉淀，"
+            "\n\n用户正在围绕所选论文提问。以下是论文资料与用户自己的研究沉淀，"
             "回答应优先基于这些材料：\n" + context_block
         )
 
@@ -378,7 +415,7 @@ def _turn_context(
             title = (paper.title if paper else None) or f"#{chunk.paper_id}"
             lines.append(f"[{title}]\n{chunk.text}")
         base += "\n\nRelevant passages from your library:\n" + "\n\n".join(lines)
-    else:
+    elif not context_block or '[用户选择的论文讨论范围]' not in context_block:
         titles = "\n".join(f"- {title}" for title in recent_titles if title)
         if titles:
             base += f"\n\nRecent paper titles:\n{titles}"
@@ -464,7 +501,10 @@ def create_conversation(body: ConvCreate | None = None, session: Session = Depen
     paper_id = body.paper_id if body else None
     if paper_id is not None:
         _paper_context(session, paper_id, None)
-    c = Conversation(title="New conversation", paper_id=paper_id)
+    ids = _validate_papers(session, body.paper_ids) if body and body.paper_ids is not None else []
+    if ids and paper_id is not None:
+        raise HTTPException(422, "请使用 paper_id 或 paper_ids 其中一种论文关联方式")
+    c = Conversation(title=f"基于 {len(ids)} 篇论文讨论" if ids else "New conversation", paper_id=paper_id, paper_ids_json=json.dumps(ids))
     session.add(c)
     session.commit()
     session.refresh(c)
@@ -490,6 +530,10 @@ def rename_conversation(cid: int, body: ConvPatch, session: Session = Depends(ge
         if body.paper_id is not None:
             _paper_context(session, body.paper_id, None)
         conv.paper_id = body.paper_id
+        conv.paper_ids_json = '[]'
+    if "paper_ids" in body.model_fields_set:
+        conv.paper_ids_json = json.dumps(_validate_papers(session, body.paper_ids or []))
+        conv.paper_id = None
     conv.updated_at = utcnow()
     session.add(conv)
     session.commit()
@@ -525,6 +569,8 @@ def get_conversation(cid: int, session: Session = Depends(get_session)) -> dict:
         "title": conv.title,
         "paper_id": paper.id if paper and not paper.is_deleted else None,
         "paper_title": paper.title if paper and not paper.is_deleted else None,
+        "papers": [{"id": pid, "title": row.title if row else None, "unavailable": not row or row.is_deleted}
+                   for pid in _conversation_papers(conv) for row in [session.get(Paper, pid)]],
         "messages": [
             {
                 "id": m.id,
@@ -647,12 +693,26 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         context_block = None
-        if "paper_id" not in body.model_fields_set:
+        if body.paper_ids is not None and body.paper_id is not None:
+            raise HTTPException(422, "请使用 paper_id 或 paper_ids 其中一种论文关联方式")
+        if body.paper_ids is None and "paper_id" not in body.model_fields_set:
+            group = json.loads(conv.paper_ids_json or '[]')
+            if group:
+                body.paper_ids = group
+        if body.paper_ids is not None:
+            ids = list(dict.fromkeys(body.paper_ids))
+            _validate_papers(session, [pid for pid in ids if pid not in _conversation_papers(conv)])
+            body.paper_ids = ids
+            conv.paper_ids_json = json.dumps(ids)
+            conv.paper_id = None
+            context_block = _group_context(session, ids) if ids else None
+        elif "paper_id" not in body.model_fields_set:
             body.paper_id = conv.paper_id
         if body.paper_id is not None:
             context_block = _paper_context(session, body.paper_id, body.selected_text)
             conv.paper_id = body.paper_id
-        elif body.selected_text:
+            conv.paper_ids_json = '[]'
+        elif body.selected_text and context_block is None:
             context_block = _standalone_selection_block(body.selected_text)
         if user_row is None:
             first = session.exec(select(Message).where(Message.conversation_id == cid)).first() is None
@@ -669,7 +729,9 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
         session.refresh(user_row)
         persisted_id = user_row.id
         if user_row.model_context is None:
-            hits = _retrieve_hits(session, body.content)
+            hits = _retrieve_hits(session, body.content, body.paper_ids) if body.paper_ids is not None else _retrieve_hits(session, body.content)
+            if body.paper_ids is not None:
+                hits = [hit for hit in hits if hit[0].paper_id in body.paper_ids]
             sources = _sources_from_hits(hits)
             user_row.sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
             session.add(user_row)

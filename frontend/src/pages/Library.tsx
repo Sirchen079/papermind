@@ -344,6 +344,7 @@ export default function Library({
   deepParams,
   onDeepParamsChange,
   onAskAboutPaper,
+  onDiscussPapers,
 }: {
   openPaperId: number | null;
   onConsumedOpen: () => void;
@@ -351,8 +352,10 @@ export default function Library({
   deepParams: Record<string, string>;
   onDeepParamsChange?: (params: Record<string, string>) => void;
   onAskAboutPaper?: (paperId: number, paperTitle: string | null, selectedText?: string) => void;
+  onDiscussPapers?: (papers: {id: number; title: string | null}[]) => Promise<void>;
 }) {
   const api = useApi();
+  const [discussionOpening, setDiscussionOpening] = useState(false);
   const [papers, setPapers] = useState<Paper[]>([]);
   const [papersTotal, setPapersTotal] = useState(0);
   const [papersLoadingMore, setPapersLoadingMore] = useState(false);
@@ -1871,6 +1874,11 @@ export default function Library({
           >
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-medium">已选 {bulkSelectedPaperIds.length} 篇论文</span>
+              <button className="btn-primary min-h-9 py-1 text-xs" disabled={discussionOpening || bulkSelectedPaperIds.length > 100} onClick={async () => {
+                setDiscussionOpening(true);
+                try { await onDiscussPapers?.(bulkSelectedPaperIds.map(id => ({id, title: papers.find(p => p.id === id)?.title ?? null}))); }
+                finally { setDiscussionOpening(false); }
+              }}>{discussionOpening ? '正在打开讨论…' : bulkSelectedPaperIds.length > 100 ? '基于所选论文讨论（最多 100 篇）' : '基于所选论文讨论'}</button>
               <button className="btn-primary min-h-9 py-1 text-xs" disabled={bulkSelectedPaperIds.length>5} onClick={()=>onNavigate?.({page:'research',params:{papers:bulkSelectedPaperIds.join(',')}})}>围绕问题比较{bulkSelectedPaperIds.length>5?'（最多 5 篇）':''}</button>
               <select
                 className="input min-h-9 w-28 py-1 text-xs"

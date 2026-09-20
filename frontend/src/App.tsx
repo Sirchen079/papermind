@@ -159,6 +159,21 @@ export default function App() {
     const saved=readConversationContext(localStore(),libraryScope(),workspace.id,id);
     storeChatContext(id,restoreConversationContext(saved,context));
   }, [workspace.id,storeChatContext]);
+  const discussPapers = useCallback(async (papers: {id: number; title: string | null}[]) => {
+    if (!papers.length || chatOpenPending.current) return;
+    chatOpenPending.current = true;
+    setChatOpenError(null);
+    const revision = navigationRevision.current;
+    try {
+      const conversation = await api.createPaperDiscussion(papers.map(p => p.id));
+      if (navigationRevision.current !== revision) return;
+      storeChatContext(conversation.id, {paperId: papers[0].id, paperTitle: papers[0].title, selectedText: null, papers});
+      setActiveConv(conversation.id);
+      navigate('chat');
+    } catch (error: any) {
+      if (navigationRevision.current === revision) setChatOpenError(error?.message ?? '无法创建论文讨论，请重试。');
+    } finally { chatOpenPending.current = false; }
+  }, [api, navigate, storeChatContext]);
   const clearChatPaperContext = useCallback(async () => {
     if (activeConv == null) return;
     try {
@@ -277,6 +292,7 @@ export default function App() {
                 deepParams={location.params}
                 onDeepParamsChange={updateLibraryParams}
                 onAskAboutPaper={askAboutPaper}
+                onDiscussPapers={discussPapers}
               />
             )}
             {page === "suggestions" && <Suggestions onOpenPaper={openPaper} />}

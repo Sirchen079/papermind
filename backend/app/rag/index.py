@@ -155,7 +155,7 @@ def reindex_library(session: Session) -> ReindexResult:
 
 
 def retrieve(
-    session: Session, query: str, k: int = RETRIEVE_K
+    session: Session, query: str, k: int = RETRIEVE_K, paper_ids: list[int] | None = None
 ) -> list[tuple[PaperChunk, float]]:
     """Return the ``k`` chunks most relevant to ``query`` by cosine.
 
@@ -170,14 +170,17 @@ def retrieve(
     if ctx is None:
         return []
     client, provider, model_id = ctx
-    rows = session.exec(
+    statement = (
         select(PaperChunk)
         .join(Paper, Paper.id == PaperChunk.paper_id)
         .where(
             PaperChunk.embedding_model == model_id,
             Paper.is_deleted == False,  # noqa: E712
         )
-    ).all()
+    )
+    if paper_ids is not None:
+        statement = statement.where(PaperChunk.paper_id.in_(paper_ids))
+    rows = session.exec(statement).all()
     if not rows:
         return []
     try:

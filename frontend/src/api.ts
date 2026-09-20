@@ -41,6 +41,7 @@ export interface Clarification {
 export interface ChatAttachment { name: string; kind: "image" | "text"; text: string; data_url: string; size: number; }
 export interface ChatModel { id: number; name: string; provider: string; context_window: number | null; reasoning_effort: string | null; supports_images: boolean | null; is_default: boolean; }
 export interface ChatMessageExtra {
+  paper_ids?: number[];
   review_evidence?: boolean;
   attachments?: ChatAttachment[];
   model_config_id?: number;
@@ -983,6 +984,7 @@ return {
   },
   listConversations: () => req<{ id: number; title: string }[]>("/chat/conversations"),
   createConversation: (paperId?: number) => req<{ id: number; title: string }>("/chat/conversations", { method: "POST", body: JSON.stringify({ paper_id: paperId }) }),
+  createPaperDiscussion: (paperIds: number[]) => req<{id: number; title: string}>("/chat/conversations", {method: "POST", body: JSON.stringify({paper_ids: paperIds})}),
   clearConversationPaper: (id: number) => req(`/chat/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ paper_id: null }) }),
   renameConversation: (id: number, title: string) =>
     req<{ id: number; title: string }>(`/chat/conversations/${id}`, {
@@ -997,6 +999,7 @@ return {
       messages: { tools?: { name: string; args: Record<string, unknown>; result: string; ok: boolean }[]; attachments?: ChatAttachment[]; id: number; role: string; content: string; model: string; sources: Source[]; topic_sources?: TopicSource[]; delivery_status?: string; error_message?: string | null; retryable?: boolean; continuable?: boolean; clarification?: Clarification | null }[];
       paper_id: number | null;
       paper_title: string | null;
+      papers: {id: number; title: string | null; unavailable?: boolean}[];
     }>(`/chat/conversations/${id}`),
   sendMessage: (id: number, content: string, extra?: ChatMessageExtra) =>
     req<{ role: string; content: string; model: string; tokens: number; sources: Source[]; topic_sources: TopicSource[]; clarification?: Clarification }>(
