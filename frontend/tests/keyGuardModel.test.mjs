@@ -4,7 +4,17 @@ import { test } from "node:test";
 import {
   shouldCloseOnEscape,
   shouldSubmitOnEnter,
+  chatEnterAction,
 } from "../.tmp_graph_test_dist/keyGuardModel.js";
+
+test('conversation Enter sends, Ctrl/Cmd/Shift+Enter inserts a newline, IME never sends', () => {
+  const event = {key: 'Enter', ctrlKey: false, metaKey: false, shiftKey: false, isComposing: false};
+  assert.equal(chatEnterAction(event), 'send');
+  for (const key of ['ctrlKey', 'metaKey', 'shiftKey']) assert.equal(chatEnterAction({...event, [key]: true}), 'newline');
+  assert.equal(chatEnterAction({...event, isComposing: true}), null);
+  assert.equal(chatEnterAction({...event, keyCode: 229}), null);
+  assert.equal(chatEnterAction({...event, key: 'a'}), null);
+});
 
 test("chat input submits on Enter without Shift and outside IME composition", () => {
   assert.equal(shouldSubmitOnEnter("Enter", false, false), true);
