@@ -51,7 +51,7 @@ def test_agent_emits_only_source_checked_revision(monkeypatch):
     client=SimpleNamespace(
         complete_with_tools=lambda *a,**k:SimpleNamespace(content='没有做外部验证',tool_calls=[],total_tokens=2),
         complete=lambda *a,**k:SimpleNamespace(content=json.dumps({'edits':[EDIT]},ensure_ascii=False),total_tokens=3))
-    events=list(run_agent(client,None,'m',[{'role':'user','content':'是否验证'}],None,evidence_context=SOURCE[0]['text']))
+    events=list(run_agent(client,None,'m',[{'role':'user','content':'是否验证'}],None,review_evidence=True,evidence_context=SOURCE[0]['text']))
     # Progress is observable, but only reviewed answer text may be emitted.
     assert any(kind == 'status' for kind, _ in events)
     answer_events = [(kind, body) for kind, body in events if kind != 'status']
@@ -87,7 +87,7 @@ def test_partial_read_gets_one_completion_checkpoint_before_publication(monkeypa
         parameters={'properties':{'paper_id':{}}},run=lambda *a,**k:'{"text":"training time 12 hours","truncated":true}'))
     monkeypatch.setattr('app.agent.loop.tool_sources',lambda *a:[])
     client=SimpleNamespace(complete_with_tools=generate,complete=lambda *a,**k:SimpleNamespace(content='{"edits":[]}',total_tokens=1))
-    events=list(run_agent(client,None,'m',[{'role':'user','content':'核对训练时间'}],None))
+    events=list(run_agent(client,None,'m',[{'role':'user','content':'核对训练时间'}],None,review_evidence=True))
     assert events[-1][0]=='done' and '12 小时' in events[-1][1]['content']
     assert len([m for m in calls[-1] if '回答前检索完整性检查' in m.get('content','')])==1
     assert not any('当前片段缺少' in body.get('content','') for kind,body in events if kind in ('delta','done'))
@@ -119,7 +119,7 @@ def test_chat_review_failure_preserves_answer_with_explicit_notice(monkeypatch, 
         return SimpleNamespace(content=raw, total_tokens=2)
     client = SimpleNamespace(complete_with_tools=lambda *a, **k: SimpleNamespace(content=draft, tool_calls=[], total_tokens=3), complete=review)
     events = list(run_agent(client, None, 'm', [{'role': 'user', 'content': 'q'}], None,
-                            evidence_context=SOURCE[0]['text'], context_window=1000 if failure == 'capacity' else None))
+                            review_evidence=True, evidence_context=SOURCE[0]['text'], context_window=1000 if failure == 'capacity' else None))
     assert events[-1][0] == 'done'
     assert not any(kind == 'error' for kind, _ in events)
     result = events[-1][1]
@@ -140,6 +140,32 @@ def test_stop_during_failed_review_still_stops_answer(monkeypatch):
         raise TimeoutError('stopped')
     monkeypatch.setattr('app.agent.loop.review_answer', review)
     client = SimpleNamespace(complete_with_tools=lambda *a, **k: SimpleNamespace(content='draft', tool_calls=[], total_tokens=1))
-    events = list(run_agent(client, None, 'm', [{'role': 'user', 'content': 'q'}], None, cancelled=stop))
+    events = list(run_agent(client, None, 'm', [{'role': 'user', 'content': 'q'}], None, cancelled=stop, review_evidence=True, evidence_context='source'))
     assert events[-1][0] == 'error'
     assert not any(kind in {'delta', 'done'} for kind, _ in events)
+
+
+def test_normal_chat_with_evidence_does_not_call_extra_reviewer(monkeypatch):
+    from app.agent.loop import run_agent
+    def forbidden(*a, **k):
+        raise AssertionError('Normal chat must not enter independent review')
+    monkeypatch.setattr('app.agent.loop.review_answer', forbidden)
+    client = SimpleNamespace(complete_with_tools=lambda *a, **k: SimpleNamespace(content='可以先做这个假设，再设计实验验证。', tool_calls=[], total_tokens=1))
+    events = list(run_agent(client, None, 'm', [{'role':'user','content':'讨论 idea'}], None, evidence_context='已有文献材料'))
+    assert events[-1][0] == 'done'
+    assert events[-1][1]['evidence_review'] is None
+    assert events[-1][1]['content'] == '可以先做这个假设，再设计实验验证。'
+    assert not any(kind == 'status' and body.get('phase') == 'review' for kind, body in events)
+
+
+def test_normal_partial_read_does_not_force_another_model_round(monkeypatch):
+    from app.agent.loop import run_agent
+    from app.providers.client import ToolTurn
+    call = SimpleNamespace(id='read', name='get_paper_full_text', arguments={})
+    turns = iter([ToolTurn('', [call], 0, 1, 1), ToolTurn('基于这段材料可以尝试以下思路。', [], 0, 1, 1)])
+    monkeypatch.setattr('app.agent.loop.get_tool', lambda name: SimpleNamespace(parameters={}, run=lambda *a, **k:'{"text":"excerpt","truncated":true}'))
+    monkeypatch.setattr('app.agent.loop.tool_sources', lambda *a: [])
+    client = SimpleNamespace(complete_with_tools=lambda *a, **k: next(turns))
+    events = list(run_agent(client, None, 'm', [{'role':'user','content':'从这段启发几个 idea'}], None))
+    assert events[-1][0] == 'done'
+    assert events[-1][1]['content'] == '基于这段材料可以尝试以下思路。'

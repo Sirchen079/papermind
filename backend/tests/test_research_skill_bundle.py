@@ -5,12 +5,13 @@ import pytest
 from app.skills.research_evidence import research_skill_prompt
 
 
-def test_all_research_entrypoints_load_both_skills_and_references():
+def test_structured_research_uses_skills_but_normal_chat_stays_lightweight():
     from app.api.chat_api import CHAT_SYSTEM_PROMPT
     from app.research.service import SYSTEM_PROMPT
     from app.wiki.service import SYSTEM
     bundle = research_skill_prompt()
-    for prompt in (CHAT_SYSTEM_PROMPT, SYSTEM_PROMPT, SYSTEM):
+    assert bundle not in CHAT_SYSTEM_PROMPT
+    for prompt in (SYSTEM_PROMPT, SYSTEM):
         assert bundle in prompt
         assert "next_start_char" in prompt
         assert "开发集与测试集" in prompt

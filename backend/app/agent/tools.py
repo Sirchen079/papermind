@@ -377,8 +377,15 @@ TOOLS: list[Tool] = [
     Tool(
         name="ask_user",
         description=(
-            "Ask the user 1–3 concise questions when missing requirements or preferences materially "
-            "change the answer or the next action. Provide up to 4 suggested answers per question if useful; "
+            "Proactively ask the user 1–3 concise questions when their research goal, intended use, scope, "
+            "or key constraints are unclear and would materially change the analysis or search direction. "
+            "For substantive research or feasibility discussions, first understand relevant researcher background: "
+            "role and research stage, skills, prior work, research direction, available data/equipment/compute, "
+            "time and collaborators. Ask about important gaps before tailoring recommendations; use known "
+            "project and conversation context and never repeat an already answered background questionnaire. "
+            "Clarify before aimless searching. Do not require every detail before helping; use reasonable "
+            "defaults for minor preferences and explore directly when the user asks for initial ideas. "
+            "Provide up to 4 suggested answers per question if useful; "
             "the user can always write their own answer or skip. Do not ask about information already "
             "provided or available in the library. Call this tool alone, then wait for the real user response; "
             "never invent an answer. Avoid unnecessary confirmation and repeated questions."

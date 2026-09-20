@@ -223,8 +223,9 @@ def test_review_outage_saves_readable_answer_and_does_not_request_retry(client, 
     def unavailable(*a, **k):
         raise ValueError('Expecting value: line 1 column 1 (char 0)')
     monkeypatch.setattr('app.agent.loop.review_answer', unavailable)
+    monkeypatch.setattr('app.api.chat_api._sources_from_hits', lambda hits: [{'paper_id': 123, 'title': 'test source'}])
     suffix = 'messages/stream' if streaming else 'messages'
-    result = client.post(f'/api/chat/conversations/{cid}/{suffix}', json={'content': '解释一下', 'model_config_id': vision})
+    result = client.post(f'/api/chat/conversations/{cid}/{suffix}', json={'content': '解释一下', 'model_config_id': vision, 'review_evidence': True, 'selected_text': 'test source'})
     assert result.status_code == 200
     if streaming:
         assert 'event: done' in result.text and 'event: error' not in result.text
@@ -233,3 +234,29 @@ def test_review_outage_saves_readable_answer_and_does_not_request_retry(client, 
     assert history[-1]['role'] == 'assistant'
     assert '自动证据复核未完成' in history[-1]['content']
     assert history[-1]['content'].endswith('可阅读的回答。[S1]')
+
+@pytest.mark.parametrize('review', [False, True])
+@pytest.mark.parametrize('streaming', [False, True])
+def test_extra_review_is_explicit_and_persisted(client, monkeypatch, review, streaming):
+    vision, _ = seed()
+    cid = client.post('/api/chat/conversations').json()['id']
+    calls, prompts = [], []
+    def generate(self, provider, model, messages, *a, **k):
+        prompts.append(messages)
+        return ToolTurn('idea 分析', [], 1, 1, 2)
+    monkeypatch.setattr('app.providers.client.ProviderClient.complete_with_tools', generate)
+    monkeypatch.setattr('app.api.chat_api._sources_from_hits', lambda hits: [{'paper_id': 123, 'title': 'test source'}])
+    def check(*a, **k):
+        calls.append(1)
+        return a[4], 1, {'status':'complete'}
+    monkeypatch.setattr('app.agent.loop.review_answer', check)
+    suffix = 'messages/stream' if streaming else 'messages'
+    result = client.post(f'/api/chat/conversations/{cid}/{suffix}', json={'content':'讨论 idea', 'model_config_id':vision, 'review_evidence':review})
+    assert result.status_code == 200
+    assert len(calls) == int(review)
+    assert ('内置科研技能' in prompts[0][0]['content']) == review
+    from app.models import Message
+    from sqlmodel import select
+    with Session(get_engine()) as session:
+        user = session.exec(select(Message).where(Message.conversation_id == cid, Message.role == 'user')).first()
+        assert json.loads(user.request_json)['review_evidence'] == review

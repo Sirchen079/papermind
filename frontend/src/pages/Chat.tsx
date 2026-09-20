@@ -111,6 +111,7 @@ export default function Chat({
   const input=composerDraft.content;
   const setInput=(content:string)=>setComposerDraft({content});
   const [manualSkills, setManualSkills] = useState<{id: number; name: string}[]>([]);
+  const [reviewEvidence, setReviewEvidence] = useState(false);
   const [manualSkillId, setManualSkillId] = useState("");
   useEffect(() => { let alive = true; api.listSkills().then(rows => { if (alive) setManualSkills(rows.filter(s => s.enabled && s.trigger === "manual" && ["instruction", "persona"].includes(s.type))); }).catch(() => {}); return () => { alive = false; }; }, []);
   const [busy, setBusy] = useState(false);
@@ -259,7 +260,7 @@ export default function Chat({
     };
   }, [activeConv, loadRevision, onContextLoaded]);
 
-  useEffect(() => { setManualSkillId(""); }, [activeConv]);
+  useEffect(() => { setManualSkillId(""); setReviewEvidence(false); }, [draftKey]);
 
   useEffect(() => {
     if (followRef.current) endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -405,7 +406,7 @@ export default function Chat({
     if (attachments.some(a => a.kind === 'image') && selectedModel?.supports_images === false) { toast.error("请先选择支持图片的模型"); return; }
     if (paperContext && selectedTextOverLimit(paperContext.selectedText)) { toast.error("选中文本过长，请缩短后发送"); return; }
     const item: QueuedTurn = { id: crypto.randomUUID(), state: 'waiting', text: input.trim() || "请分析所附材料。", extra: {
-      ...chatMessagePayload(input, paperContext), attachments, model_config_id: selectedModel?.id,
+      ...chatMessagePayload(input, paperContext), attachments, model_config_id: selectedModel?.id, review_evidence: reviewEvidence,
       skill_ids: manualSkillId ? [Number(manualSkillId)] : [],
     } };
     try {
@@ -434,7 +435,7 @@ export default function Chat({
     abortRef.current = ac;
     setBusy(true); setStopping(false); setContextUsage(null); followRef.current = true;
     let serverId = retry?.serverId;
-    const extra: ChatMessageExtra = retry?.extra ?? queued?.extra ?? { attachments: turnAttachments, model_config_id: turnModelId ? Number(turnModelId) : undefined, ...(answer ? { clarification_response: answer } :
+    const extra: ChatMessageExtra = retry?.extra ?? queued?.extra ?? { review_evidence: reviewEvidence, attachments: turnAttachments, model_config_id: turnModelId ? Number(turnModelId) : undefined, ...(answer ? { clarification_response: answer } :
       { ...chatMessagePayload(text, paperContext), skill_ids: manualSkillId ? [Number(manualSkillId)] : [] }) };
     let placeholderId: number | null = null;
     let userPlaceholderId: number | null = null;
@@ -681,7 +682,7 @@ export default function Chat({
             <div className="chat-messages flex-1 space-y-6 overflow-auto p-4" onScroll={e => { const el = e.currentTarget; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100; }}>
               {loading && <p role="status" className="text-sm text-muted">正在加载对话…</p>}
               {loadError && <div role="alert" className="text-sm">无法加载对话：{loadError}<button className="btn-ghost ml-2" onClick={() => setLoadRevision(n => n + 1)}>重试</button></div>}
-              {messages.length===0&&<div className="chat-starters"><ResearchMotif icon={<MessageSquare size={24}/>}/><h2>想从哪篇论文聊起？</h2><p className="text-sm text-muted">写下问题，或从一个方向开始。</p><div className="flex flex-wrap justify-center gap-2">{['解释论文中的一个概念','比较几篇论文的方法','根据原文总结局限'].map(prompt=><button key={prompt} className="btn-ghost text-xs" onClick={()=>{setInput(prompt);taRef.current?.focus();}}>{prompt}</button>)}</div></div>}
+              {messages.length===0&&<div className="chat-starters"><ResearchMotif icon={<MessageSquare size={24}/>}/><h2>想讨论什么研究问题？</h2><p className="text-sm text-muted">写下问题，或从一个方向开始。</p><div className="flex flex-wrap justify-center gap-2">{['一起梳理我的研究背景与目标','讨论一个研究 idea 的可行性','比较几篇论文的方法'].map(prompt=><button key={prompt} className="btn-ghost text-xs" onClick={()=>{setInput(prompt);taRef.current?.focus();}}>{prompt}</button>)}</div></div>}
               {messages.map((m) => (
                 <div
                   key={m.id}
@@ -844,6 +845,9 @@ export default function Chat({
               </select></label>
               {selectedModel && <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => { setContextDraft(selectedModel.context_window?.toString() || ''); setEffortDraft(selectedModel.reasoning_effort || ''); setImageDraft(selectedModel.supports_images == null ? 'auto' : String(selectedModel.supports_images)); setConfigOpen(!configOpen); }}>配置模型</button>}
               {selectedModel && <span>上下文 {selectedModel.context_window ? `${Math.round(selectedModel.context_window / 1000)}k` : "自动"} · 思考 {selectedModel.reasoning_effort || "自动"} · {selectedModel.supports_images === true ? "支持图片" : selectedModel.supports_images === false ? "仅文本" : "图片能力未声明"}</span>}
+              <label className="flex items-center gap-1" title="开启后额外调用模型核对材料，耗时更长；可随时关闭，普通讨论无需开启">
+                <input type="checkbox" checked={reviewEvidence} onChange={e => setReviewEvidence(e.target.checked)} aria-label="额外证据复核" />额外证据复核
+              </label>
               {contextUsage && <span title="上次请求的服务端消息估算，含系统提示、材料和工具结果；不含工具定义和输出预留，图片按固定值估算，并非服务商精确用量">上次请求约 {contextUsage.after.toLocaleString()} / {contextUsage.window.toLocaleString()} tokens</span>}
               {contextUsage?.compacted && <span role="status">较早消息已{contextUsage.summarized ? '压缩为摘要' : '移出本次上下文'}，完整历史仍保留</span>}
             </div>
@@ -868,6 +872,7 @@ export default function Chat({
                 {item.state === 'waiting' && <button className="btn-ghost" disabled={!!input.trim() || !!attachments.length || uploading} onClick={() => {
                   setInput(item.text);
                   setModelId(String(item.extra.model_config_id ?? ''));
+                  setReviewEvidence(!!item.extra.review_evidence);
                   setManualSkillId(String(item.extra.skill_ids?.[0] ?? ''));
                   onContextLoaded(activeConv!, item.extra.paper_id == null ? null : {paperId: item.extra.paper_id, paperTitle: null, selectedText: item.extra.selected_text ?? null});
                   materials.update(previous => ({ attachments: item.extra.attachments ?? [], queue: finishQueued(previous.queue, item.id) }));

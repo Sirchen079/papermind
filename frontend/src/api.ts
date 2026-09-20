@@ -41,6 +41,7 @@ export interface Clarification {
 export interface ChatAttachment { name: string; kind: "image" | "text"; text: string; data_url: string; size: number; }
 export interface ChatModel { id: number; name: string; provider: string; context_window: number | null; reasoning_effort: string | null; supports_images: boolean | null; is_default: boolean; }
 export interface ChatMessageExtra {
+  review_evidence?: boolean;
   attachments?: ChatAttachment[];
   model_config_id?: number;
   paper_id?: number;
