@@ -38,6 +38,7 @@ def test_copy_pdf_and_optional_notes_is_independent_and_has_provenance(client):
     assert response.status_code==201,response.text
     copied_id=response.json()['paper_id']
     assert client.post(path,json=body).json()['reused'] is True
+
     with bind_workspace(target),Session(get_engine()) as session:
         copied=session.get(Paper,copied_id)
         target_file=target.data_dir/'pdfs'/copied.pdf_path
@@ -105,3 +106,30 @@ def test_invalid_target_missing_pdf_and_write_failure_leave_no_half_copy(client,
         assert session.exec(select(WorkspaceCopy)).all()==[]
     assert list((target.data_dir/'pdfs').glob('*.pdf'))==[]
     assert client.post(path,json=body).status_code==201
+
+
+def test_copy_keeps_published_markdown_and_images_without_model_ids(client):
+    import hashlib
+    from app.models import PaperDocument
+    from app.reading.documents import artifact_dir
+    origin, target, pdf = setup(client)
+    sha = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    markdown = '# Converted\n\n<!-- page:1 -->\nTable text\n[Original](page-1.png)'
+    root = artifact_dir(origin.data_dir / 'pdfs', 1, sha)
+    root.mkdir(parents=True)
+    (root / 'page-1.png').write_bytes(b'image fixture')
+    with bind_workspace(origin), Session(get_engine()) as session:
+        session.add(PaperDocument(paper_id=1, source_hash=sha, published_hash=sha, markdown=markdown,
+            status='ready', model_config_id=99, model_name='Origin vision', total_pages=1,
+            pages_json='[{"page":1,"method":"ocr","markdown":"Table text"}]'))
+        paper = session.get(Paper, 1); paper.full_text = markdown
+        session.add(paper); session.commit()
+    response = client.post(f'/api/w/{origin.id}/papers/1/copy-to-workspace', json={'target_workspace':target.id,'request_id':uuid4().hex})
+    assert response.status_code == 201
+    pid = response.json()['paper_id']
+    with bind_workspace(target), Session(get_engine()) as session:
+        doc = session.get(PaperDocument, pid)
+        assert doc.markdown == markdown and doc.model_config_id is None
+        assert session.get(Paper, pid).full_text == markdown
+        copied = artifact_dir(target.data_dir / 'pdfs', pid, sha) / 'page-1.png'
+        assert copied.read_bytes() == b'image fixture' and copied != root / 'page-1.png'

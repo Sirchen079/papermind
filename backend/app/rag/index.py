@@ -60,7 +60,16 @@ def _chunk_texts(paper: Paper) -> list[str]:
     if meta:
         texts.append(meta)
     if paper.full_text:
-        texts.extend(chunk_text(paper.full_text, target=CHUNK_TARGET))
+        if '<!-- page:' in paper.full_text:
+            import re
+            pages = re.split(r'<!-- page:(\d+) -->', paper.full_text)
+            for i in range(1, len(pages), 2):
+                # Preserve Markdown line breaks (especially tables) and page provenance.
+                page_text = pages[i + 1].strip()
+                for start in range(0, len(page_text), CHUNK_TARGET):
+                    texts.append(f'[第 {pages[i]} 页]\n' + page_text[start:start + CHUNK_TARGET])
+        else:
+            texts.extend(chunk_text(paper.full_text, target=CHUNK_TARGET))
     return texts
 
 
@@ -164,8 +173,33 @@ def retrieve(
     model is configured, the query is blank, or no matching chunks exist.
     """
     query = (query or "").strip()
-    if not query:
+    if not query or k <= 0:
         return []
+    from app.providers.purposes import purpose_model, rerank_mode
+    mode = rerank_mode(session)
+    try:
+        reranker = purpose_model(session, 'rerank_llm' if mode == 'llm' else 'rerank') if mode != 'off' else None
+    except Exception:
+        reranker = None
+    limit = max(k, min(30 if mode == 'llm' else 100, max(30, k * 4))) if reranker else k
+
+    def finish(recalled):
+        if reranker and recalled:
+            try:
+                rclient, rprovider, rmodel = reranker
+                if mode == 'llm':
+                    from app.models import Model
+                    from app.rag.llm_rerank import rank
+                    row = session.exec(select(Model).where(Model.provider_id == rprovider.id, Model.model_id == rmodel)).first()
+                    ranks = rank(reranker, query, [r[0].text for r in recalled], k, row.context_window if row else None)
+                else:
+                    ranks = rclient.rerank(rprovider, rmodel, query, [r[0].text for r in recalled], k)
+                return [(recalled[idx][0], score) for idx, score in ranks]
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning('Reranking unavailable; using original recall order')
+        return recalled[:k]
+
     ctx = pick_llm(session, "embedding")
     if ctx is None:
         return []
@@ -188,4 +222,4 @@ def retrieve(
     except Exception:  # noqa: BLE001 — retrieval is best-effort
         return []
     candidates = [(row, list(deserialize(row.embedding))) for row in rows]
-    return top_k(qvec, candidates, k)
+    return finish(top_k(qvec, candidates, limit))

@@ -5,7 +5,7 @@ import 'katex/dist/katex.min.css';
 import './markdown.css';
 
 /** One renderer for both sides of the conversation, including streamed replies. */
-export const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+export const MarkdownContent = memo(function MarkdownContent({ content, images = true }: { content: string; images?: boolean }) {
   const markdown = useMemo(() => normalizeMathDelimiters(content), [content]);
   return <div className="prose-chat markdown-content">
     <ReactMarkdown
@@ -13,6 +13,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content }: { cont
       rehypePlugins={markdownRehypePlugins}
       skipHtml
       components={{
+        img: ({ node: _node, ...props }) => images ? <img {...props} /> : null,
         a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
         table: ({ node: _node, ...props }) => <div className="markdown-table-scroll" tabIndex={0} role="region" aria-label="表格，可横向滚动"><table {...props} /></div>,
       }}

@@ -1,0 +1,17 @@
+/* TextLayer is used without PDFViewer, so supply its page-level variables. */
+.pdf-reader-page {
+  --scale-round-x: 1px;
+  --scale-round-y: 1px;
+}
+
+/* Keep the canvas glyphs visible: painting text again produces fuzzy doubles.
+   A stable, translucent blue also avoids the OS accent's very dark selection. */
+.pdf-reader-page .textLayer ::selection {
+  background: rgb(67 126 183 / 0.24);
+  color: transparent;
+  text-shadow: none;
+}
+
+.pdf-reader-page .textLayer br::selection {
+  background: transparent;
+}

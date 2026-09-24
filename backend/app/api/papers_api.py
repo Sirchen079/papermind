@@ -60,9 +60,18 @@ def translate_selection(pid: int, body: TranslationIn, session: Session = Depend
     paper = session.get(Paper, pid)
     if not paper or paper.is_deleted:
         raise HTTPException(404, "paper not found")
-    ctx = pick_chat_model(session, body.model_config_id)
+    config_id = body.model_config_id
+    if config_id is None:
+        from app.models import Setting
+        preference = session.get(Setting, "translation_model_config_id")
+        if preference and preference.value:
+            try:
+                config_id = int(preference.value)
+            except ValueError as exc:
+                raise HTTPException(422, "翻译模型配置无效，请在设置中重新选择。") from exc
+    ctx = pick_chat_model(session, config_id)
     if ctx is None:
-        raise HTTPException(422, "请先在设置中配置对话模型。")
+        raise HTTPException(422, "请先在设置中配置翻译模型或默认文本 AI。")
     client, provider, model = ctx
     try:
         result = client.complete(provider, model, [

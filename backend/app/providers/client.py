@@ -187,10 +187,10 @@ class ProviderClient:
             kwargs["api_base"] = ensure_http_url(route.api_base)  # SSRF guard
 
         # No unbounded provider retries inside a bounded research step.
-        if request_kind == "research":
-            kwargs["timeout"] = 90
+        if request_kind in {"research", "rerank_llm"}:
+            kwargs["timeout"] = 45 if request_kind == 'rerank_llm' else 90
             kwargs["num_retries"] = 0
-        elif request_kind in {"evidence_review", "wiki_update"}:
+        elif request_kind in {"evidence_review", "wiki_update", "pdf_ocr"}:
             # LiteLLM's inherited default can be 6000 seconds. Bound a
             # foreground step and let the application expose a retryable error.
             kwargs["timeout"] = 300 if request_kind == "evidence_review" else 180
@@ -216,9 +216,44 @@ class ProviderClient:
         prompt_t, completion_t, total_t = token_usage(usage)
 
         self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t, usage=usage)
+        if request_kind in {'pdf_ocr', 'rerank_llm'}:
+            incomplete = getattr(resp, 'status', None) == 'incomplete' if route.call == 'responses' else getattr(resp.choices[0], 'finish_reason', None) == 'length'
+            if incomplete:
+                raise ValueError('OCR output truncated' if request_kind == 'pdf_ocr' else 'Reranking output truncated')
         if route.call == "responses" and not content.strip():
             raise EmptyResponseError("Responses 未返回最终文本；可能达到输出上限，不能当作任务完成")
         return CompletionResult(content, prompt_t, completion_t, total_t, *cache_usage(usage))
+
+    def rerank(self, provider, model_id, query, documents, top_n):
+        """SiliconFlow / Jina-compatible rerank protocol, separate from chat."""
+        import httpx
+        url = ensure_http_url(provider.base_url.rstrip('/') + '/rerank')
+        headers = json.loads(provider.extra_headers_json or '{}')
+        key = self._api_key(provider)
+        if key:
+            headers['Authorization'] = f'Bearer {key}'
+        response = httpx.post(url, headers=headers, json={
+            'model': model_id, 'query': query, 'documents': documents,
+            'top_n': min(top_n, len(documents)), 'return_documents': False,
+        }, timeout=20, follow_redirects=False)
+        response.raise_for_status()
+        data = response.json()
+        ranked, seen = [], set()
+        for row in data.get('results', []):
+            idx, score = row.get('index'), row.get('relevance_score')
+            if type(idx) is not int or not 0 <= idx < len(documents) or idx in seen:
+                raise ValueError('Invalid rerank index')
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+                raise ValueError('Invalid rerank score')
+            seen.add(idx)
+            ranked.append((idx, float(score)))
+        if len(ranked) < min(top_n, len(documents)):
+            raise ValueError('Incomplete rerank response')
+        usage = data.get('usage')
+        if usage:
+            p, c, total = token_usage(usage)
+            self._record_usage(provider, model_id, 'rerank', None, p, c, total, usage=usage)
+        return sorted(ranked, key=lambda item: item[1], reverse=True)[:top_n]
 
     def complete_with_tools(
         self,

@@ -53,8 +53,9 @@ def pick_chat_model(session, config_id):
     from app.providers.client import ProviderClient
     from app.providers.shared import resolve
     model = session.get(Model, config_id)
+    from app.providers.purposes import is_reranker
     provider = session.get(Provider, model.provider_id) if model else None
-    if not model or model.role_default == 'embedding' or not provider or provider.is_deleted or not provider.enabled:
+    if not model or model.role_default == 'embedding' or is_reranker(session, model) or not provider or provider.is_deleted or not provider.enabled:
         raise HTTPException(422, '所选模型不可用，请重新选择模型')
     try:
         actual, crypto = resolve(provider)
@@ -89,11 +90,12 @@ async def upload_attachment(file: UploadFile = File(...)):
 @router.get('/chat/models')
 def chat_models(session: Session = Depends(get_session)):
     from app.models import Model
+    from app.providers.purposes import is_reranker
     default = pick_llm(session, 'chat')
     rows = []
     for model, provider in session.exec(select(Model, Provider).join(Provider, Model.provider_id == Provider.id)
             .where(Provider.enabled == True, Provider.is_deleted == False)).all():
-        if model.role_default == 'embedding':
+        if model.role_default == 'embedding' or is_reranker(session, model):
             continue
         rows.append({'id': model.id, 'name': model.display_name or model.model_id,
                      'provider': provider.name, 'context_window': _context_window(session, provider, model.model_id),

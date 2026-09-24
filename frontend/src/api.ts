@@ -40,6 +40,11 @@ export interface Clarification {
 }
 export interface ChatAttachment { name: string; kind: "image" | "text"; text: string; data_url: string; size: number; }
 export interface ChatModel { id: number; name: string; provider: string; context_window: number | null; reasoning_effort: string | null; supports_images: boolean | null; is_default: boolean; }
+export interface DocumentModel { id: number; name: string; provider: string; supports_images: boolean | null; }
+export interface DocumentStatus {
+  status: string; mode: 'auto' | 'ocr'; total_pages: number; completed_pages: number; ocr_pages: number;
+  has_markdown: boolean; model_name: string; error: string; index_status: string;
+}
 export interface ChatMessageExtra {
   paper_ids?: number[];
   review_evidence?: boolean;
@@ -975,7 +980,7 @@ return {
   deleteClaim: (claimId: number) => req(`/claims/${claimId}`, { method: "DELETE" }),
   // chat
     prepareReading: (id: number, retry = false) => req<{status: string; message: string}>(`/papers/${id}/prepare-reading?retry=${retry}`, {method: "POST"}),
-    translateSelection: (id: number, text: string, target: string, model_config_id?: number) => req<{text: string; model: string}>(`/papers/${id}/translate`, {method: "POST", body: JSON.stringify({text, target, model_config_id})}),
+    translateSelection: (id: number, text: string, target: string, model_config_id?: number, signal?: AbortSignal) => req<{text: string; model: string}>(`/papers/${id}/translate`, {method: "POST", body: JSON.stringify({text, target, model_config_id}), signal}),
     chatModels: () => req<ChatModel[]>("/chat/models"),
   stopChat: (id: number) => req(`/chat/conversations/${id}/stop`, { method: "POST" }),
   uploadChatAttachment: (file: File) => {
@@ -1120,6 +1125,11 @@ return {
   radarStatus: () => req<RadarStatus>("/radar/status"),
   radarRefresh: () => req<RadarRefreshResult>("/radar/refresh", { method: "POST" }),
   // settings（通用 KV 设置，如 research_interests 研究方向描述）
+  documentModels: () => req<{ ocr: DocumentModel[]; rerank: DocumentModel[]; rerank_llm: DocumentModel[] }>('/document-models'),
+  documentStatus: (id: number) => req<DocumentStatus>(`/papers/${id}/document`),
+  convertDocument: (id: number, mode: 'auto' | 'ocr', force = false) => req<DocumentStatus>(`/papers/${id}/document`, {method: 'POST', body: JSON.stringify({mode, force})}),
+  cancelDocument: (id: number) => req<DocumentStatus>(`/papers/${id}/document/cancel`, {method: 'POST'}),
+  documentMarkdown: (id: number) => req<{markdown: string}>(`/papers/${id}/document/markdown`),
   listSettings: () => req<Record<string, string | null>>("/settings"),
   putSetting: (key: string, value: string) =>
     req<{ key: string; value: string | null }>(`/settings/${key}`, {

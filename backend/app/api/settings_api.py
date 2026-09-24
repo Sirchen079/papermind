@@ -27,6 +27,26 @@ def get_setting(key: str, session: Session = Depends(get_session)) -> dict:
 
 @router.put("/settings/{key}")
 def upsert_setting(key: str, body: SettingIn, session: Session = Depends(get_session)) -> dict:
+    if key == 'rerank_mode' and body.value not in {'off', 'dedicated', 'llm'}:
+        raise HTTPException(422, '请选择关闭、专用模型或大模型重排序模式。')
+    if key in {'ocr_model_config_id', 'rerank_model_config_id', 'rerank_llm_model_config_id'} and body.value:
+        from app.providers.purposes import purpose_model
+        try:
+            model_id = int(body.value)
+        except ValueError as exc:
+            raise HTTPException(422, '请选择有效模型。') from exc
+        purpose_model(session, key.removesuffix('_model_config_id'), model_id)
+        body.value = str(model_id)
+    if key == "translation_model_config_id" and body.value:
+        from app.api.chat_api import pick_chat_model
+        try:
+            model_id = int(body.value)
+        except ValueError as exc:
+            raise HTTPException(422, "请选择有效的翻译模型。") from exc
+        if model_id <= 0:
+            raise HTTPException(422, "请选择有效的翻译模型。")
+        pick_chat_model(session, model_id)
+        body.value = str(model_id)
     row = session.get(Setting, key)
     if row is None:
         row = Setting(key=key, value=body.value)
