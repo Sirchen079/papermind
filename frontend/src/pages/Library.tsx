@@ -1106,7 +1106,7 @@ export default function Library({
     if (!selected) return false;
     try {
       const excerpt = await api.createExcerpt(selected.id, { quote, page });
-      setWorkspace((prev) => (prev ? { ...prev, excerpts: [...prev.excerpts, excerpt] } : prev));
+      setWorkspace((prev) => (prev?.state.paper_id === selected.id ? { ...prev, excerpts: [...prev.excerpts, excerpt] } : prev));
       return true;
     } catch (e: any) {
       toast.error(e.message);
@@ -1120,7 +1120,7 @@ export default function Library({
     try {
       const updated = await api.patchExcerpt(selected.id, excerptId, { note });
       setWorkspace((prev) =>
-        prev
+        prev?.state.paper_id === selected.id
           ? { ...prev, excerpts: prev.excerpts.map((item) => (item.id === excerptId ? updated : item)) }
           : prev,
       );
@@ -1136,7 +1136,7 @@ export default function Library({
     if (!selected) return false;
     try {
       const note = await api.createNote(selected.id, payload);
-      setWorkspace((prev) => (prev ? { ...prev, notes: [...prev.notes, note] } : prev));
+      setWorkspace((prev) => (prev?.state.paper_id === selected.id ? { ...prev, notes: [...prev.notes, note] } : prev));
       return true;
     } catch (e: any) {
       toast.error(e.message);
@@ -3078,6 +3078,7 @@ export default function Library({
 
       {selected && readerOpen && (
         <PdfReader
+          key={selected.id}
           paperId={selected.id}
           title={selected.title}
           onSaveExcerpt={saveReaderExcerpt}
@@ -3099,7 +3100,7 @@ export default function Library({
           onOpenPaper={async id => {
             try {
               const [paper, reading] = await Promise.all([api.getPaper(id), api.getReadingWorkspace(id)]);
-              closeReader(); setSelected(paper); setWorkspace(reading);
+              await closeReader(); setSelected(paper); setWorkspace(reading);
               setMetadataDraft(metadataDraftFromPaper(paper));
             } catch (e: any) { toast.error(e.message); }
           }}

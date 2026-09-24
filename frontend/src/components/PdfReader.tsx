@@ -8,18 +8,21 @@
  * - 布局：全屏覆盖层，主区域滚动阅读；右侧栏展示并就地编辑该论文的
  *   笔记与摘录（备注可改、可直接新建笔记），划选可存摘录或「问 AI」。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 // 官方 textLayer 样式（划选高亮、透明文本 span 的定位都由它定义）。
 import "pdfjs-dist/web/pdf_viewer.css";
+import "./PdfReader.css";
 import { X } from "../icons";
 import { useToast } from "./ui/Toast";
 import { useConfirm } from "./ui/ConfirmDialog";
 import type { PaperExcerpt, PaperNote } from "../api";
 import { useApi, useWorkspace } from '../workspaceContext';
 import { ReadingCompanion, type ReadingSelection } from './ReadingCompanion';
+import { TranslationPopover, type TranslationSelection } from './TranslationPopover';
+import { DocumentProcessingPanel } from './DocumentProcessingPanel';
 import { shouldSubmitOnEnter } from "../pages/keyGuardModel";
 import {
   READER_NOTE_KINDS,
@@ -71,6 +74,7 @@ interface SelectionAnchor {
   text: string;
   x: number;
   y: number;
+  bottom: number;
 }
 
 function clampPage(page: number, pageCount: number): number {
@@ -96,8 +100,10 @@ export default function PdfReader({
   const api = useApi();
   const [tab, setTab] = useState<'ai' | 'notes'>('ai');
   const [readingSelection, setReadingSelection] = useState<ReadingSelection | null>(null);
+  const [translationSelection, setTranslationSelection] = useState<TranslationSelection | null>(null);
   const [preparation, setPreparation] = useState({status: 'loading', message: '论文加载中…'});
   const [prepareAttempt, setPrepareAttempt] = useState(0);
+  const [processingOpen, setProcessingOpen] = useState(false);
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -115,14 +121,25 @@ export default function PdfReader({
   }, [api, paperId, prepareAttempt]);
   function useSelection(action: 'ask' | 'translate') {
     if (!selection) return;
-    setReadingSelection({text: selection.text, page: currentPage, action, nonce: Date.now()});
-    setTab('ai'); setNotesOpen(true); setSelection(null);
+    if (action === 'translate') {
+      const range = window.getSelection();
+      const rect = range?.rangeCount ? range.getRangeAt(0).getBoundingClientRect() : null;
+      setTranslationSelection({ text: selection.text, page: currentPage, nonce: Date.now(),
+        anchor: { left: rect?.left ?? selection.x, right: rect?.right ?? selection.x, top: selection.y, bottom: selection.bottom } });
+    } else {
+      setReadingSelection({text: selection.text, page: currentPage, action, nonce: Date.now()});
+      setTab('ai'); setNotesOpen(true);
+    }
+    setSelection(null);
     window.getSelection()?.removeAllRanges();
   }
   const toast = useToast();
   const confirm = useConfirm();
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [renderAttempt, setRenderAttempt] = useState(0);
   const [pageCount, setPageCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [pageInput, setPageInput] = useState("1");
@@ -142,21 +159,31 @@ export default function PdfReader({
   const hasDraft = !!noteDraft.content.trim() || !!noteDraft.tags.trim() ||
     (editingExcerptId !== null && excerptNoteDraft !== (excerpts.find(e => e.id === editingExcerptId)?.note ?? ""));
   useEffect(() => {
-    if (!hasDraft && !noteSaving && !excerptNoteSaving) return;
+    if (!hasDraft && !noteSaving && !excerptNoteSaving && !savingSelection) return;
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [hasDraft, noteSaving, excerptNoteSaving]);
+  }, [hasDraft, noteSaving, excerptNoteSaving, savingSelection]);
   async function leaveReader(action: () => void) {
-    if (noteSaving || excerptNoteSaving) { toast.error("正在保存，请稍候。"); return; }
+    if (noteSaving || excerptNoteSaving || savingSelection) { toast.error("正在保存，请稍候。"); return; }
     if (hasDraft && !await confirm({ title: "还有未保存的笔记", message: "离开会丢弃当前笔记或摘录备注草稿。可取消并先保存。", confirmText: "丢弃并离开", variant: "danger" })) return;
     action();
   }
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || document.querySelector('[role="alertdialog"]')) return;
+      if (processingOpen) return;
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented || document.querySelector('[role="alertdialog"]')) return;
+      // Editors and IME candidates own Escape while the user is typing.
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (translationSelection) { setTranslationSelection(null); return; }
+      const activeSelection = window.getSelection();
+      if (activeSelection && !activeSelection.isCollapsed && textLayerRef.current?.contains(activeSelection.anchorNode)) {
+        activeSelection.removeAllRanges();
+        setSelection(null);
+        return;
+      }
       void leaveReader(onClose);
     };
     window.addEventListener("keydown", onEscape, true);
@@ -168,8 +195,15 @@ export default function PdfReader({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const selectionToolbarRef = useRef<HTMLDivElement | null>(null);
   const renderTaskRef = useRef<RenderTask | null>(null);
+  const selectingRef = useRef(false);
   const renderSeq = useRef(0);
+  const renderedPageRef = useRef<number | null>(null);
+  const excerptSearchSeq = useRef(0);
+  const [locatingExcerpt, setLocatingExcerpt] = useState(false);
+  const excerptEditRef = useRef({ id: editingExcerptId, draft: excerptNoteDraft });
+  excerptEditRef.current = { id: editingExcerptId, draft: excerptNoteDraft };
   // P11.4: 每页归一化文本缓存（去空白），供无页码摘录的全文搜索定位。
   const textCacheRef = useRef<Map<number, string> | null>(null);
   // P11.5: 恢复页码只在文档加载时读取一次（后续进度变化不触发重载）。
@@ -186,6 +220,8 @@ export default function PdfReader({
     let cancelled = false;
     setLoading(true);
     setErrorMsg(null);
+    setPageError(null);
+    renderedPageRef.current = null;
     reportedPageRef.current = null;
     const task = pdfjsLib.getDocument({
       url: `${base}/papers/${paperId}/file`,
@@ -218,11 +254,12 @@ export default function PdfReader({
       });
     return () => {
       cancelled = true;
+      excerptSearchSeq.current++;
       task.destroy();
       docRef.current = null;
       textCacheRef.current = null;
     };
-  }, [paperId]);
+  }, [paperId, base, loadAttempt]);
 
   // 渲染当前页（canvas + 文本层）；页码或缩放变化时取消旧渲染再重画。
   useEffect(() => {
@@ -230,6 +267,12 @@ export default function PdfReader({
     if (!doc || loading) return;
     const seq = ++renderSeq.current;
     let cancelled = false;
+    let textLayer: pdfjsLib.TextLayer | null = null;
+    // Never leave the previous page's hit targets over a new canvas.
+    textLayerRef.current?.replaceChildren();
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+    setPageError(null);
     setRendering(true);
     (async () => {
       try {
@@ -240,6 +283,13 @@ export default function PdfReader({
         const wrapper = wrapperRef.current;
         const textDiv = textLayerRef.current;
         if (!canvas || !wrapper || !textDiv) return;
+        const scroll = scrollRef.current;
+        const oldRect = wrapper.getBoundingClientRect();
+        const scrollRect = scroll?.getBoundingClientRect();
+        const focus = renderedPageRef.current === currentPage && oldRect.width > 0 && scroll && scrollRect
+          ? { x: (scrollRect.left + scroll.clientWidth / 2 - oldRect.left) / oldRect.width,
+              y: (scrollRect.top + scroll.clientHeight / 2 - oldRect.top) / oldRect.height }
+          : null;
         const dpr = window.devicePixelRatio || 1;
         canvas.width = Math.floor(viewport.width * dpr);
         canvas.height = Math.floor(viewport.height * dpr);
@@ -248,6 +298,13 @@ export default function PdfReader({
         wrapper.style.width = `${Math.floor(viewport.width)}px`;
         wrapper.style.height = `${Math.floor(viewport.height)}px`;
         wrapper.style.setProperty("--scale-factor", String(viewport.scale));
+        wrapper.style.setProperty("--total-scale-factor", String(viewport.scale * viewport.userUnit));
+        if (focus && scroll && scrollRect) {
+          const newRect = wrapper.getBoundingClientRect();
+          scroll.scrollLeft += newRect.left + focus.x * newRect.width - scrollRect.left - scroll.clientWidth / 2;
+          scroll.scrollTop += newRect.top + focus.y * newRect.height - scrollRect.top - scroll.clientHeight / 2;
+        }
+        renderedPageRef.current = currentPage;
 
         renderTaskRef.current?.cancel();
         const renderTask = page.render({
@@ -258,9 +315,9 @@ export default function PdfReader({
         renderTaskRef.current = renderTask;
         try {
           await renderTask.promise;
-        } catch {
-          /* 取消/竞争失败静默——新的渲染已在路上 */
-          return;
+        } catch (err) {
+          if (cancelled || seq !== renderSeq.current) return;
+          throw err;
         }
         if (cancelled || seq !== renderSeq.current) return;
 
@@ -268,60 +325,103 @@ export default function PdfReader({
         const textContent = await page.getTextContent();
         if (cancelled || seq !== renderSeq.current) return;
         textDiv.replaceChildren();
-        const layer = new pdfjsLib.TextLayer({
+        textLayer = new pdfjsLib.TextLayer({
           textContentSource: textContent,
           container: textDiv,
           viewport,
         });
-        await layer.render();
+        await textLayer.render();
       } catch (err: unknown) {
-        if (!cancelled) setErrorMsg(`页面渲染失败：${err instanceof Error ? err.message : String(err)}`);
+        if (!cancelled && seq === renderSeq.current) {
+          textLayerRef.current?.replaceChildren();
+          setPageError(`页面渲染失败：${err instanceof Error ? err.message : String(err)}`);
+        }
       } finally {
         if (!cancelled && seq === renderSeq.current) setRendering(false);
       }
     })();
     return () => {
       cancelled = true;
+      textLayer?.cancel();
+      textLayerRef.current?.replaceChildren();
       try {
         renderTaskRef.current?.cancel();
       } catch {
         /* already done */
       }
     };
-  }, [currentPage, scale, loading]);
+  }, [currentPage, scale, loading, renderAttempt]);
 
-  // 翻页后回到页首；页码输入框同步当前页；翻页/缩放时清掉划选浮钮。
+  // Only a page change resets position; zoom keeps the visible page centre.
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
+    scrollRef.current?.scrollTo({ top: 0, left: 0 });
     setPageInput(String(currentPage));
     setSelection(null);
-  }, [currentPage, scale]);
+  }, [currentPage]);
 
   // P11.3 划选：鼠标抬起时读取选区，非空则锚定「存为摘录」浮钮。
   const handleTextSelection = useCallback(() => {
+    if (selectingRef.current) return;
     const sel = window.getSelection();
     const text = sel?.toString().replace(/\s+/g, " ").trim() ?? "";
-    if (!sel || sel.isCollapsed || !text || !textLayerRef.current?.contains(sel.anchorNode) || !textLayerRef.current?.contains(sel.focusNode)) {
+    if (!sel || !sel.rangeCount || sel.isCollapsed || !text || !textLayerRef.current?.contains(sel.anchorNode) || !textLayerRef.current?.contains(sel.focusNode)) {
       setSelection(null);
       return;
     }
     try {
-      const rect = sel.getRangeAt(0).getBoundingClientRect();
-      setSelection({ text, x: rect.left + rect.width / 2, y: rect.top });
+      const bounds = scrollRef.current?.getBoundingClientRect();
+      const rects = Array.from(sel.getRangeAt(0).getClientRects()).filter(rect =>
+        rect.width > 0 && rect.height > 0 && bounds && rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right,
+      );
+      const rect = rects[0];
+      if (!rect || !bounds) { setSelection(null); return; }
+      setSelection({ text, x: rect.left + rect.width / 2, y: rect.top, bottom: rects[rects.length - 1].bottom });
     } catch {
       setSelection(null);
     }
   }, []);
 
-  // 选区塌陷（点击别处 / Esc 取消选择）时隐藏浮钮。
+  // Measure actual controls: touch targets and translated labels can be taller
+  // than the old fixed 44px offset, which covered the first selected line.
+  useLayoutEffect(() => {
+    const toolbar = selectionToolbarRef.current;
+    const bounds = scrollRef.current?.getBoundingClientRect();
+    if (!selection || !toolbar || !bounds) return;
+    const { width, height } = toolbar.getBoundingClientRect();
+    const left = Math.max(8, bounds.left + 8);
+    const right = Math.min(window.innerWidth - 8, bounds.right - 8);
+    toolbar.style.left = `${Math.max(left, Math.min(right - width, selection.x - width / 2))}px`;
+    const above = selection.y - height - 8;
+    toolbar.style.top = `${Math.max(bounds.top + 8, Math.min(bounds.bottom - height - 8,
+      above >= bounds.top + 8 ? above : selection.bottom + 8))}px`;
+  }, [selection, savingSelection]);
+
+  // Wait until dragging ends; document-level release also covers the page margin.
   useEffect(() => {
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(handleTextSelection);
+    };
+    const onPointerUp = () => { selectingRef.current = false; schedule(); };
     function onSelChange() {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || !sel.toString().trim()) setSelection(null);
+      if (!selectingRef.current) schedule();
     }
+    document.addEventListener("pointerup", onPointerUp);
+    document.addEventListener("pointercancel", onPointerUp);
     document.addEventListener("selectionchange", onSelChange);
-    return () => document.removeEventListener("selectionchange", onSelChange);
-  }, []);
+    window.addEventListener("resize", schedule);
+    const observer = new ResizeObserver(schedule);
+    if (scrollRef.current) observer.observe(scrollRef.current);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("pointerup", onPointerUp);
+      document.removeEventListener("pointercancel", onPointerUp);
+      document.removeEventListener("selectionchange", onSelChange);
+      window.removeEventListener("resize", schedule);
+      observer.disconnect();
+    };
+  }, [handleTextSelection]);
 
   // P11.5: 翻页后上报进度（恢复页/首页不重复上报；父级节流写回）。
   useEffect(() => {
@@ -338,6 +438,8 @@ export default function PdfReader({
 
   const goToPage = useCallback(
     (page: number) => {
+      excerptSearchSeq.current++;
+      setLocatingExcerpt(false);
       setPageInput(String(clampPage(page, pageCount)));
       setCurrentPage((cur) => {
         const next = clampPage(page, pageCount);
@@ -349,7 +451,7 @@ export default function PdfReader({
 
   const commitPageInput = useCallback(() => {
     const parsed = Number(pageInput);
-    if (!Number.isFinite(parsed)) {
+    if (!pageInput.trim() || !Number.isInteger(parsed) || parsed < 1) {
       setPageInput(String(currentPage));
       return;
     }
@@ -358,31 +460,42 @@ export default function PdfReader({
 
   const saveSelection = useCallback(async () => {
     if (!selection || savingSelection) return;
+    const savedRange = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0).cloneRange() : null;
     setSavingSelection(true);
     try {
       const ok = await onSaveExcerpt(selection.text, currentPage);
       if (ok) {
         toast.success("摘录已保存");
-        setSelection(null);
-        window.getSelection()?.removeAllRanges();
+        const current = window.getSelection();
+        const range = current?.rangeCount ? current.getRangeAt(0) : null;
+        if (savedRange && range && savedRange.startContainer.isConnected &&
+            range.startContainer === savedRange.startContainer && range.startOffset === savedRange.startOffset &&
+            range.endContainer === savedRange.endContainer && range.endOffset === savedRange.endOffset) {
+          setSelection(null);
+          current?.removeAllRanges();
+        }
       }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "摘录保存失败，请重试。");
     } finally {
       setSavingSelection(false);
     }
   }, [selection, savingSelection, onSaveExcerpt, currentPage, toast]);
 
   // P11.4: 逐页取归一化文本（带缓存），按 quote 前缀尽力定位页码。
-  const findPageByText = useCallback(async (quote: string): Promise<number | null> => {
+  const findPageByText = useCallback(async (quote: string, request: number): Promise<number | null> => {
     const doc = docRef.current;
     const cache = textCacheRef.current;
     if (!doc || !cache) return null;
     const needle = quote.replace(/\s+/g, "").slice(0, 40);
     if (!needle) return null;
     for (let p = 1; p <= doc.numPages; p++) {
+      if (request !== excerptSearchSeq.current) return null;
       let text = cache.get(p);
       if (text === undefined) {
         const page = await doc.getPage(p);
         const content = await page.getTextContent();
+        if (request !== excerptSearchSeq.current) return null;
         text = content.items.map((item) => ("str" in item ? item.str : "")).join("").replace(/\s+/g, "");
         cache.set(p, text);
       }
@@ -398,22 +511,31 @@ export default function PdfReader({
         goToPage(excerpt.page);
         return;
       }
-      const found = await findPageByText(excerpt.quote);
-      if (found != null) {
-        goToPage(found);
-      } else {
-        toast.info("未能在正文中定位该摘录，已保留当前页。");
+      const request = ++excerptSearchSeq.current;
+      setLocatingExcerpt(true);
+      try {
+        const found = await findPageByText(excerpt.quote, request);
+        if (request !== excerptSearchSeq.current) return;
+        if (found != null) goToPage(found);
+        else toast.info("未能在正文中定位该摘录，已保留当前页。");
+      } catch (err: unknown) {
+        if (request === excerptSearchSeq.current) toast.error(err instanceof Error ? err.message : "摘录定位失败，请重试。");
+      } finally {
+        if (request === excerptSearchSeq.current) setLocatingExcerpt(false);
       }
     },
     [goToPage, findPageByText, toast],
   );
 
   // T4：展开某条摘录的备注编辑框（带入现有 note，切换目标时清掉旧错误）。
-  const beginExcerptNoteEdit = useCallback((excerpt: PaperExcerpt) => {
+  const beginExcerptNoteEdit = useCallback(async (excerpt: PaperExcerpt) => {
+    if (excerptNoteSaving) return;
+    if (editingExcerptId !== null && excerptNoteDraft !== (excerpts.find(e => e.id === editingExcerptId)?.note ?? "") &&
+        !await confirm({ title: "当前备注尚未保存", message: "切换会丢弃当前备注的修改。", confirmText: "丢弃并切换", variant: "danger" })) return;
     setEditingExcerptId(excerpt.id);
     setExcerptNoteDraft(excerpt.note ?? "");
     setExcerptNoteError(null);
-  }, []);
+  }, [excerptNoteSaving, editingExcerptId, excerptNoteDraft, excerpts, confirm]);
 
   // T4：保存摘录备注；失败保留草稿并显示错误，不丢用户输入。
   const commitExcerptNote = useCallback(async () => {
@@ -423,8 +545,10 @@ export default function PdfReader({
     try {
       const ok = await onSaveExcerptNote(editingExcerptId, buildExcerptNotePayload(excerptNoteDraft));
       if (ok) {
-        setEditingExcerptId(null);
-        setExcerptNoteDraft("");
+        if (excerptEditRef.current.id === editingExcerptId && excerptEditRef.current.draft === excerptNoteDraft) {
+          setEditingExcerptId(null);
+          setExcerptNoteDraft("");
+        }
         toast.success("摘录备注已保存");
       } else {
         setExcerptNoteError("保存失败，草稿已保留，请重试。");
@@ -454,7 +578,7 @@ export default function PdfReader({
     try {
       const ok = await onCreateNote(payload);
       if (ok) {
-        setNoteDraft(emptyReaderNoteDraft());
+        setNoteDraft(current => current === noteDraft ? emptyReaderNoteDraft() : current);
         toast.success("笔记已保存");
       } else {
         setNoteError("保存失败，草稿已保留，请重试。");
@@ -490,6 +614,7 @@ export default function PdfReader({
               className="input w-14 py-1 text-center text-xs"
               value={pageInput}
               aria-label="页码"
+              disabled={loading || !!errorMsg}
               onChange={(e) => setPageInput(e.target.value)}
               onKeyDown={(e) => {
                 if (shouldSubmitOnEnter(e.key, false, e.nativeEvent.isComposing))
@@ -516,6 +641,7 @@ export default function PdfReader({
         </div>
         <span className="max-w-40 truncate text-xs text-muted" role="status" title={preparation.message}>{preparation.message}</span>
         {preparation.status === 'error' && <button className="btn-ghost text-xs" onClick={() => setPrepareAttempt(n => n + 1)}>重试加载</button>}
+        <button className="btn-ghost shrink-0 text-xs" onClick={() => { setTranslationSelection(null); setProcessingOpen(true); }}>OCR / Markdown</button>
         <button className="btn-ghost shrink-0 py-1 text-xs" aria-expanded={notesOpen} aria-controls="pdf-reader-notes" onClick={() => setNotesOpen((open) => !open)}>
           {notesOpen ? "收起侧栏" : "AI 伴读 / 笔记"}
         </button>
@@ -527,19 +653,29 @@ export default function PdfReader({
         <div
           ref={scrollRef}
           className="min-w-0 flex-1 overflow-auto"
-          onPointerUp={handleTextSelection}
+          onPointerDown={() => { selectingRef.current = true; setSelection(null); }}
+          onScroll={handleTextSelection}
         >
           {loading && (
             <p className="p-8 text-center text-sm text-muted">正在加载 PDF…</p>
           )}
           {!loading && errorMsg && (
-            <p className="p-8 text-center text-sm" style={{ color: "var(--danger)" }}>{errorMsg}</p>
+            <div className="p-8 text-center text-sm" role="alert">
+              <p style={{ color: "var(--danger)" }}>{errorMsg}</p>
+              <button className="btn-ghost mt-2" onClick={() => setLoadAttempt(n => n + 1)}>重新打开 PDF</button>
+            </div>
+          )}
+          {!loading && pageError && (
+            <div className="p-4 text-center text-sm" role="alert">
+              <p style={{ color: "var(--danger)" }}>{pageError}</p>
+              <button className="btn-ghost mt-2" onClick={() => setRenderAttempt(n => n + 1)}>重试当前页</button>
+            </div>
           )}
           {!loading && !errorMsg && (
-            <div className="flex w-max min-w-full justify-center p-4">
+            <div className={`flex w-max min-w-full justify-center p-4 ${pageError ? "invisible" : ""}`}>
               <div
                 ref={wrapperRef}
-                className="relative shadow-lg"
+                className="pdf-reader-page relative shadow-lg"
                 style={{ backgroundColor: "white" }}
               >
                 <canvas ref={canvasRef} className="block" />
@@ -566,6 +702,7 @@ export default function PdfReader({
             <h4 className="mb-2 text-sm font-semibold">笔记与摘录</h4>
             <section className="mb-4">
               <h5 className="mb-1.5 text-xs font-medium text-muted">摘录（{excerpts.length}）</h5>
+              {locatingExcerpt && <p role="status" className="mb-2 text-xs text-muted">正在定位摘录…</p>}
               {excerpts.length === 0 && (
                 <p className="text-xs text-faint">还没有摘录。在正文中划选文本即可保存。</p>
               )}
@@ -613,6 +750,7 @@ export default function PdfReader({
                             {excerptNoteSaving ? "保存中…" : "保存备注"}
                           </button>
                           <button
+                            disabled={excerptNoteSaving}
                             onClick={() => {
                               setEditingExcerptId(null);
                               setExcerptNoteError(null);
@@ -624,7 +762,7 @@ export default function PdfReader({
                         </div>
                       </div>
                     ) : (
-                      <button onClick={() => beginExcerptNoteEdit(excerpt)} className="btn-ghost mt-1 py-0.5 text-xs">
+                      <button disabled={excerptNoteSaving} onClick={() => void beginExcerptNoteEdit(excerpt)} className="btn-ghost mt-1 py-0.5 text-xs">
                         {excerpt.note ? "编辑备注" : "添加备注"}
                       </button>
                     )}
@@ -695,11 +833,13 @@ export default function PdfReader({
       </div>
       {selection && (
         <div
-          className="fixed z-50 flex items-center gap-1 rounded-lg px-1.5 py-1"
+          ref={selectionToolbarRef}
+          role="toolbar"
+          aria-label="选文操作"
+          className="fixed z-50 flex max-w-[calc(100vw-16px)] flex-wrap items-center gap-1 rounded-lg px-1.5 py-1"
           style={{
             left: Math.max(120, Math.min(window.innerWidth - 120, selection.x)),
             top: Math.max(selection.y - 44, 8),
-            transform: "translateX(-50%)",
             backgroundColor: "var(--surface)",
             boxShadow: "var(--shadow-lg)",
           }}
@@ -717,6 +857,9 @@ export default function PdfReader({
           <button className="btn-ghost text-xs" onClick={() => useSelection('ask')}>问 AI</button>
         </div>
       )}
+      {translationSelection && <TranslationPopover paperId={paperId} selection={translationSelection}
+        readingArea={scrollRef.current} onClose={() => setTranslationSelection(null)} />}
+      {processingOpen && <DocumentProcessingPanel paperId={paperId} onClose={() => setProcessingOpen(false)} onReady={() => setPrepareAttempt(n => n + 1)} />}
       {rendering && (
         <div
           className="pointer-events-none fixed bottom-4 left-4 rounded-lg px-3 py-1.5 text-xs text-muted"

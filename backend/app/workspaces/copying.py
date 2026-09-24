@@ -1,12 +1,14 @@
 """Copy paper snapshots. No source-engine references survive in the target."""
 import hashlib
+import re
+import shutil
 from sqlalchemy import text
 from sqlmodel import Session, select
 
 from app.db.engine import get_engine
 from app.ingestion.dedup import normalize_title
 from app.ingestion.pdf_storage import resolve_pdf
-from app.models import Paper, PaperNote, PaperExcerpt, WorkspaceCopy
+from app.models import Paper, PaperNote, PaperExcerpt, PaperDocument, WorkspaceCopy
 from app.workspaces.context import bind_workspace
 
 
@@ -27,6 +29,7 @@ def copy_paper(registry, origin, target_id, paper_id, request_id, include_notes=
     with bind_workspace(destination):
         engine = get_engine()
     pdf_file = None
+    document_files = []
     committed = False
     try:
         with Session(engine) as dest:
@@ -80,6 +83,27 @@ def copy_paper(registry, origin, target_id, paper_id, request_id, include_notes=
                     pdf_sha = digest.hexdigest()
                 dest.add(copied)
                 dest.flush()
+                document = source.get(PaperDocument, paper_id)
+                if document and document.markdown and document.published_hash == pdf_sha:
+                    from app.reading.documents import artifact_dir
+                    source_dir = artifact_dir(origin.data_dir / 'pdfs', paper_id, pdf_sha)
+                    target_dir = artifact_dir(destination.data_dir / 'pdfs', copied.id, pdf_sha)
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    for page in re.findall(r'<!-- page:(\d+) -->', document.markdown):
+                        original = source_dir / f'page-{page}.png'
+                        if original.is_file():
+                            target_file = target_dir / original.name
+                            document_files.append(target_file)
+                            shutil.copyfile(original, target_file)
+                    markdown_file = target_dir / 'document.md'
+                    document_files.append(markdown_file)
+                    markdown_file.write_text(document.markdown, encoding='utf-8')
+                    # Project-specific model IDs and in-flight jobs never cross projects.
+                    dest.add(PaperDocument(paper_id=copied.id, source_hash=pdf_sha, published_hash=pdf_sha,
+                        status='ready', markdown=document.markdown, model_name=document.model_name,
+                        total_pages=len(re.findall(r'<!-- page:(\d+) -->', document.markdown)),
+                        pages_json=document.pages_json if document.source_hash == pdf_sha else '[]',
+                        index_status='unconfigured'))
                 if include_notes:
                     for model in (PaperNote, PaperExcerpt):
                         for row in source.exec(select(model).where(model.paper_id == paper_id)):
@@ -94,5 +118,8 @@ def copy_paper(registry, origin, target_id, paper_id, request_id, include_notes=
                 dest.refresh(receipt)
                 return {**receipt.model_dump(mode='json'), 'reused': False}
     finally:
+        if not committed:
+            for path in document_files:
+                path.unlink(missing_ok=True)
         if pdf_file is not None and not committed:
             pdf_file.unlink(missing_ok=True)

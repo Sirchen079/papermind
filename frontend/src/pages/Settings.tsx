@@ -1,5 +1,7 @@
 import { useApi } from '../workspaceContext';
 import { SharedConnectionsPanel } from '../components/SharedConnectionsPanel';
+import { TranslationModelSettings } from '../components/TranslationModelSettings';
+import { DocumentModelSettings } from '../components/DocumentModelSettings';
 import { useEffect, useState } from "react";
 import {
   type ArchiveStatus,
@@ -548,6 +550,8 @@ export default function Settings() {
     <Shell max="narrow" className="space-y-6">
       <PageHeader title="设置" subtitle="连接 AI 服务，或管理本地资料备份" />
       <SharedConnectionsPanel providers={providers} onChanged={load}/>
+      <TranslationModelSettings refreshKey={models} />
+      <DocumentModelSettings refreshKey={models} />
       <p className="text-sm text-muted">首次使用 AI：填写服务商信息 → 添加提供商 → 获取或添加模型 → 选择文本 AI 角色。导入、阅读与笔记可以先使用，不必配齐所有功能。</p>
 
       <section className="card">

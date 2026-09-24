@@ -46,6 +46,13 @@ def patch_model(mid: int, body: ModelPatch, session: Session = Depends(get_sessi
     m = session.get(Model, mid)
     if m is None:
         raise HTTPException(404, "model not found")
+    from app.providers.purposes import configured_id
+    if body.role_default in {'embedding', 'rerank'} and configured_id(session, 'rerank_llm') == mid:
+        raise HTTPException(422, '该模型正在用于大模型重排序，请先解除该用途。')
+    if body.role_default in {'chat', 'embedding'} and configured_id(session, 'rerank') == mid:
+        raise HTTPException(422, '该模型正在用于重排序，请先在文档与检索设置中解除。')
+    if body.supports_images is False and configured_id(session, 'ocr') == mid:
+        raise HTTPException(422, '该模型正在用于 OCR，不能关闭图片输入。')
     if 'role_default' in body.model_fields_set:
         new_role = body.role_default or None
         if new_role:

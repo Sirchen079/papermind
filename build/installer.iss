@@ -13,7 +13,7 @@
 
 #define MyAppName      "PaperMind"
 #ifndef MyAppVersion
-#define MyAppVersion   "0.5.3"
+#define MyAppVersion   "0.5.4"
 #endif
 #define MyAppPublisher "PaperMind"
 #define MyAppExeName   "PaperMind.exe"

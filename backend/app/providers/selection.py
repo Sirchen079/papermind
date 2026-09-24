@@ -36,8 +36,10 @@ def pick_llm(session: Session, role: str) -> tuple[ProviderClient, Provider, str
 
     # embedding needs its own model; every text role shares the single chat LLM.
     tag = "embedding" if role == "embedding" else "chat"
+    from app.providers.purposes import configured_id
+    rerank_id = configured_id(session, 'rerank') or -1
     model = session.exec(
-        select(Model).where(Model.role_default == tag, Model.provider_id.in_(enabled_ids))
+        select(Model).where(Model.role_default == tag, Model.provider_id.in_(enabled_ids), Model.id != rerank_id)
     ).first()
 
     if model is None:
@@ -47,7 +49,8 @@ def pick_llm(session: Session, role: str) -> tuple[ProviderClient, Provider, str
         # later connection. Explicit vector assignments are never text fallbacks.
         model = session.exec(select(Model).where(
             Model.provider_id.in_(enabled_ids),
-            (Model.role_default.is_(None)) | (Model.role_default != 'embedding'),
+            Model.id != rerank_id,
+            (Model.role_default.is_(None)) | (Model.role_default.notin_(['embedding', 'rerank'])),
         ).order_by(Model.provider_id, Model.id)).first()
         if model is None:
             return None

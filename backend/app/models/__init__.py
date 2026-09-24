@@ -1,4 +1,5 @@
 from app.models.chat import Conversation, Message
+from app.models.document import PaperDocument
 from app.models.chunk import PaperChunk
 from app.models.citation import PaperCitation
 from app.models.claim import Claim, ClaimRelation
@@ -22,6 +23,7 @@ from app.models.workspace_copy import WorkspaceCopy
 from app.models.wiki import WikiPage, WikiRevision, WikiUpdate, WikiCopy
 
 __all__ = [
+    "PaperDocument",
     "WikiPage", "WikiRevision", "WikiUpdate", "WikiCopy",
     "WorkspaceCopy",
     "AIResultCache",

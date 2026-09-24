@@ -4,7 +4,7 @@ from collections import defaultdict
 TARGET = 0.90
 # Current RAG uses embedding; embed is the historical documented name. Do not
 # infer from model names or exclude unfamiliar kinds: they may be real LLMs.
-NON_LLM_KINDS = frozenset({'embedding', 'embed'})
+NON_LLM_KINDS = frozenset({'embedding', 'embed', 'rerank'})
 
 
 def summarize_cache(rows) -> dict:

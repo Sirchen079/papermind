@@ -51,7 +51,7 @@ class PageText(HTMLParser):
 
 def fetch_page(url):
     # Stream and cap bytes rather than downloading arbitrary-sized files.
-    with httpx.Client(timeout=30, follow_redirects=False, headers={'User-Agent': 'PaperMind/0.5.3 research reader'}) as client:
+    with httpx.Client(timeout=30, follow_redirects=False, headers={'User-Agent': 'PaperMind/0.5.4 research reader'}) as client:
         for _ in range(6):
             ensure_http_url(url)
             with client.stream('GET', url) as response:
