@@ -86,6 +86,24 @@ def map_themes(review_id:str,body:MapThemesBody,session:Session=Depends(get_sess
     from app.reviews import map as review_map
     return invoke(review_map.update_themes,session,review_id,body.themes,body.expected_version)
 
+@router.get('/{review_id}/map/export')
+def map_export(review_id:str,format:str='html',session:Session=Depends(get_session)):
+    import json
+    from urllib.parse import quote as urlquote
+    from fastapi.responses import Response
+    from app.models.review import ReviewMap
+    from app.reviews import export_map, map as review_map
+    invoke(service.get,session,review_id)
+    if format!='html':
+        raise HTTPException(422,'目前只支持 html 导出格式')
+    row=session.exec(select(ReviewMap).where(ReviewMap.review_id==review_id)).first()
+    if row is None or not json.loads(row.themes_json or '[]'):
+        raise HTTPException(409,'请先生成文献地图')
+    payload=export_map.map_payload(session,review_id)
+    filename=urlquote('文献地图.html')
+    return Response(export_map.render_html(payload),media_type='text/html; charset=utf-8',
+        headers={'Content-Disposition':f'attachment; filename="map.html"; filename*=UTF-8\'\'{filename}'})
+
 @router.post('/{review_id}/stop')
 def stop(review_id:str,session:Session=Depends(get_session)):
     return invoke(service.stop,session,review_id)

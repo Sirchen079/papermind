@@ -53,6 +53,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 | 12 | 本提交 | tests/test_review_map.py：14 通过 / 0 失败 | PUT /map/themes 版本冲突与 running 均按 ValueError→409；保留的归类条目按新 themes_fingerprint 重算指纹实现局部重跑；新增主题清空全部归类与 overview；overview 仅在“有 added 或归类被清空”时清空（改名/删除且仍有保留归类时保留）；主题校验（1–15、name 非空、id 唯一、缺 id 自动分配下一 T 编号）；卡 11 diff 686 行超出卡内 400 行指引但功能与测试一次完成，见最终报告 |
 | 13 | 本提交 | tests/test_review_map.py：20 通过 / 0 失败 | 主题综合阶段在归类后执行（stage “主题综合 i/n”）；统计数字全部由 theme_stats 程序计算；完整卡片上限 40 篇按 quote_verified 字段数降序、其余仅 {paper_id, year, title}；综合指纹= digest([主题, 成员卡片指纹排序, SYNTHESIZE_THEME])，与 themes_fingerprint 无关（改主题不连带作废其他主题综合）；卡片编号合法性按“属本综述”判定、representative 按“属本主题成员”判定；某条删空 cards 保留并标 source_missing；解析失败重试一次仍失败保存 error+stats 且不影响其他主题与 ready；空输出（无 trend 且各列表全空）按解析失败处理 |
 | 14 | 本提交 | tests/test_review_map.py：25 通过 / 0 失败 | 总览指纹=digest([各主题综合指纹列表, OVERVIEW])，任一主题综合变化或 overview 被清空即重新生成；全局 stats 按成员并集每篇计一次；reading_route 步骤删空 papers 标 source_missing；解析失败重试一次仍失败写 error 但地图仍 ready；GET /map 新增 papers 数组（title/year/venue/doi 取论文表，evidence_level 取卡片，card_status 无卡片时 pending）；错误主题（无综合）也进入总览输入（trend 空） |
+| 15 | 本提交 | tests/test_export_map.py+test_review_map.py：31 通过 / 0 失败 | render_html 纯字符串拼接、全部文本经 html.escape；内联 CSS/JS 无外部引用（href 仅 #p 锚点与 https://doi.org/）；中文文件名按 RFC 5987 filename*=UTF-8''（仓库内无中文文件名先例）；核对标签含页码与（摘要）后缀、number_mismatch 用醒目色；无卡片论文仍进总表与锚点；format≠html 返回 422（卡 16 扩展 xlsx 等）；map_payload 为卡 16 复用而组装 |
 
 ## 阻塞
 （无）
