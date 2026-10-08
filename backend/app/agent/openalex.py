@@ -41,7 +41,7 @@ def _params(session, extra: dict) -> dict:
     return params
 
 
-def _reconstruct_abstract(work: dict) -> str:
+def _reconstruct_abstract(work: dict, limit: int | None = 1200) -> str:
     inverted = work.get('abstract_inverted_index')
     if not isinstance(inverted, dict) or not inverted:
         return ''
@@ -49,7 +49,8 @@ def _reconstruct_abstract(work: dict) -> str:
     for word, indexes in inverted.items():
         if isinstance(word, str) and isinstance(indexes, list):
             positions.extend((index, word) for index in indexes if isinstance(index, int))
-    return ' '.join(word for _, word in sorted(positions))[:1200]
+    text = ' '.join(word for _, word in sorted(positions))
+    return text if limit is None else text[:limit]
 
 
 def _record(work: dict, *, full_authors: bool = False) -> dict:

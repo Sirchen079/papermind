@@ -43,6 +43,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 2. test_unfinished_import_resumes_without_charging_completed_page 开头显式设置 pdf_ingest_mode=ocr：默认改 auto 后该“OCR 中断恢复”场景需显式模式触发。
 3. test_documents.py::test_scan_without_model_and_restart_state_are_actionable：原断言 auto 无模型整篇报错（含“选择”）；按新行为改为 ready+“2 页文字层未验证”（该 fixture 扫描页带隐藏文字层，走 native_unverified 保留正文）。
 另：_ocr_model_missing 对“已配置但不可用”的 OCR 模型返回 False，沿用原 waiting_model 路径，不悄悄回退。
+| 05 | 本提交 | tests/test_enrich_metadata.py+test_sources.py+test_ingestion.py：19 通过 / 0 失败 | Crossref 查不到（含 404）按卡定义返回 unavailable 并带 error_type，不再尝试 OpenAlex；API 对不存在/已删除 id 返回 not_found 状态（卡未规定，为避免静默跳过）；测试用 client fixture（env 不建表） |
 
 ## 阻塞
 （无）

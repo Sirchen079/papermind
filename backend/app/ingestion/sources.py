@@ -228,6 +228,17 @@ def normalize_doi(value: str | None) -> str | None:
     return value.lower() if re.fullmatch(r"10\.\d{4,9}/\S+", value) else None
 
 
+def strip_jats(text: str | None) -> str | None:
+    """Flatten a Crossref JATS abstract into plain text; None when empty."""
+    import html
+    if not isinstance(text, str) or not text.strip():
+        return None
+    cleaned = re.sub(r'<jats:title\b[^>]*>.*?</jats:title>', ' ', text, flags=re.I | re.S)
+    cleaned = re.sub(r'<[^>]+>', ' ', cleaned)
+    cleaned = html.unescape(cleaned)
+    return ' '.join(cleaned.split()) or None
+
+
 def fetch_crossref(doi: str) -> FetchedPaper:
     """Retrieve DOI metadata without losing publication dates or article numbers."""
     from urllib.parse import quote
@@ -283,6 +294,7 @@ def fetch_crossref(doi: str) -> FetchedPaper:
     return FetchedPaper(
         source='crossref', source_ref=identifier, doi=identifier,
         title=first_text(record.get('title')), authors=authors, year=year,
+        abstract=strip_jats(record.get('abstract')),
         venue=first_text(record.get('container-title')),
         volume=first_text(record.get('volume')), issue=first_text(record.get('issue')),
         pages=first_text(record.get('page')) or first_text(record.get('article-number')),
