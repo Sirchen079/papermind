@@ -809,6 +809,32 @@ def reindex_papers(session: Session = Depends(get_session)) -> dict:
     return reindex_library(session).as_dict()
 
 
+class EnrichMetadataIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    paper_ids: list[int]
+
+
+@router.post("/papers/enrich-metadata")
+def enrich_metadata(body: EnrichMetadataIn, session: Session = Depends(get_session)) -> dict:
+    """Fill empty abstracts/bibliographic fields by DOI from Crossref then OpenAlex."""
+    if len(body.paper_ids) > 200:
+        raise HTTPException(422, "一次最多补全 200 篇论文的元数据。")
+    from app.ingestion.enrich import enrich_paper
+
+    results = []
+    counts: dict[str, int] = {}
+    for pid in body.paper_ids:
+        paper = session.get(Paper, pid)
+        if paper is None or paper.is_deleted:
+            item = {"paper_id": pid, "status": "not_found", "fields": [], "abstract_source": None}
+        else:
+            item = {"paper_id": pid, **enrich_paper(session, paper)}
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+        results.append(item)
+    return {"results": results, "counts": counts}
+
+
 @router.post("/papers/arxiv")
 def ingest_arxiv(body: ArxivIn, session: Session = Depends(get_session)) -> dict:
     from app.ingestion.sources import normalize_arxiv_id
