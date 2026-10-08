@@ -56,6 +56,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 | 15 | 本提交 | tests/test_export_map.py+test_review_map.py：31 通过 / 0 失败 | render_html 纯字符串拼接、全部文本经 html.escape；内联 CSS/JS 无外部引用（href 仅 #p 锚点与 https://doi.org/）；中文文件名按 RFC 5987 filename*=UTF-8''（仓库内无中文文件名先例）；核对标签含页码与（摘要）后缀、number_mismatch 用醒目色；无卡片论文仍进总表与锚点；format≠html 返回 422（卡 16 扩展 xlsx 等）；map_payload 为卡 16 复用而组装 |
 | 16 | 本提交 | tests/test_export_map.py：11 通过 / 0 失败 | 新增依赖 openpyxl 3.1.5、python-docx 1.2.0（已装 .venv、已入 pyproject）；build/papermind.spec collect_all 加 "openpyxl"、"docx"（ast.parse 校验通过）；xlsx 三表（主表冻结首行+自动筛选、精读卡片含中文核对标签、主题与问题）；docx 附录含每篇五字段；csv 由 render_csv 自带 BOM；bib 复用 archive/bibtex.py 的 citekey/format_paper（冲突第二个加后缀2），未改 thesis/archive 两处原函数；五种 format 均 200，MIME 见 EXPORT_FORMATS；卡 15 的 format=xlsx 422 断言改为 format=pptx（卡 16 扩展所致）；打包未验证，留到阶段审查 |
 | 17 | 本提交 | 前端 npm test：177 通过 / 0 失败；npm run build 成功（仅既有 chunk 大小警告） | reviewMapModel.ts 为自包含纯逻辑（不导入 reviewsApi，避免 graph-test rootDir 越界）；LibraryReview.tsx 只加一处 import 与一行 <ReviewMap/>；组件在 /map 为 draft 时显示说明+生成按钮，运行中 3 秒轮询；PUT /map/themes 409 时按 error.status 提示“地图已被更新，请刷新后再改”；卡片分页 20 张，页码标签点击走 onOpenPaper；导出按钮直接 window.open 下载；卡片详情 GET /cards 失败不阻塞地图展示 |
+| 18 | 本提交 | tests/test_eval_vs_advisor.py：6 通过 / 0 失败；main() 用临时 fixture 冒烟通过（新跑与带 --theme-map 重跑均 rc=0） | 脚本只用标准库（httpx 仅 --base/--live 取数时惰性导入）；对齐 DOI 优先（小写、去 https://doi.org/ 前缀）→规范化题名（小写、去标点空白）回退，一篇最多配对一次；建议映射每主题取命中次数最多的前 2 个（次数>0）；sample.csv 已存在时不覆盖（保留研究者填写的判定），重跑直接读取已填判定计算退出条件；quote_verified 正确率为“判定=正确的行中 verified 字段占比”并在报告注明近似；测试全部用手写 fixture，未读取 F:\论文管理\评测\ |
 
 ## 阻塞
 （无）
