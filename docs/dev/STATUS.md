@@ -55,6 +55,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 | 14 | 本提交 | tests/test_review_map.py：25 通过 / 0 失败 | 总览指纹=digest([各主题综合指纹列表, OVERVIEW])，任一主题综合变化或 overview 被清空即重新生成；全局 stats 按成员并集每篇计一次；reading_route 步骤删空 papers 标 source_missing；解析失败重试一次仍失败写 error 但地图仍 ready；GET /map 新增 papers 数组（title/year/venue/doi 取论文表，evidence_level 取卡片，card_status 无卡片时 pending）；错误主题（无综合）也进入总览输入（trend 空） |
 | 15 | 本提交 | tests/test_export_map.py+test_review_map.py：31 通过 / 0 失败 | render_html 纯字符串拼接、全部文本经 html.escape；内联 CSS/JS 无外部引用（href 仅 #p 锚点与 https://doi.org/）；中文文件名按 RFC 5987 filename*=UTF-8''（仓库内无中文文件名先例）；核对标签含页码与（摘要）后缀、number_mismatch 用醒目色；无卡片论文仍进总表与锚点；format≠html 返回 422（卡 16 扩展 xlsx 等）；map_payload 为卡 16 复用而组装 |
 | 16 | 本提交 | tests/test_export_map.py：11 通过 / 0 失败 | 新增依赖 openpyxl 3.1.5、python-docx 1.2.0（已装 .venv、已入 pyproject）；build/papermind.spec collect_all 加 "openpyxl"、"docx"（ast.parse 校验通过）；xlsx 三表（主表冻结首行+自动筛选、精读卡片含中文核对标签、主题与问题）；docx 附录含每篇五字段；csv 由 render_csv 自带 BOM；bib 复用 archive/bibtex.py 的 citekey/format_paper（冲突第二个加后缀2），未改 thesis/archive 两处原函数；五种 format 均 200，MIME 见 EXPORT_FORMATS；卡 15 的 format=xlsx 422 断言改为 format=pptx（卡 16 扩展所致）；打包未验证，留到阶段审查 |
+| 17 | 本提交 | 前端 npm test：177 通过 / 0 失败；npm run build 成功（仅既有 chunk 大小警告） | reviewMapModel.ts 为自包含纯逻辑（不导入 reviewsApi，避免 graph-test rootDir 越界）；LibraryReview.tsx 只加一处 import 与一行 <ReviewMap/>；组件在 /map 为 draft 时显示说明+生成按钮，运行中 3 秒轮询；PUT /map/themes 409 时按 error.status 提示“地图已被更新，请刷新后再改”；卡片分页 20 张，页码标签点击走 onOpenPaper；导出按钮直接 window.open 下载；卡片详情 GET /cards 失败不阻塞地图展示 |
 
 ## 阻塞
 （无）

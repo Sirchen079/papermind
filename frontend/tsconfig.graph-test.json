@@ -43,6 +43,7 @@
     "src/pages/librarySearchModel.ts",
     "src/pages/externalPaperModel.ts",
     "src/pages/literatureModel.ts",
+    "src/pages/reviewMapModel.ts",
     "src/pages/draftStorageModel.ts"
   ]
 }
