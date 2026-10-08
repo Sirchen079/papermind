@@ -74,6 +74,18 @@ def remove_note(paper_id: int, note_id: int, session: Session = Depends(get_sess
     _run(delete_note, session, paper_id, note_id)
 
 
+@router.get('/papers/{paper_id}/reading/notes/{note_id}/revisions')
+def note_history(paper_id:int,note_id:int,offset:int=Query(0,ge=0),session:Session=Depends(get_session)):
+    from app.reading.note_versions import history
+    return _run(history,session,paper_id,note_id,offset)
+
+
+@router.get('/papers/{paper_id}/reading/notes/{note_id}/revisions/{version}')
+def note_version(paper_id:int,note_id:int,version:int,session:Session=Depends(get_session)):
+    from app.reading.note_versions import read
+    return _run(read,session,paper_id,note_id,version)
+
+
 @router.post("/papers/{paper_id}/reading/excerpts", status_code=201)
 def add_excerpt(paper_id: int, body: PatchBody, session: Session = Depends(get_session)) -> dict:
     return _run(create_excerpt, session, paper_id, body.payload())

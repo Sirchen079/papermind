@@ -111,6 +111,7 @@ def test_chat_roundtrip(client):
 
     convo = client.get(f"/api/chat/conversations/{cid}").json()
     assert [m["role"] for m in convo["messages"]] == ["user", "assistant"]
+    assert body['message_id'] == convo['messages'][-1]['id']
 
 
 def test_stream_message_requires_provider(client):
@@ -142,6 +143,8 @@ def test_stream_message_emits_sse_and_persists(client):
     msgs = convo["messages"]
     assert [m["role"] for m in msgs] == ["user", "assistant"]
     assert msgs[-1]["content"] == "Hello world"
+    done = json.loads(body.split('event: done\n', 1)[1].split('data: ', 1)[1].split('\n', 1)[0])
+    assert done['message_id'] == msgs[-1]['id']
 
 
 def test_stream_message_emits_error_on_failure(client):

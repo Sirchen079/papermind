@@ -8,7 +8,7 @@ import pytest
 pytestmark=pytest.mark.usefixtures('accept_evidence_review')
 
 
-def test_chat_message_returns_and_persists_sources(client, monkeypatch):
+def test_provider_without_tools_returns_and_persists_fallback_sources(client, monkeypatch):
     with Session(get_engine()) as s:
         p = Provider(name="oai", type="openai_chat")
         s.add(p)
@@ -30,6 +30,9 @@ def test_chat_message_returns_and_persists_sources(client, monkeypatch):
     monkeypatch.setattr("app.rag.index.retrieve", fake_retrieve)
 
     def fake_complete(self, provider, model_id, messages, request_kind, tools=None, ref_id=None):  # noqa: ANN001
+        if tools:
+            raise RuntimeError('this provider does not support tools')
+        assert 'cause and effect' in messages[-1]['content']
         return ToolTurn(content="ok", tool_calls=[], prompt_tokens=1, completion_tokens=1, total_tokens=2)
 
     monkeypatch.setattr("app.providers.client.ProviderClient.complete_with_tools", fake_complete)

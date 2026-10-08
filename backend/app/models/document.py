@@ -16,3 +16,4 @@ class PaperDocument(SQLModel, table=True):
     published_hash: str = ''
     error: str = ''
     index_status: str = ''
+    followup_json: str = '{}'

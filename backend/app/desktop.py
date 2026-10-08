@@ -103,6 +103,13 @@ class LocalBackend:
     def __init__(self, sock: socket.socket):
         self.sock = sock
         self.url = f"http://127.0.0.1:{sock.getsockname()[1]}"
+        # Publish the actual (possibly fallback) port for external local tools.
+        try:
+            from app.local_access import write_access_file
+
+            write_access_file(sock.getsockname()[1])
+        except Exception:
+            logging.getLogger(__name__).debug('agent access file not written', exc_info=True)
         self.cancelled = threading.Event()
         self.failure: BaseException | None = None
         self.server = None
@@ -121,7 +128,10 @@ class LocalBackend:
             ))
             if self.cancelled.is_set():
                 return
-            self.server.run(sockets=[self.sock])
+            import asyncio
+            from app.desktop_loop import new_event_loop
+            with asyncio.Runner(loop_factory=new_event_loop) as runner:
+                runner.run(self.server.serve(sockets=[self.sock]))
         except BaseException as error:
             self.failure = error
             logging.exception("Desktop backend failed")

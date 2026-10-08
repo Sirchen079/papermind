@@ -10,6 +10,36 @@ def test_exact_edit_preserves_other_claims_and_citation():
     assert apply_edits('A 没有做外部验证。[S1] B 是 0.85。',{'edits':[EDIT]},SOURCE)=='A 摘要未描述外部验证，是否做过未知。[S1] B 是 0.85。'
 
 
+@pytest.mark.parametrize('quote', [
+    'performance im-proved by 2.8 points, likely due to joint training',
+    'performance improved by 2.8 points, likely due to joint training',
+])
+def test_pdf_word_wrap_does_not_reject_a_supported_edit(quote):
+    evidence=[{'id':'E1','text':'The performance im-\nproved by 2.8 points, likely due to joint training.'}]
+    edit={**EDIT,'quote':quote,'after':'可能源于联合训练'}
+    assert apply_edits('没有做外部验证',{'edits':[edit]},evidence)=='可能源于联合训练'
+
+
+@pytest.mark.parametrize('quote', [
+    'performance improved by 3.8 points, likely due to joint training',
+    'performance improved by 2.8 points, proven due to joint training',
+])
+def test_pdf_word_wrap_matching_preserves_numbers_and_uncertainty(quote):
+    evidence=[{'id':'E1','text':'The performance im-\nproved by 2.8 points, likely due to joint training.'}]
+    with pytest.raises(ValueError,match='不是已提供原文'):
+        apply_edits('没有做外部验证',{'edits':[{**EDIT,'quote':quote}]},evidence)
+
+
+def test_actual_tool_evidence_is_decoded_once_without_rewriting_literal_backslashes():
+    from app.agent.evidence_review import tool_evidence_text
+    original='The authors say "possibly".\nSecond line; literal \\n remains literal.'
+    raw=json.dumps([{'paper_id':3,'text':original,'pages':[23,24],'truncated':False}])
+    rendered=tool_evidence_text('search_paper_text',{'query':'comparison'},raw)
+    assert original in rendered and 'paper_id:\n3' in rendered
+    assert 'truncated:\nfalse' in rendered and 'query' in rendered
+    assert tool_evidence_text('read',{},'plain\ntext').endswith('plain\ntext')
+
+
 def test_block_id_can_target_one_of_identical_lines_without_copying_text():
     edit={k:v for k,v in EDIT.items() if k!='before'}
     edit['block_id']='B2'

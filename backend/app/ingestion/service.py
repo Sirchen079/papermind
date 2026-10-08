@@ -2,6 +2,7 @@ import json
 import hashlib
 import logging
 import re
+import shutil
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -71,6 +72,7 @@ def persist_fetched(
     client=None,
     provider: Provider | None = None,
     model_id: str | None = None,
+    target_paper_id: int | None = None,
 ) -> Paper:
     """Dedup, parse PDF, optionally AI-summarize, and persist a FetchedPaper.
 
@@ -79,36 +81,41 @@ def persist_fetched(
     """
     pdf_path = None
     text, conf = None, None
-    if fetched.pdf_bytes is not None:
+    from app.ingestion.pdf_storage import pdf_digest, resolve_pdf
+    if fetched.pdf_bytes is not None and fetched.pdf_file is not None:
+        raise ValueError('PDF 内容与文件路径只能提供一种。')
+    pdf_input = fetched.pdf_bytes if fetched.pdf_bytes is not None else fetched.pdf_file
+    if pdf_input is not None:
         # Validate in a disposable file before touching either the library or
         # an ORM object. A failed upload must leave existing evidence intact.
         try:
-            text, conf = parse_pdf(fetched.pdf_bytes)
+            text, conf = parse_pdf(pdf_input)
         except Exception as exc:
             raise ValueError("无法解析 PDF，请检查文件是否完整、未加密且格式正确。") from exc
-        digest = hashlib.sha256(fetched.pdf_bytes).hexdigest()
+        digest = hashlib.sha256(pdf_input).hexdigest() if isinstance(pdf_input, bytes) else pdf_digest(pdf_input)
         pdf_path = Path(pdf_dir).resolve() / f"{digest}.pdf"
     # Keep parsing/network work outside the write transaction. All import
     # routes share this boundary for deduplication, citation keys and PDF writes.
     if not session.connection().connection.driver_connection.in_transaction:
         session.connection().exec_driver_sql('BEGIN IMMEDIATE')
         session.expire_all()
-    if fetched.pdf_bytes is not None:
-        if fetched.source == "pdf":
+    target = session.get(Paper, target_paper_id) if target_paper_id is not None else None
+    if target_paper_id is not None and (target is None or target.is_deleted):
+        raise ValueError('指定的论文不存在或已删除。')
+    if pdf_input is not None:
+        if fetched.source == "pdf" and target is None:
             # Upload filenames are labels, not paper identities. Also recognize
             # legacy files and renamed papers by bytes without changing metadata.
             for candidate in session.exec(select(Paper).where(Paper.is_deleted == False, Paper.pdf_path != None)).all():
-                from app.ingestion.pdf_storage import resolve_pdf
                 old_path = resolve_pdf(candidate.pdf_path, Path(pdf_dir))
-                if old_path and hashlib.sha256(old_path.read_bytes()).hexdigest() == digest:
+                if old_path and pdf_digest(old_path) == digest:
                     session.commit()
                     return candidate
-    existing = (None if fetched.source == "pdf" else
+    existing = target if target is not None else (None if fetched.source == "pdf" else
                 find_duplicate(session, fetched.doi, fetched.arxiv_id, fetched.title))
     if existing and pdf_path and existing.pdf_path:
-        from app.ingestion.pdf_storage import resolve_pdf
         old_path = resolve_pdf(existing.pdf_path, Path(pdf_dir))
-        if old_path and old_path.read_bytes() != fetched.pdf_bytes:
+        if old_path and pdf_digest(old_path) != digest:
             raise ValueError("这篇论文已有不同内容的 PDF，已保留原文。请将新版本作为独立论文导入。")
     paper = existing if existing is not None else Paper(source=fetched.source, source_ref=fetched.source_ref)
 
@@ -126,6 +133,8 @@ def persist_fetched(
     paper.arxiv_id = fetched.arxiv_id or paper.arxiv_id
     paper.year = fetched.year or paper.year
     paper.venue = fetched.venue or paper.venue
+    for field in ("volume", "issue", "pages"):
+        setattr(paper, field, getattr(fetched, field) or getattr(paper, field))
     paper.title_norm = normalize_title(paper.title)
     paper.updated_at = utcnow()
 
@@ -138,28 +147,54 @@ def persist_fetched(
             session, base_citekey(paper), paper.id
         )
 
+    new_pdf = pdf_path is not None and not paper.pdf_path
     if pdf_path is not None:
         pdf_path.parent.mkdir(parents=True, exist_ok=True)
         # Exclusive creation prevents concurrent uploads from truncating a file.
         try:
             with pdf_path.open("xb") as output:
-                output.write(fetched.pdf_bytes)
+                try:
+                    if isinstance(pdf_input, bytes):
+                        output.write(pdf_input)
+                    else:
+                        with pdf_input.open('rb') as source:
+                            shutil.copyfileobj(source, output, length=1024 * 1024)
+                except BaseException:
+                    output.close()
+                    pdf_path.unlink(missing_ok=True)
+                    raise
         except FileExistsError:
-            if pdf_path.read_bytes() != fetched.pdf_bytes:
+            if pdf_digest(pdf_path) != digest:
                 raise ValueError("PDF 存储校验失败，原文件未修改。")
         paper.pdf_path = str(pdf_path)
-        paper.full_text = text or paper.full_text
-        paper.parse_confidence = conf
+        # Re-importing a published OCR document must not replace it with raw
+        # extraction. New PDFs wait for the configured Markdown pipeline.
+        if new_pdf:
+            from app.ingestion.document_pipeline import import_mode
+            paper.full_text = text if import_mode(session) == 'manual' else None
+            paper.parse_confidence = conf if paper.full_text else None
 
     session.add(paper)
     session.commit()
     session.refresh(paper)
 
+    if new_pdf:
+        from app.ingestion.document_pipeline import queue_import
+        if queue_import(session, paper, provider if client is not None else None, model_id):
+            return paper
+    from app.ingestion.document_pipeline import waiting_for_markdown
+    if waiting_for_markdown(session, paper):
+        return paper
+    _finish_import(session, paper, client, provider, model_id)
+    return paper
+
+
+def _finish_import(session, paper, client=None, provider=None, model_id=None, *, index=True):
     if client is not None and provider is not None and model_id and (paper.abstract or paper.full_text):
         # Skip AI for metadata-only entries (e.g. a title-only BibTeX row):
         # there's nothing to summarize, so a call would burn tokens for a
         # useless freeform summary.
-        _analyze(session, paper, client, provider, model_id)
+        _analyze(session, paper, client, provider, model_id, index=index)
 
     # Reference extraction (rule-first, LLM fallback) — runs with or without a
     # configured LLM and never aborts ingest.
@@ -175,9 +210,6 @@ def persist_fetched(
             paper.id,
             exc_info=True,
         )
-
-    return paper
-
 
 def resolve_and_attach_concepts(
     session: Session, paper: Paper, run_id: int | None, raw_concepts: list[dict]
@@ -221,7 +253,7 @@ def analyze_paper(
     _analyze(session, paper, client, provider, model_id)
 
 
-def _analyze(session: Session, paper: Paper, client, provider: Provider, model_id: str) -> None:
+def _analyze(session: Session, paper: Paper, client, provider: Provider, model_id: str, *, index=True) -> None:
     from app.ai_ops.concepts import extract_concepts
     from app.ai_ops.summarize import summarize_paper
 
@@ -288,6 +320,8 @@ def _analyze(session: Session, paper: Paper, client, provider: Provider, model_i
         )
 
     # Index full text for retrieval (RAG) — only when an embedding model is set.
+    if not index:
+        return
     try:
         from app.rag.index import index_paper
 

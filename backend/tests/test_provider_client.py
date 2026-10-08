@@ -276,3 +276,74 @@ def test_openai_format_accepts_arbitrary_vendor_and_model(tmp_path):
     body = json.loads(req.content.decode())
     assert body["model"] == custom_model
     assert "任意厂商回复" in result.content
+
+@pytest.mark.parametrize('url,local',[('http://127.0.0.1:12345/v1',True),('https://test.invalid/v1',False)])
+def test_library_review_allows_slow_local_inference_without_changing_remote_timeout(tmp_path,monkeypatch,url,local):
+    eng=make_engine(tmp_path/'review-timeout.sqlite');SQLModel.metadata.create_all(eng)
+    crypto=Crypto(Fernet.generate_key());seen=[]
+    def complete(**kwargs):seen.append(kwargs);return _fake_litellm_completion(**kwargs)
+    monkeypatch.setattr('app.providers.client.litellm.completion',complete)
+    with Session(eng) as session:
+        provider=Provider(name='fixture',type='openai_compat',base_url=url,api_key_encrypted=crypto.encrypt('fixture-key'))
+        session.add(provider);session.commit();session.refresh(provider)
+    client=ProviderClient(lambda:Session(eng),crypto)
+    client.complete(provider,'fixture',[{'role':'user','content':'draft'}],request_kind='library_review')
+    timeout=seen[0]['timeout']
+    if local:assert isinstance(timeout,httpx.Timeout) and timeout.read is None and timeout.connect==10
+    else:assert timeout==180
+
+
+@pytest.mark.parametrize('effort,seconds', [('medium',300),('high',600),('xhigh',600),('max',600)])
+@pytest.mark.parametrize('ptype', ['openai_compat','openai_responses'])
+def test_review_and_rerank_wait_for_configured_reasoning_without_extending_other_tasks(tmp_path,monkeypatch,effort,seconds,ptype):
+    from app.models import Model
+    from types import SimpleNamespace
+    client,provider=_provider(tmp_path,ptype,'https://test.invalid/v1')
+    with client._session_factory() as s:
+        s.add(Model(provider_id=provider.id,model_id='writer',reasoning_effort=effort));s.commit()
+    seen=[]
+    def complete(**kwargs):
+        seen.append(kwargs)
+        return SimpleNamespace(output_text='draft',usage=None) if ptype=='openai_responses' else _fake_litellm_completion(**kwargs)
+    monkeypatch.setattr('app.providers.client.litellm.completion',complete)
+    monkeypatch.setattr('app.providers.client.litellm.responses',complete)
+    client.complete(provider,'writer',[{'role':'user','content':'draft'}],request_kind='library_review',reasoning_effort='low')
+    timeout=seen[-1]['timeout']
+    assert isinstance(timeout,httpx.Timeout) and timeout.read==seconds and timeout.connect==10
+    assert seen[-1]['num_retries']==0
+    # 配置了推理档位的共用模型做重排同样按档位等待（docs/rerank-reasoning-budget.md：真实回放48.12秒，固定45秒会截断）
+    client.complete(provider,'writer',[{'role':'user','content':'rank'}],request_kind='rerank_llm')
+    assert isinstance(seen[-1]['timeout'],httpx.Timeout) and seen[-1]['timeout'].read==seconds
+    # 其余任务不继承加长等待
+    client.complete(provider,'writer',[{'role':'user','content':'q'}],request_kind='retrieval_query')
+    assert seen[-1]['timeout']==45
+
+
+@pytest.mark.parametrize('ptype', ['openai_compat', 'openai_responses'])
+@pytest.mark.parametrize('url,effort,seconds', [
+    ('https://test.invalid/v1', 'high', 600),
+    ('https://test.invalid/v1', 'medium', 300),
+    ('https://test.invalid/v1', 'low', 180),
+    ('http://127.0.0.1:12345/v1', 'low', None),
+])
+def test_agent_uses_configured_generation_allowance_for_each_protocol(tmp_path, monkeypatch, ptype, url, effort, seconds):
+    from app.models import Model
+    from types import SimpleNamespace
+    client, provider = _provider(tmp_path, ptype, url)
+    with client._session_factory() as s:
+        s.add(Model(provider_id=provider.id, model_id='writer', reasoning_effort=effort)); s.commit()
+    seen = []
+    def complete(**kwargs):
+        seen.append(kwargs)
+        return (SimpleNamespace(output_text='draft', output=[], usage=None) if ptype == 'openai_responses'
+                else SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='draft', tool_calls=[], reasoning_content=None))], usage=None))
+    monkeypatch.setattr('app.providers.client.litellm.completion', complete)
+    monkeypatch.setattr('app.providers.client.litellm.responses', complete)
+    result = client.complete_with_tools(provider, 'writer', [{'role': 'user', 'content': 'research'}], 'chat')
+    assert result.content == 'draft'
+    timeout = seen[-1]['timeout']
+    if seconds == 180:
+        assert timeout == 180
+    else:
+        assert isinstance(timeout, httpx.Timeout) and timeout.read == seconds and timeout.connect == 10
+    assert seen[-1]['num_retries'] == 0

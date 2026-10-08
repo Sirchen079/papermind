@@ -18,7 +18,7 @@ from sqlmodel import Session, select, func
 from app.models import Paper, PaperChunk
 from app.providers.selection import pick_llm
 from app.rag.chunker import chunk_text
-from app.rag.vector import deserialize, serialize, top_k
+from app.rag.vector import serialize
 
 CHUNK_TARGET = 1000
 RETRIEVE_K = 5
@@ -66,8 +66,9 @@ def _chunk_texts(paper: Paper) -> list[str]:
             for i in range(1, len(pages), 2):
                 # Preserve Markdown line breaks (especially tables) and page provenance.
                 page_text = pages[i + 1].strip()
-                for start in range(0, len(page_text), CHUNK_TARGET):
-                    texts.append(f'[第 {pages[i]} 页]\n' + page_text[start:start + CHUNK_TARGET])
+                from app.rag.markdown_chunker import chunk_markdown
+                for chunk in chunk_markdown(page_text, target=CHUNK_TARGET):
+                    texts.append(f'[第 {pages[i]} 页]\n' + chunk)
         else:
             texts.extend(chunk_text(paper.full_text, target=CHUNK_TARGET))
     return texts
@@ -90,6 +91,9 @@ def index_paper(
     surface the message. Existing chunks are only dropped after embed succeeds,
     so a failure never wipes what was already indexed.
     """
+    from app.ingestion.document_pipeline import waiting_for_markdown
+    if waiting_for_markdown(session, paper):
+        return 0
     if client is None or provider is None or model_id is None:
         ctx = pick_llm(session, "embedding")
         if ctx is None:
@@ -122,6 +126,30 @@ def index_paper(
                 embedding_model=model_id,
             )
         )
+    session.commit()
+    return len(texts)
+
+
+def index_local_paper(session: Session, paper: Paper) -> int:
+    """Make newly acquired text searchable even before embeddings are available.
+
+    Preserve vectors for unchanged chunks. A changed passage must not retain
+    the vector of its earlier text; keyword recall remains available on failure.
+    """
+    from app.ingestion.document_pipeline import waiting_for_markdown
+    if waiting_for_markdown(session, paper):
+        return 0
+    old = {row.ordinal: row for row in session.exec(select(PaperChunk).where(PaperChunk.paper_id == paper.id))}
+    texts = _chunk_texts(paper)
+    for ordinal, text in enumerate(texts):
+        row = old.pop(ordinal, None)
+        if row is None:
+            row = PaperChunk(paper_id=paper.id, ordinal=ordinal, text=text)
+        elif row.text != text:
+            row.text, row.embedding, row.embedding_model = text, None, None
+        session.add(row)
+    for row in old.values():
+        session.delete(row)
     session.commit()
     return len(texts)
 
@@ -164,7 +192,8 @@ def reindex_library(session: Session) -> ReindexResult:
 
 
 def retrieve(
-    session: Session, query: str, k: int = RETRIEVE_K, paper_ids: list[int] | None = None
+    session: Session, query: str, k: int = RETRIEVE_K, paper_ids: list[int] | None = None,
+    *, rerank: bool = True,
 ) -> list[tuple[PaperChunk, float]]:
     """Return the ``k`` chunks most relevant to ``query`` by cosine.
 
@@ -175,51 +204,19 @@ def retrieve(
     query = (query or "").strip()
     if not query or k <= 0:
         return []
-    from app.providers.purposes import purpose_model, rerank_mode
-    mode = rerank_mode(session)
-    try:
-        reranker = purpose_model(session, 'rerank_llm' if mode == 'llm' else 'rerank') if mode != 'off' else None
-    except Exception:
-        reranker = None
-    limit = max(k, min(30 if mode == 'llm' else 100, max(30, k * 4))) if reranker else k
-
-    def finish(recalled):
-        if reranker and recalled:
-            try:
-                rclient, rprovider, rmodel = reranker
-                if mode == 'llm':
-                    from app.models import Model
-                    from app.rag.llm_rerank import rank
-                    row = session.exec(select(Model).where(Model.provider_id == rprovider.id, Model.model_id == rmodel)).first()
-                    ranks = rank(reranker, query, [r[0].text for r in recalled], k, row.context_window if row else None)
-                else:
-                    ranks = rclient.rerank(rprovider, rmodel, query, [r[0].text for r in recalled], k)
-                return [(recalled[idx][0], score) for idx, score in ranks]
-            except Exception:
-                import logging
-                logging.getLogger(__name__).warning('Reranking unavailable; using original recall order')
-        return recalled[:k]
+    from app.rag import reranking
+    config=reranking.configuration(session) if rerank else None
+    limit=reranking.candidate_limit(k,config)
 
     ctx = pick_llm(session, "embedding")
     if ctx is None:
         return []
     client, provider, model_id = ctx
-    statement = (
-        select(PaperChunk)
-        .join(Paper, Paper.id == PaperChunk.paper_id)
-        .where(
-            PaperChunk.embedding_model == model_id,
-            Paper.is_deleted == False,  # noqa: E712
-        )
-    )
-    if paper_ids is not None:
-        statement = statement.where(PaperChunk.paper_id.in_(paper_ids))
-    rows = session.exec(statement).all()
-    if not rows:
+    if paper_ids == []:
         return []
     try:
         qvec = client.embed(provider, model_id, [query], request_kind="embedding")[0]
     except Exception:  # noqa: BLE001 — retrieval is best-effort
         return []
-    candidates = [(row, list(deserialize(row.embedding))) for row in rows]
-    return finish(top_k(qvec, candidates, limit))
+    from app.rag.scalable import rank
+    return reranking.apply(session,query,rank(session,qvec,model_id,limit,paper_ids),k,config)

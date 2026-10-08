@@ -13,6 +13,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def pytest_configure(config):
+    # The legacy default is a shared directory that pytest deletes on startup.
+    # Give each invocation its own project-local directory, including when
+    # launched from the repository root. Explicit --basetemp remains respected.
+    if config.option.basetemp == '.tmp_pytest':
+        from uuid import uuid4
+        config.option.basetemp = str(BACKEND / '.tmp_pytest' / f'run-{os.getpid()}-{uuid4().hex}')
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"

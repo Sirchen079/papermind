@@ -185,6 +185,18 @@ def create_backup(registry, request_id):
                         # directory enumeration, without _write_file seeing it.
                         if required_pdfs - written_pdfs:
                             raise ValueError(f"项目“{project['name']}”的原文文件在备份期间发生变化，请稍后重试")
+                        # Completed skill runs are research records. Caches and
+                        # in-progress execution directories can be regenerated.
+                        runs_root = scope.data_dir / 'skill_runs'
+                        if runs_root.is_dir():
+                            for run in sorted(runs_root.iterdir()):
+                                if not re.fullmatch(r'[a-f0-9]{32}',run.name) or not (run/'receipt.json').is_file():
+                                    continue
+                                for path in sorted(run.iterdir()):
+                                    if path.is_file():
+                                        if not path.resolve().is_relative_to(runs_root.resolve()):
+                                            raise ValueError('技能记录中有指向目录外的文件')
+                                        manifest['files'].append(_write_file(archive,path,prefix+'/skill_runs/'+run.name+'/'+path.name))
                     shared = registry.root / 'connections.sqlite'
                     if shared.exists():
                         shared_snapshot = scratch / 'shared.sqlite'
@@ -203,6 +215,18 @@ def create_backup(registry, request_id):
                             raise ValueError('共享连接密钥在备份期间发生变化，请稍后重试')
                     elif shared_ids:
                         raise ValueError('共享连接目录缺失，请先处理连接配置')
+                    local_root=registry.root/'local_ai'
+                    if (local_root/'catalog.json').is_file():
+                        catalog_bytes=(local_root/'catalog.json').read_bytes()
+                        models=json.loads(catalog_bytes)
+                        snapshot=scratch/'local-models.json';snapshot.write_bytes(catalog_bytes)
+                        manifest['files'].append(_write_file(archive,snapshot,'application/local_ai/catalog.json'))
+                        for sha in {row['sha256'] for row in models}:
+                            if not re.fullmatch(r'[a-f0-9]{64}',sha):raise ValueError('本地模型目录包含无效文件标识')
+                            weight=local_root/'weights'/(sha+'.gguf')
+                            if not weight.is_file() or not weight.resolve().is_relative_to(local_root.resolve()):
+                                raise ValueError('本地模型文件缺失，请重新导入或移除缺失的模型后备份')
+                            manifest['files'].append(_write_file(archive,weight,'application/local_ai/weights/'+sha+'.gguf'))
                     archive.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False))
                 partial.replace(destination)
             finally:
@@ -218,11 +242,14 @@ def valid_member(name, project_ids):
         return False
     if name in {'application/workspaces.sqlite', 'application/connections.sqlite', 'application/connections.key'}:
         return True
+    if name=='application/local_ai/catalog.json' or re.fullmatch(r'application/local_ai/weights/[a-f0-9]{64}\.gguf',name):
+        return True
     for project_id in project_ids:
         prefix = _project_prefix(project_id) + '/'
         if name.startswith(prefix):
             relative = name[len(prefix):]
-            if relative in {'papermind.sqlite', 'master.key'} or relative.startswith('pdfs/'):
+            if (relative in {'papermind.sqlite', 'master.key'} or relative.startswith('pdfs/')
+                    or re.fullmatch(r'skill_runs/[a-f0-9]{32}/[^/]+', relative)):
                 return True
     return False
 
@@ -295,6 +322,16 @@ def verify(path):
                     local.unlink()
             if shared_ids - known_connections:
                 raise ValueError('备份中存在缺失的共享连接引用')
+            if 'application/local_ai/catalog.json' in members:
+                models=json.loads(archive.read('application/local_ai/catalog.json'))
+                entries_by_path={entry['path']:entry for entry in entries}
+                if not isinstance(models,list):raise ValueError('本地模型目录格式无效')
+                for model in models:
+                    if not re.fullmatch(r'[a-f0-9]{32}',model['id']) or not re.fullmatch(r'[a-f0-9]{64}',model['sha256']):
+                        raise ValueError('本地模型标识无效')
+                    weight='application/local_ai/weights/'+model['sha256']+'.gguf'
+                    if weight not in entries_by_path or entries_by_path[weight]['sha256']!=model['sha256']:
+                        raise ValueError('备份缺少完整的本地模型权重')
             return {'ok': True, 'errors': [], 'projects': projects, 'file_count': len(entries), 'manifest': manifest}
     except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error, zipfile.BadZipFile) as exc:
         return {'ok': False, 'errors': [str(exc)], 'projects': [], 'file_count': 0}

@@ -1,6 +1,6 @@
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from sqlmodel import Session, select
 
 from app.api.deps import get_session
@@ -13,6 +13,79 @@ from app.security.crypto import get_crypto
 from app.security.url_guard import ensure_http_url
 
 router = APIRouter()
+
+
+class LocalServerIn(BaseModel):
+    base_url: str
+    api_key: str | None = None
+
+
+class LocalConnectIn(LocalServerIn):
+    name: str = '本机模型'
+    chat_model: str | None = None
+    embedding_model: str | None = None
+    chat_context_window: int | None = Field(default=None, gt=0)
+
+
+def _discover_local(body: LocalServerIn) -> dict:
+    from app.providers.local import discover
+    try:
+        return discover(body.base_url, body.api_key)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {401, 403}:
+            raise HTTPException(502, '本机服务需要认证，请填写该服务配置的访问密钥。') from exc
+        raise HTTPException(502, f'本机模型列表请求失败（HTTP {exc.response.status_code}）。请确认服务已开启 OpenAI 兼容 API。') from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, '尚未连接本机模型服务。请先启动 Ollama、LM Studio 或 llama.cpp 的 API 服务，并检查地址和端口。') from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post('/local-models/discover')
+def discover_local_models(body: LocalServerIn) -> dict:
+    return _discover_local(body)
+
+
+@router.post('/local-models/connect')
+def connect_local_models(body: LocalConnectIn, session: Session = Depends(get_session)) -> dict:
+    selected = {role: mid for role, mid in [('chat', body.chat_model), ('embedding', body.embedding_model)] if mid}
+    if not selected:
+        raise HTTPException(422, '请选择文本模型或向量模型。')
+    if len(set(selected.values())) != len(selected):
+        raise HTTPException(422, '文本生成与向量检索请选择不同模型；也可以先只连接其中一种。')
+    discovered = _discover_local(body)
+    available = {m['id'] for m in discovered['models']}
+    if any(mid not in available for mid in selected.values()):
+        raise HTTPException(409, '所选模型已不在服务列表中，请重新检测。')
+    session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+    p = session.exec(select(Provider).where(Provider.base_url == discovered['base_url'],
+        Provider.type == 'openai_compat', Provider.is_deleted == False, Provider.shared_connection_id == None)).first()
+    if p is None:
+        p = Provider(name=body.name.strip() or '本机模型', type='openai_compat', base_url=discovered['base_url'])
+        session.add(p); session.flush()
+    p.enabled = True
+    if body.api_key:
+        p.api_key_encrypted = get_crypto().encrypt(body.api_key)
+    session.add(p)
+    assigned = {}
+    for role, mid in selected.items():
+        row = session.exec(select(Model).where(Model.provider_id == p.id, Model.model_id == mid)).first()
+        if row is None:
+            row = Model(provider_id=p.id, model_id=mid, display_name=mid, is_manual=False)
+            session.add(row); session.flush()
+        # Preserve the same model-purpose invariants as the ordinary editor.
+        from app.providers.purposes import configured_id
+        if configured_id(session, 'rerank') == row.id or (role == 'embedding' and configured_id(session, 'rerank_llm') == row.id):
+            raise HTTPException(422, '该模型正在用于重排序，请先在文档与检索设置中解除。')
+        for previous in session.exec(select(Model).where(Model.role_default == role)).all():
+            previous.role_default = None; session.add(previous)
+        row.role_default = role
+        if role == 'chat' and body.chat_context_window is not None:
+            row.context_window = body.chat_context_window
+        session.add(row)
+        assigned[role] = row.id
+    session.commit(); session.refresh(p)
+    return {'provider_id': p.id, 'base_url': p.base_url, 'models': assigned}
 
 
 class ProviderIn(BaseModel):

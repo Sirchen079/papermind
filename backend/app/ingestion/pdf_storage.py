@@ -2,6 +2,12 @@
 from pathlib import Path
 
 
+def pdf_digest(path: Path) -> str:
+    import hashlib
+    with path.open('rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
 def resolve_pdf(value: str | None, root: Path) -> Path | None:
     if not value:
         return None

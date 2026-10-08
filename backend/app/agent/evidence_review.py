@@ -20,6 +20,32 @@ def _plain(text):
     return ' '.join(text.split())
 
 
+def tool_evidence_text(name, arguments, result):
+    """Render actual JSON tool fields once, retaining text's real line breaks."""
+    def render(value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            return '\n'.join(f'{key}:\n{render(item)}' for key, item in value.items())
+        if isinstance(value, list):
+            return '\n\n'.join(f'[{i}]\n{render(item)}' for i, item in enumerate(value))
+        return json.dumps(value, ensure_ascii=False)
+    try:
+        body = render(json.loads(result))
+    except (ValueError, TypeError):
+        body = result
+    return f'tool: {name}\narguments: {json.dumps(arguments, ensure_ascii=False)}\nresult:\n{body}'
+
+
+def _quote_in_source(quote, source):
+    # PDF extraction wraps words as "im-\nproved". Accept either printed
+    # hyphenation or the unbroken word, without changing numbers or wording.
+    wrap = r'(?<=[A-Za-z]{2})-[ \t]*\r?\n[ \t]*(?=[A-Za-z]{2})'
+    def forms(text):
+        return {_plain(text), _plain(re.sub(wrap, '-', text)), _plain(re.sub(wrap, '', text))}
+    return any(q in s for q in forms(quote) for s in forms(source))
+
+
 def apply_edits(draft, parsed, evidence):
     if not isinstance(parsed,dict) or not isinstance(parsed.get('edits'),list) or len(parsed['edits'])>24:
         raise ValueError('证据复核未返回有效修改列表')
@@ -44,7 +70,7 @@ def apply_edits(draft, parsed, evidence):
         if not after.strip():
             raise ValueError('证据复核未精确定位唯一的原回答片段')
         source=sources.get(edit['evidence_id'])
-        if source is None or len(_plain(edit['quote']))<8 or _plain(edit['quote']) not in _plain(source):
+        if source is None or len(_plain(edit['quote']))<8 or not _quote_in_source(edit['quote'], source):
             raise ValueError('证据复核引用不是已提供原文的片段')
         if len(before)>max(1200,len(draft)*0.6) or len(after)>max(1800,len(before)*4):
             raise ValueError('证据复核修改超出局部修订范围')

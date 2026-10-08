@@ -1,5 +1,11 @@
 import re
+import time
 from dataclasses import dataclass, field
+from pathlib import Path
+from threading import Lock
+
+_crossref_lock = Lock()
+_crossref_next_request_at = 0.0
 
 
 @dataclass
@@ -14,9 +20,13 @@ class FetchedPaper:
     abstract: str | None = None
     year: int | None = None
     venue: str | None = None
+    volume: str | None = None
+    issue: str | None = None
+    pages: str | None = None
     doi: str | None = None
     arxiv_id: str | None = None
     pdf_bytes: bytes | None = None  # None when full text is unavailable
+    pdf_file: Path | None = None  # Streamed downloads need not be held in RAM.
 
 
 _MAX_PDF_REDIRECTS = 5
@@ -62,8 +72,11 @@ def normalize_arxiv_id(value: str) -> str:
     return value
 
 
-def fetch_arxiv(arxiv_id: str, client=None) -> FetchedPaper:
-    """Fetch a paper's metadata + PDF from ArXiv.
+def fetch_arxiv(arxiv_id: str, client=None, *, download_pdf: bool = True) -> FetchedPaper:
+    """Fetch a paper's metadata and, by default, PDF from ArXiv.
+
+    ``download_pdf=False`` reuses metadata parsing when another import path
+    already streams the PDF to disk.
 
     ``client`` is injectable for testing (an object with a ``results(search)``
     method yielding objects with ``title/authors/summary/published/doi`` and,
@@ -86,7 +99,9 @@ def fetch_arxiv(arxiv_id: str, client=None) -> FetchedPaper:
         short_id = get_short_id()
     if not short_id:
         short_id = arxiv_id
-    pdf_bytes = _download_pdf(f"https://arxiv.org/pdf/{short_id}")
+    # Direct-PDF acquisition already streams this file; reuse metadata lookup
+    # without fetching a second in-memory copy of the same PDF.
+    pdf_bytes = _download_pdf(f"https://arxiv.org/pdf/{short_id}") if download_pdf else None
 
     published = getattr(result, "published", None)
     year = published.year if published else None
@@ -125,6 +140,9 @@ def parse_bibtex(bibtex_text: str) -> list[FetchedPaper]:
                 abstract=entry.get("abstract") or entry.get("abstractNote"),
                 year=year,
                 venue=entry.get("journal") or entry.get("booktitle"),
+                volume=entry.get("volume"),
+                issue=entry.get("number"),
+                pages=entry.get("pages"),
                 doi=doi,
                 arxiv_id=entry.get("eprint") or None,
                 pdf_bytes=None,
@@ -193,6 +211,96 @@ def _arxiv_id(record: dict[str, list[str]]) -> str | None:
     return None
 
 
+def _ris_pages(record: dict[str, list[str]]) -> str | None:
+    start, end = _first(record, "SP"), _first(record, "EP")
+    if start and end and start != end:
+        return f"{start}--{end}"
+    return start or end
+
+
+def normalize_doi(value: str | None) -> str | None:
+    """Normalize a DOI supplied as an identifier or a standard resolver URL."""
+    from urllib.parse import unquote
+    value = (value or "").strip()
+    value = re.sub(r"^https?://(?:dx\.)?doi\.org/", "", value, flags=re.I)
+    value = re.sub(r"^doi:\s*", "", value, flags=re.I)
+    value = unquote(value).strip()
+    return value.lower() if re.fullmatch(r"10\.\d{4,9}/\S+", value) else None
+
+
+def fetch_crossref(doi: str) -> FetchedPaper:
+    """Retrieve DOI metadata without losing publication dates or article numbers."""
+    from urllib.parse import quote
+    from app.security.url_guard import validated_get
+    identifier = normalize_doi(doi)
+    if identifier is None:
+        raise ValueError("Invalid DOI")
+    url = f"https://api.crossref.org/works/{quote(identifier, safe='')}"
+    # Crossref's public pool permits one in-flight request (since Dec 2025).
+    # Survey workers and agent imports share this process, so pace the common
+    # lookup rather than allowing independent jobs to race each other.
+    global _crossref_next_request_at
+    with _crossref_lock:
+        delay = _crossref_next_request_at - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            response = validated_get(url, headers={"Accept": "application/json",
+                "User-Agent": "PaperMind (local research library)"}, timeout=15)
+        finally:
+            _crossref_next_request_at = time.monotonic() + 0.25
+    response.raise_for_status()
+    record = response.json().get('message')
+    if not isinstance(record, dict) or normalize_doi(record.get('DOI')) != identifier:
+        raise ValueError("Crossref did not return the requested DOI")
+
+    def first_text(value):
+        if isinstance(value, list):
+            value = next((v for v in value if isinstance(v, str) and v.strip()), None)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    authors = []
+    for author in record.get('author') or []:
+        if not isinstance(author, dict):
+            continue
+        family, given = first_text(author.get('family')), first_text(author.get('given'))
+        name = ', '.join(v for v in (family, given) if v) or first_text(author.get('name'))
+        if name:
+            authors.append(name)
+
+    # A journal's assigned print issue can follow online-first publication in
+    # the previous year. Use the issue date when the publisher supplied one;
+    # online-only records retain their online/issued date. Never infer from DOI.
+    year = None
+    for field in ('published-print', 'published-online', 'issued', 'published'):
+        date = record.get(field)
+        parts = date.get('date-parts') if isinstance(date, dict) else None
+        if isinstance(parts, list) and parts and isinstance(parts[0], list) and parts[0]:
+            value = parts[0][0]
+            if isinstance(value, int) and not isinstance(value, bool) and 1000 <= value <= 9999:
+                year = value
+                break
+    return FetchedPaper(
+        source='crossref', source_ref=identifier, doi=identifier,
+        title=first_text(record.get('title')), authors=authors, year=year,
+        venue=first_text(record.get('container-title')),
+        volume=first_text(record.get('volume')), issue=first_text(record.get('issue')),
+        pages=first_text(record.get('page')) or first_text(record.get('article-number')),
+    )
+
+
+def lookup_doi_metadata(doi: str | None) -> tuple[FetchedPaper | None, dict | None]:
+    """Shared best-effort lookup; unavailable metadata never aborts an import."""
+    identifier = normalize_doi(doi)
+    if identifier is None:
+        return None, None
+    receipt = {'source': 'crossref', 'identifier': identifier}
+    try:
+        return fetch_crossref(identifier), {**receipt, 'status': 'retrieved'}
+    except Exception as exc:
+        return None, {**receipt, 'status': 'unavailable', 'error_type': type(exc).__name__}
+
+
 def parse_ris(ris_text: str) -> list[FetchedPaper]:
     """Parse RIS records exported by Zotero/EndNote into FetchedPaper rows."""
     out: list[FetchedPaper] = []
@@ -213,6 +321,9 @@ def parse_ris(ris_text: str) -> list[FetchedPaper]:
                 abstract=_first(record, "AB", "N2"),
                 year=_year(_first(record, "PY", "Y1", "DA")),
                 venue=_first(record, "JO", "JF", "T2", "JA", "J2"),
+                volume=_first(record, "VL"),
+                issue=_first(record, "IS"),
+                pages=_ris_pages(record),
                 doi=_first(record, "DO"),
                 arxiv_id=_arxiv_id(record),
                 pdf_bytes=None,

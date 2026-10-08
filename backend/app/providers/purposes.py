@@ -1,4 +1,4 @@
-"""Explicit per-project models for document transcription and retrieval ranking."""
+"""Explicit per-project models for document, retrieval, and review tasks."""
 from fastapi import HTTPException
 from sqlmodel import Session
 from app.models import Model, Provider, Setting
@@ -40,11 +40,14 @@ def purpose_model(session, purpose, config_id=None):
         if model.role_default == 'embedding' or is_reranker(session, model) or model.supports_images is False:
             raise HTTPException(422, 'OCR 需要支持图片输入的文本模型。')
     elif purpose == 'rerank':
-        if model.role_default in {'chat', 'embedding'} or mid in {configured_id(session, 'ocr'), configured_id(session, 'translation'), configured_id(session, 'rerank_llm')}:
-            raise HTTPException(422, '重排序需要专用模型，请先解除该模型的文本、向量、翻译或 OCR 用途。')
+        if model.role_default in {'chat', 'embedding'} or mid in {configured_id(session, 'ocr'), configured_id(session, 'translation'), configured_id(session, 'rerank_llm'), configured_id(session, 'review_writing')}:
+            raise HTTPException(422, '重排序需要专用模型，请先解除该模型的文本、向量、翻译、OCR 或综述写作用途。')
     elif purpose == 'rerank_llm':
         if model.role_default == 'embedding' or is_reranker(session, model):
             raise HTTPException(422, '大模型重排序需要文本模型，可与对话、翻译和 OCR 共用。')
+    elif purpose == 'review_writing':
+        if model.role_default == 'embedding' or is_reranker(session, model):
+            raise HTTPException(422, '综述写作需要文本模型，可与对话模型共用。')
     try:
         actual, crypto = resolve(provider)
     except LookupError as exc:

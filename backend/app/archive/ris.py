@@ -1,4 +1,5 @@
 import json
+import re
 
 from app.models import Paper
 
@@ -24,11 +25,19 @@ def _line(tag: str, value: object | None) -> str | None:
 
 
 def format_paper(paper: Paper) -> str:
+    # Split simple ranges; preserve article numbers/complex locators as SP.
+    pages = (paper.pages or "").strip()
+    match = re.fullmatch(r"([A-Za-z]*\d+)\s*(?:--|[-–—])\s*([A-Za-z]*\d+)", pages)
+    start, end = match.groups() if match else (pages, None)
     lines = ["TY  - JOUR"]
     for maybe in [
         _line("TI", paper.title),
         _line("PY", paper.year),
         _line("JO", paper.venue),
+        _line("VL", paper.volume),
+        _line("IS", paper.issue),
+        _line("SP", start),
+        _line("EP", end),
         _line("DO", paper.doi),
         _line("AB", paper.abstract),
     ]:

@@ -141,3 +141,9 @@ def test_fetch_arxiv_raises_on_pdf_download_error(monkeypatch):
 
     with pytest.raises(httpx.HTTPStatusError):
         fetch_arxiv("2405.00001", client=_FakePdfClient())
+
+def test_fetch_arxiv_metadata_does_not_download_pdf(monkeypatch):
+    monkeypatch.setattr('app.ingestion.sources._download_pdf', lambda *a: pytest.fail('metadata lookup downloaded PDF'))
+    fp = fetch_arxiv('2405.00001v2', client=_FakeClient(), download_pdf=False)
+    assert fp.authors == ['Alice', 'Bob'] and fp.year == 2024
+    assert fp.arxiv_id == '2405.00001v2' and fp.pdf_bytes is None

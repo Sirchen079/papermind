@@ -17,8 +17,23 @@ from app.security.crypto import Crypto
 from app.security.url_guard import ensure_http_url, validated_get
 
 
+def _generation_timeout(api_base, effort):
+    """Use the same generation allowance for document writing and tool agents."""
+    import httpx
+    from app.providers.local import is_loopback_url
+    if is_loopback_url(api_base):
+        return httpx.Timeout(None, connect=10, write=60, pool=60)
+    if effort in {'medium', 'high', 'xhigh', 'max'}:
+        return httpx.Timeout(300 if effort == 'medium' else 600, connect=10, write=60, pool=60)
+    return 180
+
+
 class EmptyResponseError(ValueError):
     """The provider consumed a call but supplied no final assistant text."""
+
+    def __init__(self, message, *, output_exhausted=False):
+        super().__init__(message)
+        self.output_exhausted = output_exhausted
 
 
 @dataclass
@@ -30,6 +45,8 @@ class CompletionResult:
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
     cache_usage_reported: bool = False
+    output_incomplete: bool = False
+    output_exhausted: bool = False
 
 
 @dataclass
@@ -124,9 +141,24 @@ class ProviderClient:
     def __init__(self, session_factory: Callable[[], Session], crypto: Crypto) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
+        from app.providers.shared import application_dir
+        self._application_dir = application_dir()
+
+    def _ready_provider(self, provider):
+        from app.providers.managed import manager, model_id
+        mid = model_id(provider.base_url)
+        if not mid:
+            return provider
+        url, key = manager(self._application_dir).ready(mid)
+        return provider.model_copy(update={'base_url':url, 'api_key_encrypted':self._crypto.encrypt(key)})
 
     def _api_key(self, provider: Provider) -> str | None:
         if not provider.api_key_encrypted:
+            from app.providers.local import is_loopback_url
+            if provider.type in {'openai_chat', 'openai_responses', 'openai_compat'} and is_loopback_url(provider.base_url):
+                # OpenAI clients require a value even when a local server does
+                # not authenticate. Do not inherit an unrelated cloud API key.
+                return 'papermind-local'
             return None
         return self._crypto.decrypt(provider.api_key_encrypted)
 
@@ -160,11 +192,13 @@ class ProviderClient:
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
     ) -> CompletionResult:
+        provider = self._ready_provider(provider)
         route = route_completion(provider.type, model_id, provider.base_url)
         # A user-configured thinking level on the model row wins over the
         # caller's purpose default (evidence review 'high', research 'low').
         configured_effort = self._configured_effort(provider, model_id)
         reasoning_effort = configured_effort or reasoning_effort
+        review_effort = reasoning_effort
         documented=reasoning_options(provider,model_id,reasoning_effort)
         # Unknown/custom models use provider defaults. Never send a reasoning
         # knob solely because the caller happens to be a research workflow.
@@ -187,14 +221,18 @@ class ProviderClient:
             kwargs["api_base"] = ensure_http_url(route.api_base)  # SSRF guard
 
         # No unbounded provider retries inside a bounded research step.
-        if request_kind in {"research", "rerank_llm"}:
-            kwargs["timeout"] = 45 if request_kind == 'rerank_llm' else 90
+        if request_kind in {"research", "rerank_llm", "retrieval_query"}:
+            kwargs["timeout"] = 90 if request_kind == 'research' else 45
             kwargs["num_retries"] = 0
-        elif request_kind in {"evidence_review", "wiki_update", "pdf_ocr"}:
+            if request_kind == 'rerank_llm' and configured_effort in {'medium','high','xhigh','max'}:
+                kwargs['timeout'] = _generation_timeout(route.api_base, configured_effort)
+        elif request_kind in {"evidence_review", "wiki_update", "pdf_ocr", "library_review"}:
             # LiteLLM's inherited default can be 6000 seconds. Bound a
             # foreground step and let the application expose a retryable error.
             kwargs["timeout"] = 300 if request_kind == "evidence_review" else 180
             kwargs["num_retries"] = 0
+            if request_kind == 'library_review':
+                kwargs['timeout'] = _generation_timeout(route.api_base, review_effort)
         if route.call == "responses":
             kwargs["input"] = [{**m, "content": responses_content(m.get("content"))} for m in kwargs.pop("messages")]
             if max_tokens is not None:
@@ -216,17 +254,23 @@ class ProviderClient:
         prompt_t, completion_t, total_t = token_usage(usage)
 
         self._record_usage(provider, model_id, request_kind, ref_id, prompt_t, completion_t, total_t, usage=usage)
+        incomplete = getattr(resp, 'status', None) == 'incomplete' if route.call == 'responses' else getattr(resp.choices[0], 'finish_reason', None) == 'length'
+        details = getattr(resp, 'incomplete_details', None)
+        reason = details.get('reason') if isinstance(details, dict) else getattr(details, 'reason', None)
+        exhausted = incomplete and (route.call != 'responses' or reason == 'max_output_tokens')
         if request_kind in {'pdf_ocr', 'rerank_llm'}:
-            incomplete = getattr(resp, 'status', None) == 'incomplete' if route.call == 'responses' else getattr(resp.choices[0], 'finish_reason', None) == 'length'
             if incomplete:
                 raise ValueError('OCR output truncated' if request_kind == 'pdf_ocr' else 'Reranking output truncated')
-        if route.call == "responses" and not content.strip():
-            raise EmptyResponseError("Responses 未返回最终文本；可能达到输出上限，不能当作任务完成")
-        return CompletionResult(content, prompt_t, completion_t, total_t, *cache_usage(usage))
+        if not content.strip() and (route.call == "responses" or exhausted):
+            raise EmptyResponseError("模型未返回最终文本；可能达到输出上限，不能当作任务完成",
+                                     output_exhausted=exhausted)
+        return CompletionResult(content, prompt_t, completion_t, total_t, *cache_usage(usage),
+                                output_incomplete=incomplete, output_exhausted=exhausted)
 
     def rerank(self, provider, model_id, query, documents, top_n):
         """SiliconFlow / Jina-compatible rerank protocol, separate from chat."""
         import httpx
+        provider = self._ready_provider(provider)
         url = ensure_http_url(provider.base_url.rstrip('/') + '/rerank')
         headers = json.loads(provider.extra_headers_json or '{}')
         key = self._api_key(provider)
@@ -269,6 +313,7 @@ class ProviderClient:
         Preserve the configured protocol, translating tool messages for Responses.
         ``tools`` uses the existing chat function schema at the agent boundary.
         """
+        provider = self._ready_provider(provider)
         route = route_completion(provider.type, model_id, provider.base_url)
         kwargs: dict[str, Any] = {
             "model": route.litellm_model,
@@ -289,6 +334,7 @@ class ProviderClient:
 
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
         effort = self._configured_effort(provider, model_id)
+        kwargs['timeout'] = _generation_timeout(route.api_base, effort)
         documented = reasoning_options(provider, model_id, effort)
         kwargs.update(documented)
         if documented:
@@ -371,6 +417,7 @@ class ProviderClient:
         differs across LiteLLM versions, so that route degrades to a single
         one-shot chunk (still correct, just not incremental).
         """
+        provider = self._ready_provider(provider)
         route = route_completion(provider.type, model_id, provider.base_url)
         kwargs: dict[str, Any] = {
             "model": route.litellm_model,
@@ -448,6 +495,8 @@ class ProviderClient:
         ``embedding`` role. Anthropic offers no embeddings API and raises here.
         Inputs are batched to keep payloads small; usage is recorded per batch.
         """
+        cache_provider = provider
+        provider = self._ready_provider(provider)
         if provider.type == "anthropic":
             raise ValueError(
                 "the embedding role requires an OpenAI-compatible provider; "
@@ -476,8 +525,8 @@ class ProviderClient:
         batch = 32
         for i in range(0, len(inputs), batch):
             texts = inputs[i:i+batch]
-            keys = [cache.cache_key(provider, model_id, text, 'embedding-float-v1') for text in texts]
-            batch_key = cache.cache_key(provider, model_id, sorted(set(keys)), 'embedding-batch')
+            keys = [cache.cache_key(cache_provider, model_id, text, 'embedding-float-v1') for text in texts]
+            batch_key = cache.cache_key(cache_provider, model_id, sorted(set(keys)), 'embedding-batch')
             with cache.key_lock(batch_key):
                 vectors = {}
                 missing = {}
@@ -571,6 +620,7 @@ class ProviderClient:
         return out
 
     def _models_endpoint(self, provider: Provider) -> tuple[str, dict[str, str]]:
+        provider = self._ready_provider(provider)
         key = self._api_key(provider)
         if provider.type in {"openai_chat", "openai_responses", "openai_compat"}:
             base = ensure_http_url(

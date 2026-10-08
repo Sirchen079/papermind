@@ -38,6 +38,12 @@ def change_title(path, value):
 
 def test_restore_dry_run_then_custom_target_and_real_startup(client, env, monkeypatch):
     wid, _ = seed(client)
+    run_id = 'd' * 32
+    for project_id in ['legacy', wid]:
+        directory = client.app.state.workspaces.context(project_id).data_dir / 'skill_runs' / run_id
+        directory.mkdir(parents=True)
+        (directory / 'report.md').write_text('Restorable skill report', encoding='utf-8')
+        (directory / 'receipt.json').write_text(json.dumps({'artifacts': [{'name': 'report.md'}]}), encoding='utf-8')
     archive = backup(client)
     root = env / 'target'
     custom_db = env / 'custom.sqlite'
@@ -55,6 +61,9 @@ def test_restore_dry_run_then_custom_target_and_real_startup(client, env, monkey
     restarted = TestClient(create_app())
     assert all(row['available'] for row in restarted.get('/api/workspaces').json())
     assert restarted.get('/api/w/' + wid + '/papers').json()['items'][0]['title'] == 'B private'
+    for project_id in ['legacy', wid]:
+        response = restarted.get(f'/api/w/{project_id}/builtin-skills/runs/{run_id}/files/report.md')
+        assert response.status_code == 200 and response.text == 'Restorable skill report'
 
 
 def test_running_app_blocks_restore_before_any_replacement(client):

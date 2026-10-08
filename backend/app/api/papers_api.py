@@ -2,7 +2,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlmodel import Session, select
@@ -107,6 +107,9 @@ class ManualPaperIn(BaseModel):
     abstract: str | None = None
     year: int | None = None
     venue: str | None = None
+    volume: str | None = None
+    issue: str | None = None
+    pages: str | None = None
     doi: str | None = None
     arxiv_id: str | None = None
 
@@ -120,6 +123,9 @@ class PaperPatchIn(BaseModel):
     abstract: str | None = None
     year: int | None = None
     venue: str | None = None
+    volume: str | None = None
+    issue: str | None = None
+    pages: str | None = None
     doi: str | None = None
     arxiv_id: str | None = None
 
@@ -141,6 +147,9 @@ def _public(p: Paper) -> dict:
         "abstract": p.abstract,
         "year": p.year,
         "venue": p.venue,
+        "volume": p.volume,
+        "issue": p.issue,
+        "pages": p.pages,
         "doi": p.doi,
         "arxiv_id": p.arxiv_id,
         "parse_confidence": p.parse_confidence,
@@ -394,6 +403,9 @@ def patch_paper(pid: int, body: PaperPatchIn, session: Session = Depends(get_ses
         p.year = body.year
     if "venue" in fields:
         p.venue = _optional_text(body.venue)
+    for field in ("volume", "issue", "pages"):
+        if field in fields:
+            setattr(p, field, _optional_text(getattr(body, field)))
     p.updated_at = utcnow()
     session.add(p)
     session.commit()
@@ -412,6 +424,9 @@ def _insert_manual_paper(
     doi: str | None,
     arxiv_id: str | None,
     citation_key: str | None = None,
+    volume: str | None = None,
+    issue: str | None = None,
+    pages: str | None = None,
 ) -> Paper:
     """创建手动来源论文记录（含稳定 citation key 与引用回填）。调用方先做查重。"""
     paper = Paper(
@@ -425,6 +440,9 @@ def _insert_manual_paper(
         abstract=abstract,
         year=year,
         venue=venue,
+        volume=volume,
+        issue=issue,
+        pages=pages,
         doi=doi,
         arxiv_id=arxiv_id,
         title_norm=normalize_title(title),
@@ -479,6 +497,9 @@ def create_manual_paper(body: ManualPaperIn, session: Session = Depends(get_sess
         abstract=_optional_text(body.abstract),
         year=body.year,
         venue=_optional_text(body.venue),
+        volume=_optional_text(body.volume),
+        issue=_optional_text(body.issue),
+        pages=_optional_text(body.pages),
         doi=doi,
         arxiv_id=arxiv_id,
         citation_key=citation_key,
@@ -609,6 +630,21 @@ def get_paper_file(pid: int, session: Session = Depends(get_session)) -> FileRes
     if resolved is None:
         raise HTTPException(404, "paper file not found")
     return FileResponse(resolved, media_type="application/pdf", filename=resolved.name)
+
+
+@router.get('/papers/{pid}/page-attachment')
+def get_page_attachment(pid: int, page: int = Query(ge=1), session: Session = Depends(get_session)):
+    from app.reading.page_attachment import page_attachment
+    paper = session.get(Paper, pid)
+    if paper is None or paper.is_deleted:
+        raise HTTPException(404, 'paper not found')
+    try:
+        item = page_attachment(paper, page, _pdf_dir())
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return JSONResponse(item.model_dump(), headers={'Cache-Control': 'no-store'})
 
 
 @router.delete("/papers/{pid}", status_code=204)

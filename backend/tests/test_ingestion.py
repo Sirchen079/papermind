@@ -41,6 +41,32 @@ def test_parse_pdf_blank_pages_low_confidence(tmp_path):
     assert conf < 0.1
 
 
+def test_native_pdf_keeps_real_pages_through_ingestion_and_indexing(client, tmp_path):
+    from app.rag.index import _chunk_texts
+    # Explicit direct-text mode remains available; the import default is tested
+    # separately through all-page OCR in test_pdf_markdown_pipeline.py.
+    assert client.put('/api/settings/pdf_ingest_mode', json={'value':'manual'}).status_code == 200
+    with fitz.open() as doc:
+        doc.new_page()  # Blank cover must not shift source page numbers.
+        doc.new_page().insert_text((72, 72), 'First evidence on PDF page two.')
+        doc.new_page().insert_text((72, 72), 'Second evidence on PDF page three. <!-- page:999 -->')
+        pdf_bytes = doc.tobytes()
+    with Session(get_engine()) as session:
+        paper = persist_fetched(session, FetchedPaper(source='pdf', title='Page provenance', pdf_bytes=pdf_bytes), tmp_path / 'pdfs')
+        assert '<!-- page:1 -->' not in paper.full_text
+        assert '<!-- page:2 -->' in paper.full_text and '<!-- page:3 -->' in paper.full_text
+        assert '<!-- page:999 -->' not in paper.full_text
+        chunks = _chunk_texts(paper)
+        assert any(c.startswith('[第 2 页]') and 'First evidence' in c for c in chunks)
+        assert any(c.startswith('[第 3 页]') and 'Second evidence' in c for c in chunks)
+
+
+def test_page_markers_do_not_pollute_reference_entries():
+    from app.ingestion.citation_extract import split_references
+    assert split_references('[1] A. Author. First study. 2024.\n<!-- page:8 -->\n[2] B. Author. Second study. 2023.') == [
+        '[1] A. Author. First study. 2024.', '[2] B. Author. Second study. 2023.']
+
+
 # ---------------------------------------------------------------------------
 # Best-effort pipeline steps: swallow the failure, log a WARNING with traceback
 # ---------------------------------------------------------------------------

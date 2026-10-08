@@ -58,6 +58,9 @@ def format_paper(paper: Paper, key: str) -> str:
         ("author", " and ".join(_authors(paper)) or None),
         ("year", paper.year),
         ("journal", paper.venue),
+        ("volume", paper.volume),
+        ("number", paper.issue),
+        ("pages", paper.pages),
         ("doi", paper.doi),
         ("eprint", paper.arxiv_id),
     ]

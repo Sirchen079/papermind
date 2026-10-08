@@ -31,6 +31,7 @@ from app.models import (
     PaperExcerpt,
     PaperLink,
     PaperNote,
+    PaperNoteRevision,
     PaperReadingState,
     PaperTag,
     Provider,
@@ -46,6 +47,7 @@ from app.models import (
     ResearchTask, ResearchArtifact, ResearchReuse, WorkspaceCopy, WikiPage, WikiRevision, WikiUpdate, WikiCopy,
 )
 from app.models.paper import parse_authors_json
+from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision
 
 
 def _pdf_dir() -> Path:
@@ -718,6 +720,7 @@ def export_json(session: Session) -> dict:
         "skills": skills,
         "reading_states": [_dump(row) for row in _paper_rows(session, PaperReadingState, active_paper_ids)],
         "paper_notes": [_dump_tagged_row(row) for row in _paper_rows(session, PaperNote, active_paper_ids)],
+        "paper_note_revisions": [_dump_tagged_row(row) for row in session.exec(select(PaperNoteRevision).join(PaperNote,PaperNote.id==PaperNoteRevision.note_id).where(PaperNote.paper_id.in_(active_paper_ids)))],
         "paper_excerpts": [_dump_tagged_row(row) for row in _paper_rows(session, PaperExcerpt, active_paper_ids)],
         "review_matrix_entries": [_dump(row) for row in _paper_rows(session, ReviewMatrixEntry, active_paper_ids)],
         "projects": [_dump(row) for row in _all(session, Project)],
@@ -730,6 +733,10 @@ def export_json(session: Session) -> dict:
         "reports": [_dump(row) for row in _all(session, Report)],
         # Preserve all versions and their saved evidence, including snapshots of
         # sources removed later. These are independent researcher records.
+        "library_reviews": [_dump(row, exclude={"run_token"}) for row in _all(session, LibraryReview)],
+        "review_papers": [_dump(row) for row in _all(session, ReviewPaper)],
+        "review_sections": [_dump(row) for row in _all(session, ReviewSection)],
+        "review_revisions": [_dump(row) for row in _all(session, ReviewRevision)],
         "research_tasks": [_dump(row, exclude={"run_token"}) for row in _all(session, ResearchTask)],
         "research_artifacts": [_dump(row) for row in _all(session, ResearchArtifact)],
         "research_reuse": [_dump(row) for row in _all(session, ResearchReuse)],
