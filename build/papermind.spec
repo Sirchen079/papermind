@@ -34,6 +34,7 @@ SPEC_DIR = Path(globals().get("SPECPATH") or os.getcwd()).resolve()
 REPO = SPEC_DIR.parent
 BACKEND = REPO / "backend"
 FRONTEND = REPO / "frontend"
+FRONTEND_DIST = Path(os.environ.get("PAPERMIND_BUILD_FRONTEND_DIST") or FRONTEND / "dist").resolve()
 
 datas = []
 binaries = []
@@ -82,11 +83,13 @@ datas += [
       if path.is_file() and "__pycache__" not in path.parts and path.suffix not in {".pyc", ".pyo"}],
     (str(BACKEND / "user_skills"), "backend/user_skills"),
     (str(BACKEND / "research_skills"), "backend/research_skills"),
+    (str(BACKEND / "builtin_skills"), "backend/builtin_skills"),
     (str(REPO / "third_party"), "third_party"),
     (str(REPO / "THIRD_PARTY_NOTICES.md"), "."),
-    (str(FRONTEND / "dist"), "frontend/dist"),
+    (str(FRONTEND_DIST), "frontend/dist"),
     (str(SPEC_DIR / "assets" / "papermind.ico"), "desktop"),
     (str(SPEC_DIR / "vendor" / "webview2"), "desktop/webview2"),
+    (str(SPEC_DIR / "vendor" / "llama_cpp"), "local_runtime"),
 ]
 
 # Some libs introspect their own installed distribution metadata at runtime.

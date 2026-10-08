@@ -5,7 +5,7 @@
 ; 产物：build\installer_output\PaperMind-Setup-<ver>.exe
 ;
 ; 设计要点：
-;   * 装到 Program Files（{autopf}，需管理员），64 位。
+;   * 首次默认安装到当前用户的 Programs 目录，无需管理员；既有安装沿用原模式。
 ;   * 用户数据（DB / master.key / PDF）由应用写到 %LOCALAPPDATA%\PaperMind\data，
 ;     与安装目录解耦；卸载默认保留，卸载向导里询问是否一并删除。
 ;   * 防呆：禁止装到盘符根目录；降级覆盖前提示；检测到旧版数据自动迁移；
@@ -13,7 +13,10 @@
 
 #define MyAppName      "PaperMind"
 #ifndef MyAppVersion
-#define MyAppVersion   "0.5.4"
+#define MyAppVersion   "0.6.29"
+#endif
+#ifndef MyAppSource
+#define MyAppSource "dist\PaperMind"
 #endif
 #define MyAppPublisher "PaperMind"
 #define MyAppExeName   "PaperMind.exe"
@@ -37,7 +40,9 @@ SetupIconFile=assets\papermind.ico
 MinVersion=10.0.19041
 ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+UsePreviousPrivileges=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 ; Force-close a running PaperMind so its locked exe can be replaced.
@@ -57,7 +62,7 @@ Name: "startup"; Description: "开机自动启动 {#MyAppName}"; GroupDescriptio
 
 [Files]
 ; The whole onedir bundle (PaperMind.exe + _internal\).
-Source: "dist\PaperMind\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "{#MyAppSource}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -102,8 +107,19 @@ end;
 
 function GetInstalledVersion(var Ver: string): Boolean;
 begin
-  Result := RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + AppIdRegKey, 'DisplayVersion', Ver)
-         or RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + AppIdRegKey, 'DisplayVersion', Ver);
+  // Compare against the installation being replaced, not another install mode.
+  if IsAdminInstallMode then
+    Result := RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + AppIdRegKey, 'DisplayVersion', Ver)
+  else
+    Result := RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + AppIdRegKey, 'DisplayVersion', Ver);
+end;
+
+function IsDriveRoot(const Dir: string): Boolean;
+var
+  CleanDir: string;
+begin
+  CleanDir := RemoveBackslash(Dir);
+  Result := (Length(CleanDir) = 2) and (Copy(CleanDir, 2, 1) = ':');
 end;
 
 // ---------- pre-install checks ----------
@@ -116,7 +132,7 @@ begin
   Result := True;
   if GetInstalledVersion(ExistingVer) then begin
     if CompareVersionNumber(ExistingVer, '{#MyAppVersion}') > 0 then begin
-      if MsgBox('检测到已安装更新版本 ' + ExistingVer + '，当前安装包为 {#MyAppVersion}。' + #13#10 + '继续将降级覆盖，是否继续？', mbConfirmation, MB_YESNO) = IDNO then
+      if SuppressibleMsgBox('检测到已安装更新版本 ' + ExistingVer + '，当前安装包为 {#MyAppVersion}。' + #13#10 + '继续将降级覆盖，是否继续？', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDNO then
         Result := False;
     end;
   end;
@@ -130,7 +146,7 @@ begin
   Result := True;
   if CurPageID = wpSelectDir then begin
     Dir := WizardDirValue();
-    if (Length(Dir) = 3) and (Copy(Dir, 2, 1) = ':') and (Copy(Dir, 3, 1) = '\') then begin
+    if IsDriveRoot(Dir) then begin
       MsgBox('不能直接安装到盘符根目录 "' + Dir + '"。' + #13#10 + '请选择或新建一个子文件夹，例如 ' + Copy(Dir, 1, 2) + '\PaperMind。', mbError, MB_OK);
       Result := False;
     end;
@@ -167,6 +183,11 @@ var
   OldData, NewData: string;
 begin
   Result := '';
+  // Silent installs do not visit the directory page, so check again here.
+  if IsDriveRoot(ExpandConstant('{app}')) then begin
+    Result := '不能直接安装到盘符根目录，请选择一个子文件夹。';
+    exit;
+  end;
   OldData := ExpandConstant('{app}\data');
   NewData := ExpandConstant('{localappdata}\PaperMind\data');
   if DirExists(NewData) then begin
@@ -180,17 +201,22 @@ begin
 
   if RobocopyMoveData(OldData, NewData) then
     Log('数据迁移成功：' + OldData + ' -> ' + NewData)
-  else if MsgBox('检测到旧版本数据位于安装目录：' + OldData + #13#10 + '自动迁移到 ' + NewData + ' 失败（旧数据保留未删除）。' + #13#10 + '是否继续安装？', mbConfirmation, MB_YESNO) = IDNO then
+  else if SuppressibleMsgBox('检测到旧版本数据位于安装目录：' + OldData + #13#10 + '自动迁移到 ' + NewData + ' 失败（旧数据保留未删除）。' + #13#10 + '是否继续安装？', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDNO then
     Result := '数据迁移失败，安装已取消。请手动迁移 ' + OldData + ' 后重试。';
 end;
 
 // ---------- uninstall ----------
 
-procedure CurUninstallStep(CurStep: TUninstallStep);
+procedure CurUninstallStepChanged(CurStep: TUninstallStep);
 var
   DataRoot: string;
 begin
   if CurStep = usPostUninstall then begin
+    // Automation must never delete a library or wait for an interactive prompt.
+    if UninstallSilent then begin
+      Log('静默卸载：保留全部用户数据，重装后可继续使用。');
+      exit;
+    end;
     DataRoot := ExpandConstant('{localappdata}\PaperMind');
     if DirExists(DataRoot) then begin
       if MsgBox('是否同时删除 PaperMind 的用户数据？' + #13#10 + #13#10 + '包含：数据库、API 密钥、已收录的 PDF。' + #13#10 + '路径：' + DataRoot + #13#10 + #13#10 + '选择「否」将保留数据，便于将来重装恢复。', mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then begin

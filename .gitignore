@@ -9,6 +9,8 @@ venv/
 .tmp_pytest*/
 .tmp_run*/
 .tmp_review*/
+# Explicit per-run pytest basetemps contain fixture PDFs, models, and databases.
+/backend/.tmp_*/
 .tmp_papermind_*.log
 
 # Runtime logs (.codex/ 等)
