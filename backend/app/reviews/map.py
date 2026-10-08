@@ -8,6 +8,7 @@ from app.models.base import utcnow
 from app.models.card import PaperCard
 from app.models.review import ReviewMap
 from app.reviews import service, themes
+from app.reviews.structured import ModelUnavailable, StructuredAsker, model_window
 
 
 def _map(session, review_id):
@@ -193,23 +194,24 @@ def run_map(engine, review_id, token):
     try:
         with Session(engine) as s:
             selected = service.pick_llm(s, 'chat')
+            window = model_window(s, selected[1], selected[2]) if selected is not None else 32768
         if selected is None:
             close('没有可用的对话模型', 'failed')
             return
         client, provider, model = selected
 
+        asker = StructuredAsker(client, provider, model, ref_id=review_id, window=window)
+
         def ask(system, user, max_tokens):
-            result = client.complete(
-                provider, model,
-                [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-                request_kind='library_review', ref_id=review_id, max_tokens=max_tokens,
-                reasoning_effort='low')
-            return result.content or ''
+            return asker.ask(system, user, max_tokens)
 
         stage('精读卡片')
         with Session(engine) as s:
             ids = [p.paper_id for p in service.papers(s, review_id) if p.status != 'missing']
-        card_mod.ensure_cards(engine, ids, client, provider, model, review_id, active, [])
+        card_result = card_mod.ensure_cards(engine, ids, client, provider, model, review_id, active, [])
+        if card_result.get('unavailable'):
+            close(f"{card_result['unavailable']}，请检查模型设置后点击继续", 'failed')
+            return
         if not active():
             return
 
@@ -260,7 +262,13 @@ def run_map(engine, review_id, token):
             with Session(engine) as s:
                 lines = [themes.card_line(pid, card_rows.get(pid), s.get(service.Paper, pid))
                          for pid, _ in batch]
-            found = themes.assign_batch(ask, theme_list, lines)
+            try:
+                found = themes.assign_batch(ask, theme_list, lines)
+            except ModelUnavailable as exc:
+                close(f'{exc}，请检查模型设置后点击继续', 'failed')
+                return
+            except Exception:
+                found = {}  # 这批按“未能归类”保存，下次运行自动重试
             with Session(engine) as s:
                 row = _map(s, review_id)
                 if row.run_token != token:
@@ -355,13 +363,19 @@ def run_map(engine, review_id, token):
             cards_payload = ([full(pid) for pid in ranked[:themes.SYNTH_FULL_CARDS]]
                             + [brief(pid) for pid in ranked[themes.SYNTH_FULL_CARDS:]])
             user = service.encode({'theme': theme, 'stats': stats, 'cards': cards_payload})
-            validated = themes.validate_synthesis(
-                themes.parse_payload(ask(themes.SYNTHESIZE_THEME, user, 3000)),
-                member_ids, ids)
-            if validated is None:  # 解析失败重试一次
+            try:
                 validated = themes.validate_synthesis(
                     themes.parse_payload(ask(themes.SYNTHESIZE_THEME, user, 3000)),
                     member_ids, ids)
+                if validated is None:  # 解析失败重试一次
+                    validated = themes.validate_synthesis(
+                        themes.parse_payload(ask(themes.SYNTHESIZE_THEME, user, 3000)),
+                        member_ids, ids)
+            except ModelUnavailable as exc:
+                close(f'{exc}，请检查模型设置后点击继续', 'failed')
+                return
+            except Exception:
+                validated = None  # 单主题异常按“未完成”处理，不影响其他主题
             if validated is None:
                 syntheses[tid] = {'error': '本主题综合未完成，可重新运行', 'stats': stats}
             else:
@@ -408,11 +422,17 @@ def run_map(engine, review_id, token):
                 })
             user = service.encode({'themes': theme_inputs, 'stats': themes.theme_stats([member_stat(pid) for pid in all_members]),
                                    'unassigned': len(ids) - len(all_members)})
-            validated = themes.validate_overview(
-                themes.parse_payload(ask(themes.OVERVIEW, user, 3000)), ids)
-            if validated is None:  # 解析失败重试一次
+            try:
                 validated = themes.validate_overview(
                     themes.parse_payload(ask(themes.OVERVIEW, user, 3000)), ids)
+                if validated is None:  # 解析失败重试一次
+                    validated = themes.validate_overview(
+                        themes.parse_payload(ask(themes.OVERVIEW, user, 3000)), ids)
+            except ModelUnavailable as exc:
+                close(f'{exc}，请检查模型设置后点击继续', 'failed')
+                return
+            except Exception:
+                validated = None  # 总览异常按“未完成”处理，地图仍 ready
             overview_entry = ({**validated, 'fingerprint': overview_fp} if validated is not None
                               else {'error': '总览未完成，可重新运行'})
             with Session(engine) as s:
@@ -427,8 +447,28 @@ def run_map(engine, review_id, token):
             row = _map(s, review_id)
             if row.run_token != token:
                 return
+            assignments = json.loads(row.assignments_json or '{}')
+            card_rows = {r.paper_id: r for r in s.exec(
+                select(PaperCard).where(PaperCard.paper_id.in_(ids)))}
+            fallback_n = sum(1 for pid in ids
+                             if card_rows.get(pid) and card_rows[pid].status == 'fallback')
+            metadata_n = sum(1 for pid in ids
+                             if card_rows.get(pid) and card_rows[pid].status == 'metadata_only')
+            unassigned_n = sum(1 for pid in ids
+                               if not (assignments.get(str(pid)) or {}).get('themes'))
+            error_n = sum(1 for entry in json.loads(row.syntheses_json or '{}').values()
+                          if isinstance(entry, dict) and entry.get('error'))
+            bits = []
+            if fallback_n:
+                bits.append(f'{fallback_n} 篇卡片未生成')
+            if metadata_n:
+                bits.append(f'{metadata_n} 篇只有元数据')
+            if unassigned_n:
+                bits.append(f'{unassigned_n} 篇未能归类')
+            if error_n:
+                bits.append(f'{error_n} 个主题综合未完成')
             row.status = 'ready'
-            row.stage = '文献地图已生成'
+            row.stage = '文献地图已生成' + (f'（{"，".join(bits)}；可点击继续补齐）' if bits else '')
             row.version += 1
             row.error = ''
             row.run_token = ''

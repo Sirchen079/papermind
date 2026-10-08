@@ -8,6 +8,7 @@ from app.models.base import utcnow
 from app.models.card import PaperCard
 from app.models.paper import parse_authors_json
 from app.reviews.service import digest
+from app.reviews.structured import ModelUnavailable, StructuredAsker, model_window
 
 CARD_PROMPT = '''你在为研究者制作一张论文精读卡片。只依据给出的材料，用中文填写，不写材料里没有的内容。
 返回一个 JSON 对象，不要输出其他文字：
@@ -22,9 +23,13 @@ CARD_PROMPT = '''你在为研究者制作一张论文精读卡片。只依据给
 
 SNIPPET_QUERIES = ('method approach proposed', 'data experiment field synthetic', 'limitation however future work')
 CARD_FIELDS = ('problem', 'mechanism', 'data_setting', 'boundary')
-# build_card turns provider exceptions into fallback cards whose warning is the
-# bare exception type name; parse failures carry a Chinese message instead.
+# build_card turns provider exceptions into fallback cards whose warning starts
+# with the exception type name; parse failures carry a Chinese message instead.
 _EXCEPTION_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$')
+
+
+def _exception_warning(exc: Exception) -> str:
+    return f'{type(exc).__name__}: {str(exc)[:120]}'
 
 
 def card_inputs(session: Session, paper: Paper) -> dict:
@@ -137,8 +142,10 @@ def build_card(session: Session, paper: Paper, complete) -> dict:
         parsed = parse_card(complete(CARD_PROMPT, user))
         if parsed is None:
             parsed = parse_card(complete(CARD_PROMPT, user + '\n上次输出不是合法 JSON，请只输出 JSON 对象。'))
+    except ModelUnavailable:
+        raise
     except Exception as exc:
-        return {'status': 'fallback', 'card': base, 'warning': type(exc).__name__}
+        return {'status': 'fallback', 'card': base, 'warning': _exception_warning(exc)}
     if parsed is None:
         return {'status': 'fallback', 'card': base, 'warning': '卡片格式解析失败，保留元数据'}
     card = {**verify_card(parsed, inputs, paper.full_text), **base}
@@ -160,23 +167,23 @@ def save_card(session: Session, paper_id: int, fingerprint: str, result: dict, m
     session.commit()
 
 
-def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, warnings) -> None:
+def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, warnings) -> dict:
     """Build or reuse paper cards alongside a review (and later the map flow).
 
     Cards are paper-level reading aids: they never feed synthesis or writing
     and are not part of any generation key. One paper's failure only appends a
-    warning; the surrounding task always continues.
+    warning; the surrounding task always continues. Consecutive provider
+    failures abort the pool quietly (no raise) via ``unavailable``.
     """
     from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
     from contextvars import copy_context
 
+    with Session(engine) as s:
+        window = model_window(s, provider, model)
+    asker = StructuredAsker(client, provider, model, ref_id=ref_id, window=window)
+
     def complete(system, user):
-        result = client.complete(
-            provider, model,
-            [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-            request_kind='library_review', ref_id=ref_id, max_tokens=2000, reasoning_effort='low',
-        )
-        return result.content or ''
+        return asker.ask(system, user, 2000)
 
     def build_one(pid):
         with Session(engine) as s:
@@ -192,6 +199,8 @@ def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, war
             save_card(s, pid, fingerprint, result, model)
             return result
 
+    counts = {'done': 0, 'fallback': 0, 'metadata_only': 0, 'skipped': 0}
+    unavailable = ''
     iterator = iter(paper_ids)
     finished = 0
     with ThreadPoolExecutor(max_workers=3) as pool:
@@ -199,7 +208,7 @@ def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, war
 
         def submit():
             pid = next(iterator, None)
-            if pid is not None:
+            if pid is not None and not unavailable:
                 pending[pool.submit(copy_context().run, build_one, pid)] = pid
 
         for _ in range(3):
@@ -207,16 +216,26 @@ def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, war
         while pending:
             done, _ = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             if not active():
-                return
+                break
             for future in done:
                 pending.pop(future)
                 finished += 1
                 try:
                     result = future.result()
-                    if (result is not None and result['status'] == 'fallback'
-                            and _EXCEPTION_NAME.match(result.get('warning') or '')):
+                    if result is None:
+                        counts['skipped'] += 1
+                        continue
+                    counts[result['status']] = counts.get(result['status'], 0) + 1
+                    if (result['status'] == 'fallback'
+                            and _EXCEPTION_NAME.match((result.get('warning') or '').split(':', 1)[0])):
                         warnings.append(f'第 {finished} 篇精读卡片未生成（{result["warning"]}）')
+                except ModelUnavailable as exc:
+                    if not unavailable:
+                        unavailable = str(exc)
                 except Exception as exc:
                     warnings.append(f'第 {finished} 篇精读卡片未生成（{type(exc).__name__}）')
             if active():
                 submit()
+    if unavailable:
+        warnings.append('模型连续调用失败，其余论文的精读卡片未生成')
+    return {**counts, 'unavailable': unavailable}

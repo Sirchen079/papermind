@@ -45,6 +45,8 @@ class FakeMapModel:
         self.synthesize = self.default_synthesize
         self.overview_users = []
         self.overview = self.default_overview
+        self.fail_all = False
+        self.fail_assign_calls = 0  # 前 N 次归类调用抛 RuntimeError
 
     @staticmethod
     def default_overview(user):
@@ -73,6 +75,8 @@ class FakeMapModel:
 
     def complete(self, provider, model, messages, **kwargs):
         system, user = messages[0]['content'], messages[-1]['content']
+        if self.fail_all:
+            raise RuntimeError('provider down')
         if '论文精读卡片' in system:
             payload = self.card_payload(user) if callable(self.card_payload) else self.card_payload
             return SimpleNamespace(content=payload)
@@ -85,6 +89,8 @@ class FakeMapModel:
             return SimpleNamespace(content=self.merge_response)
         if '分配 1 到 2 个最贴切的主题 id' in system:
             self.assign_users.append(user)
+            if len(self.assign_users) <= self.fail_assign_calls:
+                raise RuntimeError('assign provider down')
             return SimpleNamespace(content=self.assign_for(user))
         if '文献地图中一个研究主题的分析' in system:
             self.synth_users.append(user)
@@ -591,3 +597,46 @@ def test_map_detail_includes_papers_with_themes_and_evidence(client, monkeypatch
         assert paper['evidence_level'] == 'abstract' and paper['card_status'] == 'done'
     by_id = {p['paper_id']: p for p in papers}
     assert by_id[ids[0]]['title'] == 'Paper 0' and by_id[ids[0]]['year'] == 2020
+
+
+def test_map_assign_batch_error_keeps_ready_and_rerun_fixes(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    fake.fail_assign_calls = 1  # 第一批归类抛一次 RuntimeError
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready', result['error']
+    failed = [pid for pid in ids if result['assignments'][str(pid)]['themes'] == []]
+    assert failed and '未能归类' in result['stage'] and '可点击继续补齐' in result['stage']
+    client.post(prefix + '/map/run')
+    final = client.get(prefix + '/map').json()
+    assert all(final['assignments'][str(pid)]['themes'] for pid in ids)
+    assert final['stage'] == '文献地图已生成'
+
+
+def test_map_all_calls_failing_marks_map_failed(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    fake.fail_all = True
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'failed'
+    assert '模型连续' in result['error']
+    assert '请检查模型设置后点击继续' in result['error']
+
+
+def test_map_synth_exception_isolated_to_theme(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=6)
+
+    def synthesize(user):
+        data = json.loads(user)
+        if data['theme']['id'] == 'T2':
+            raise RuntimeError('synth provider down')
+        return FakeMapModel.default_synthesize(user)
+
+    fake.synthesize = synthesize
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready', result['error']
+    assert result['syntheses']['T2']['error'] == '本主题综合未完成，可重新运行'
+    others = [e for tid, e in result['syntheses'].items() if tid != 'T2']
+    assert others and all('trend' in e for e in others)
+    assert '主题综合未完成' in result['stage']
