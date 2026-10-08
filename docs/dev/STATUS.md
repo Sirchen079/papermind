@@ -51,6 +51,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 | 10 | 本提交 | tests/test_paper_cards.py+test_library_reviews.py+test_review_continuation.py+test_review_incremental.py：40 通过 / 0 失败 | ensure_cards 并发 3 线程、fingerprint 命中即复用；卡片 fallback 中文解析失败不追加 run_warnings（避免误标 incomplete），仅异常类名才计警告；阶段名“精读卡片”位于逐篇整理后；GET /api/reviews/{id}/cards 与 GET /api/papers/{pid}/card；test_review_rebudgets 局部 wrapper 排除卡片调用（mock 修改共 2 处，未删断言） |
 | 11 | 本提交 | tests/test_review_map.py+test_paper_cards.py+test_library_reviews.py：37 通过 / 0 失败 | ReviewMap 表（迁移 e8a1f4c6b9d2，down_revision=d7b4c2e9f6a3）；归类重试只对缺失/空主题论文发一次新请求；指纹命中且已有主题的论文跳过归类（含“未能归类”复用，除非主题或卡片变化）；卡片缺失/回退/仅元数据时摘要行走 abstract 前 300 字；无 chat 模型时 failed='没有可用的对话模型'；地图不存在时 GET 返回 draft 而非 404，stop 返回 404 |
 | 12 | 本提交 | tests/test_review_map.py：14 通过 / 0 失败 | PUT /map/themes 版本冲突与 running 均按 ValueError→409；保留的归类条目按新 themes_fingerprint 重算指纹实现局部重跑；新增主题清空全部归类与 overview；overview 仅在“有 added 或归类被清空”时清空（改名/删除且仍有保留归类时保留）；主题校验（1–15、name 非空、id 唯一、缺 id 自动分配下一 T 编号）；卡 11 diff 686 行超出卡内 400 行指引但功能与测试一次完成，见最终报告 |
+| 13 | 本提交 | tests/test_review_map.py：20 通过 / 0 失败 | 主题综合阶段在归类后执行（stage “主题综合 i/n”）；统计数字全部由 theme_stats 程序计算；完整卡片上限 40 篇按 quote_verified 字段数降序、其余仅 {paper_id, year, title}；综合指纹= digest([主题, 成员卡片指纹排序, SYNTHESIZE_THEME])，与 themes_fingerprint 无关（改主题不连带作废其他主题综合）；卡片编号合法性按“属本综述”判定、representative 按“属本主题成员”判定；某条删空 cards 保留并标 source_missing；解析失败重试一次仍失败保存 error+stats 且不影响其他主题与 ready；空输出（无 trend 且各列表全空）按解析失败处理 |
 
 ## 阻塞
 （无）

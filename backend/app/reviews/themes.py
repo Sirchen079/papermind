@@ -17,10 +17,23 @@ ASSIGN = '''主题列表：{themes}
 请为下面每篇论文分配 1 到 2 个最贴切的主题 id，并用一句话说明理由。返回 JSON：{"assignments": [{"paper_id": 12, "themes": ["T1"], "reason": "……"}]}
 只能使用主题列表中的 id。只输出 JSON。'''
 
+SYNTHESIZE_THEME = '''你在为研究者撰写文献地图中一个研究主题的分析。材料是该主题下论文的精读卡片和程序统计的数字。
+要求：
+1. trend：两到四句，说明这条路线的问题和机制怎样演变；涉及数量时只能使用给出的统计数字。
+2. open_questions：3 到 5 条值得研究的问题。每条要具体到机制或验证条件，说明为什么现有论文还没有回答，并写出“据现有证据不能宣称什么”。
+3. combination_opportunities：2 到 4 条方法组合或迁移机会：把本主题中的某个机制与另一篇论文的机制或另一种数据条件结合，说明预期解决什么、主要风险是什么。
+4. representative：3 到 6 篇代表论文及入选理由（开创、实测验证、代表性改进等）。
+每条都要在 cards 中列出依据的论文编号（数字），只能使用材料中出现的编号。
+返回 JSON：{"trend": "...", "open_questions": [{"question": "...", "why": "...", "cannot_claim": "...", "cards": [12, 30]}], "combination_opportunities": [{"idea": "...", "expected": "...", "risk": "...", "cards": [5, 41]}], "representative": [{"paper_id": 12, "why": "..."}]}
+只输出 JSON。'''
+
+FIELD_MARKERS = ('实测', '现场', 'field', 'real data', 'ocean-bottom', 'obn', 'obc', 'case study')
+SYNTHETIC_MARKERS = ('合成', 'synthetic', 'numerical', 'marmousi', 'overthrust')
 THEME_FIELDS = ('id', 'name', 'definition', 'include', 'exclude')
 BATCH_LINES = 60
 BATCH_CHARS = 60000
 ASSIGN_BATCH = 20
+SYNTH_FULL_CARDS = 40
 
 
 class ThemeError(Exception):
@@ -132,6 +145,79 @@ def diff_themes(old, new):
             changed.append(tid)
     removed.extend(tid for tid in old_by_id if tid not in new_by_id)
     return {'changed': changed, 'removed': removed, 'added': added}
+
+
+def theme_stats(members):
+    """Program-computed counts; the model only explains, never invents numbers."""
+    years, setting = {}, {'field': 0, 'synthetic': 0, 'both': 0, 'unknown': 0}
+    evidence = {'full_text': 0, 'abstract': 0, 'metadata': 0}
+    for member in members:
+        year = member.get('year')
+        key = str(year) if year else '未知'
+        years[key] = years.get(key, 0) + 1
+        text = str(member.get('data_setting_value') or '').lower()
+        is_field = any(marker in text for marker in FIELD_MARKERS)
+        is_synthetic = any(marker in text for marker in SYNTHETIC_MARKERS)
+        if is_field and is_synthetic:
+            setting['both'] += 1
+        elif is_field:
+            setting['field'] += 1
+        elif is_synthetic:
+            setting['synthetic'] += 1
+        else:
+            setting['unknown'] += 1
+        level = member.get('evidence_level')
+        if level in evidence:
+            evidence[level] += 1
+    return {'count': len(members), 'years': dict(sorted(years.items())),
+            'setting': setting, 'evidence': evidence}
+
+
+def validate_synthesis(data, member_ids, review_ids):
+    """Drop ids outside the review, require representatives to be members."""
+    if not isinstance(data, dict):
+        return None
+
+    def as_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    member_set, review_set = set(member_ids), set(review_ids)
+
+    def clean_entries(items, fields):
+        out = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            entry = {name: str(item.get(name) or '') for name in fields}
+            cards = [as_int(value) for value in item.get('cards') or []]
+            cards = [value for value in cards if value in review_set]
+            if cards:
+                entry['cards'] = cards
+            else:
+                entry['cards'] = []
+                entry['source_missing'] = True  # 界面显示“来源待补”
+            out.append(entry)
+        return out
+
+    result = {'trend': str(data.get('trend') or '')}
+    result['open_questions'] = clean_entries(data.get('open_questions'),
+                                             ('question', 'why', 'cannot_claim'))
+    result['combination_opportunities'] = clean_entries(data.get('combination_opportunities'),
+                                                        ('idea', 'expected', 'risk'))
+    representative = []
+    for item in data.get('representative') if isinstance(data.get('representative'), list) else []:
+        if not isinstance(item, dict):
+            continue
+        pid = as_int(item.get('paper_id'))
+        if pid in member_set:
+            representative.append({'paper_id': pid, 'why': str(item.get('why') or '')})
+    result['representative'] = representative
+    if not any(result.values()):
+        return None  # 形同空壳，按解析失败重试
+    return result
 
 
 def assign_batch(ask, themes, lines):
