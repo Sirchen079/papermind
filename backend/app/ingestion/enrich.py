@@ -71,3 +71,57 @@ def enrich_paper(session: Session, paper: Paper) -> dict:
         except Exception:
             session.rollback()
     return {**result, 'status': 'updated', 'fields': filled, 'abstract_source': abstract_source}
+
+
+def open_access_pdf_urls(session: Session, doi: str) -> list[str]:
+    """Public OA PDF links for a DOI, best location first; failures yield []."""
+    from urllib.parse import quote
+
+    from app.agent import openalex
+    from app.ingestion.sources import normalize_doi
+
+    identifier = normalize_doi(doi)
+    if identifier is None:
+        return []
+    try:
+        with openalex._client() as client:
+            response = client.get(f'{openalex.BASE}/doi:{quote(identifier)}', params=openalex._params(session, {}))
+        if response.status_code != 200:
+            return []
+        work = response.json()
+    except Exception:
+        return []
+    urls = []
+    best = work.get('best_oa_location')
+    if isinstance(best, dict) and isinstance(best.get('pdf_url'), str) and best['pdf_url'].strip():
+        urls.append(best['pdf_url'].strip())
+    for location in work.get('locations') or []:
+        if isinstance(location, dict) and location.get('is_oa'):
+            pdf_url = location.get('pdf_url')
+            if isinstance(pdf_url, str) and pdf_url.strip():
+                urls.append(pdf_url.strip())
+    return list(dict.fromkeys(urls))
+
+
+def fetch_open_fulltext(session: Session, paper: Paper) -> dict:
+    """Attach the first downloadable open-access PDF to an existing paper."""
+    from app.agent.paper_acquisition import import_paper_pdf
+    from app.ingestion.sources import normalize_doi
+
+    if paper.pdf_path:
+        return {'status': 'has_pdf'}
+    doi = normalize_doi(paper.doi)
+    if doi is None:
+        return {'status': 'no_doi'}
+    urls = open_access_pdf_urls(session, doi)
+    if not urls:
+        return {'status': 'no_open_access'}
+    error_types = []
+    for url in urls:
+        try:
+            import_paper_pdf(session, url, paper_id=paper.id)
+            return {'status': 'attached', 'url': url}
+        except Exception as exc:
+            session.rollback()
+            error_types.append(type(exc).__name__)
+    return {'status': 'failed', 'tried': len(urls), 'error_types': error_types}
