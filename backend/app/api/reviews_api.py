@@ -60,6 +60,23 @@ def run(review_id:str,background:BackgroundTasks,session:Session=Depends(get_ses
     background.add_task(service.run,session.get_bind(),review_id,token)
     return invoke(service.detail,session,review_id)
 
+@router.post('/{review_id}/map/run',status_code=202)
+def map_run(review_id:str,background:BackgroundTasks,session:Session=Depends(get_session)):
+    from app.reviews import map as review_map
+    token=invoke(review_map.start_map,session,review_id)
+    background.add_task(review_map.run_map,session.get_bind(),review_id,token)
+    return invoke(review_map.detail_map,session,review_id)
+
+@router.post('/{review_id}/map/stop')
+def map_stop(review_id:str,session:Session=Depends(get_session)):
+    from app.reviews import map as review_map
+    return invoke(review_map.stop_map,session,review_id)
+
+@router.get('/{review_id}/map')
+def map_get(review_id:str,session:Session=Depends(get_session)):
+    from app.reviews import map as review_map
+    return invoke(review_map.detail_map,session,review_id)
+
 @router.post('/{review_id}/stop')
 def stop(review_id:str,session:Session=Depends(get_session)):
     return invoke(service.stop,session,review_id)

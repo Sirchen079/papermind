@@ -11,7 +11,7 @@ from sqlmodel import Session, select
 from sqlalchemy import delete
 from sqlalchemy.orm import load_only
 from app.models import Paper, Model
-from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision
+from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision, ReviewMap
 from app.models.base import utcnow
 from app.providers.selection import pick_llm
 from app.research.materials import collect_materials, terms
@@ -202,6 +202,11 @@ def stop(session, review_id):
 def recover_interrupted(engine):
     with Session(engine) as s:
         for row in s.exec(select(LibraryReview).where(LibraryReview.status == "running")):
+            row.status = "paused"
+            row.run_token = ""
+            row.stage = "应用已重启，点击继续恢复任务"
+            s.add(row)
+        for row in s.exec(select(ReviewMap).where(ReviewMap.status == "running")):
             row.status = "paused"
             row.run_token = ""
             row.stage = "应用已重启，点击继续恢复任务"

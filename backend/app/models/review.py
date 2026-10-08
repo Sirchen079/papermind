@@ -57,3 +57,21 @@ class ReviewRevision(SQLModel, table=True):
     version: int
     content: str
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class ReviewMap(SQLModel, table=True):
+    """One literature map per review: themes, assignments, later syntheses."""
+    __tablename__ = 'reviewmap'
+    id: int | None = Field(default=None, primary_key=True)
+    review_id: str = Field(foreign_key='libraryreview.id', unique=True, index=True)
+    status: str = 'draft'  # draft | running | ready | paused | failed
+    stage: str = '准备材料'
+    run_token: str = ''
+    error: str = ''
+    themes_json: str = '[]'  # [{id, name, definition, include, exclude}]
+    themes_fingerprint: str = ''
+    assignments_json: str = '{}'  # {paper_id: {themes, reason, fingerprint}}
+    syntheses_json: str = '{}'
+    overview_json: str = '{}'
+    version: int = 0
+    updated_at: datetime = Field(default_factory=utcnow)
