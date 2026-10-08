@@ -77,6 +77,15 @@ def map_get(review_id:str,session:Session=Depends(get_session)):
     from app.reviews import map as review_map
     return invoke(review_map.detail_map,session,review_id)
 
+class MapThemesBody(BaseModel):
+    themes: list[dict]
+    expected_version: int = Field(ge=0)
+
+@router.put('/{review_id}/map/themes')
+def map_themes(review_id:str,body:MapThemesBody,session:Session=Depends(get_session)):
+    from app.reviews import map as review_map
+    return invoke(review_map.update_themes,session,review_id,body.themes,body.expected_version)
+
 @router.post('/{review_id}/stop')
 def stop(review_id:str,session:Session=Depends(get_session)):
     return invoke(service.stop,session,review_id)
