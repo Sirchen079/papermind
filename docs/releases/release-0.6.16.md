@@ -16,4 +16,4 @@
 
 已完成的读写、接续和桌面验证，与科学结论正确性分别记录。尚不能据此宣称千篇综合质量全面达标或已测得真实研究者工时优势。完整技能资源随包保留，资源存在不等于每轮已执行全部技能步骤。
 
-实现与原始限制见 [论文笔记回用](paper-note-reuse.md)、[生成要求回查](document-generation-context.md)、[工具历史](research-tool-history.md)、[长任务接续](active-reading-compaction.md)和 [Nature 修订指导](nature-revision-evidence-routing.md)。最终交付目录另附发布验证说明、源码和校验清单；0.6.15 保留。
+实现与原始限制见 [论文笔记回用](../paper-note-reuse.md)、[生成要求回查](../document-generation-context.md)、[工具历史](../research-tool-history.md)、[长任务接续](../active-reading-compaction.md)和 [Nature 修订指导](../nature-revision-evidence-routing.md)。最终交付目录另附发布验证说明、源码和校验清单；0.6.15 保留。

@@ -11,4 +11,4 @@
 
 真实百篇样本追加一篇后，原分析全部复用；两次 GLM 写作完成 9 处替换，17/26 原正文段落逐字保留。此为单次样本结果，不能换算为千篇综合质量保证。模型仍可能重复引用、泛化方法差异，研究者需核对关键判断。
 
-详见 [修改对照](review-change-inspection.md)、[局部更新实测](review-incremental-updates.md)、[当前稿接续](review-current-draft-continuation.md)和[重排预算](rerank-reasoning-budget.md)。
+详见 [修改对照](../review-change-inspection.md)、[局部更新实测](../review-incremental-updates.md)、[当前稿接续](../review-current-draft-continuation.md)和[重排预算](../rerank-reasoning-budget.md)。

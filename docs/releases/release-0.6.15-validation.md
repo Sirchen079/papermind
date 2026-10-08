@@ -6,7 +6,7 @@
 
 本轮把成果预览、agent 按需检索、公开全文接入、材料类型呈现及修订稿身份传递纳入桌面程序。用户可以保存回答、修改文档、重启后找回准确版本，再带着正文和来源进入新对话，减少复制正文、重新定位原文和反复解释修改的操作。
 
-功能及真实测试依据见 [成果预览](artifact-reference-preview.md)、[按需检索](agent-directed-retrieval.md)、[大 PDF 接入](discovered-fulltext-continuation.md)、[材料呈现](research-material-presentation.md)及[版本上下文](revision-context-identity.md)。这些能力复用已有文档、来源、阅读器与技能体系，没有新增全局输出阻断或逐阶段审批。
+功能及真实测试依据见 [成果预览](../artifact-reference-preview.md)、[按需检索](../agent-directed-retrieval.md)、[大 PDF 接入](../discovered-fulltext-continuation.md)、[材料呈现](../research-material-presentation.md)及[版本上下文](../revision-context-identity.md)。这些能力复用已有文档、来源、阅读器与技能体系，没有新增全局输出阻断或逐阶段审批。
 
 ## 程序与安装载荷
 

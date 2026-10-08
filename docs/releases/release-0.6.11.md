@@ -23,4 +23,4 @@ Windows 桌面程序自行启动所需本机组件，无需另行部署服务器
 
 默认沿用已有许可证，本版未作许可变更。候选版未自动替换日常安装，也未发布到 GitHub。
 
-各功能实测见 [选段核查](document-passage-check.md)、[修改建议采用](document-edit-proposals.md)、[按章节阅读](paper-section-reading.md)。这些记录中“尚未打包”指当时开发阶段；本候选版的最终验证范围见随交付提供的发布验证说明。研究人员实际节省时间、竞品同任务对照和长期使用效果仍待验证。
+各功能实测见 [选段核查](../document-passage-check.md)、[修改建议采用](../document-edit-proposals.md)、[按章节阅读](../paper-section-reading.md)。这些记录中“尚未打包”指当时开发阶段；本候选版的最终验证范围见随交付提供的发布验证说明。研究人员实际节省时间、竞品同任务对照和长期使用效果仍待验证。

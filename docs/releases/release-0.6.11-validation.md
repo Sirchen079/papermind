@@ -34,7 +34,7 @@
 
 ## 真实模型与人工协作证据
 
-本版相关的八组真实调用汇总为 41 次文本请求、628169 tokens，使用用户配置的智谱 Responses / GLM-5.3。实际记录见 [研究任务对照](research-assistance-evaluation.md)、[章节阅读](paper-section-reading.md)、[选段核查](document-passage-check.md)、[建议采用](document-edit-proposals.md) 和 [三篇比较与修订](research-comparison-collaboration.md)。随包摘要不含原始请求正文或凭据，也不是全部历史用量或账单。
+本版相关的八组真实调用汇总为 41 次文本请求、628169 tokens，使用用户配置的智谱 Responses / GLM-5.3。实际记录见 [研究任务对照](../research-assistance-evaluation.md)、[章节阅读](../paper-section-reading.md)、[选段核查](../document-passage-check.md)、[建议采用](../document-edit-proposals.md) 和 [三篇比较与修订](../research-comparison-collaboration.md)。随包摘要不含原始请求正文或凭据，也不是全部历史用量或账单。
 
 章节阅读的专项复测正确识别了先前遗漏的受控解码/API 限制。三篇比较提取了有用的研究分工和输入条件，审阅者指出疑点后，agent 回读定义并提出局部修正；用户可以直接改写建议后采用。但仍有过强的解释、次要页码和成本表述问题，不能将可回查来源或成功保存等同于整份回答正确。
 

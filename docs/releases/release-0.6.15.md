@@ -12,4 +12,4 @@
 
 真实 GLM 测试验证了材料获取与接续，但仍会遗漏条件或给出依据不足的研究建议。研究者应通过回查、修改和讨论控制关键判断；本版不宣称自动综述完全正确，也尚未测得相对竞品的整体工时优势。
 
-安装包最终核对记录随交付目录提供。功能验证见[材料呈现](research-material-presentation.md)和[版本接续](revision-context-identity.md)。现有许可及第三方声明不变。
+安装包最终核对记录随交付目录提供。功能验证见[材料呈现](../research-material-presentation.md)和[版本接续](../revision-context-identity.md)。现有许可及第三方声明不变。
