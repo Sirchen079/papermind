@@ -14,7 +14,7 @@
 
 | 参数 | 作用 |
 |---|---|
-| `-Installer` | 末尾调用 ISCC 编译安装程序（不加则只产出裸 exe） |
+| `-Installer` | 清理旧打包缓存，再调用 ISCC 编译安装程序（不加则只产出裸 exe） |
 | `-NoFrontend` | 跳过前端构建（`frontend\dist` 已存在时） |
 | `-Clean` | 清掉旧产物重建 |
 | `-PythonPath` | 指定已装齐后端依赖和 PyInstaller 的 Python 路径 |
@@ -33,7 +33,7 @@
 
 构建时会运行 `prepare_tokenizers.py`，将 tiktoken 的分词数据准备到模型依赖的资源目录，并按库内置的 SHA256 校验。首次准备可能需要下载公共文件；后续构建复用本地缓存，桌面包携带这些资源。建议使用单独的虚拟环境打包，记录所用依赖版本，并在无网络环境验收导入与启动。
 
-默认每次重新构建前端，只有显式使用 `-NoFrontend` 才复用现有 dist。发布时同步更新前后端版本、`installer.iss` 默认版本及 `version_info.txt` 的 Windows 文件版本。
+默认每次重新构建前端，只有显式使用 `-NoFrontend` 才复用现有 dist。发布时同步更新前端 package/lock、后端 pyproject 与 `app/main.py` 中的 API 版本、`installer.iss` 默认版本及 `version_info.txt` 的 Windows 文件版本。构建入口会检查前端与 API 版本一致。
 
 ## 打包架构
 
@@ -49,10 +49,11 @@
 
 ## 防呆设计（`installer.iss` 的 `[Code]` 段）
 
-- **禁止盘符根目录**：选目录页拒绝 `X:\`，强制装到子文件夹
-- **降级提示**：已装更新版本时弹框确认
+- **安装权限**：首次默认当前用户安装；已有安装沿用原模式。显式 `/CURRENTUSER` 或 `/ALLUSERS` 可选择模式，同一模式内保留稳定 AppId。
+- **禁止盘符根目录**：目录页和实际复制前均拒绝 `X:\`，静默安装也不能跳过
+- **降级提示**：比较当前安装模式的版本；交互安装询问，抑制弹框的静默安装默认取消降级
 - **旧版数据迁移**：目标用户数据目录不存在时，复制 `<旧安装目录>\data` 到 `%LOCALAPPDATA%\PaperMind\data`；目标已存在则保留，不覆盖现有数据和历史备份；旧数据始终保留
-- **卸载询问**：卸载末尾询问是否删除用户数据（默认保留，便于重装恢复）
+- **卸载询问**：交互卸载末尾询问是否删除用户数据（默认保留）；静默卸载直接保留资料，不等待删除确认
 - **进程文件锁**：`CloseApplications=force` 让 RestartManager 自动关闭运行中的 `PaperMind.exe`
 - **磁盘空间**：`ExtraDiskSpaceRequired` 预留 ~150 MB
 
@@ -80,3 +81,5 @@
 构建环境必须安装 `backend[desktop]`（例如在 backend 目录运行 `python -m pip install -e ".[desktop,dev]"`）。spec 与构建脚本均在缺少桌面依赖时终止。
 
 `build/verify_desktop.py <PaperMind.exe>` 使用独立数据目录，连续验证首次启动和再次启动的真实 WebView2 页面挂载及正常退出。构建脚本自动执行此检查，通过后才编译安装包；发布前还需对解压的便携包及安装后的程序重复执行。后台健康检查不能替代桌面检查。
+
+构建磁盘空间不足时，可使用 `./build/build.ps1 -Installer -OutputRoot D:/PaperMind-build/0.6.17`。中间文件、程序与安装包均输出到该目录，源码与既有交付保留。
