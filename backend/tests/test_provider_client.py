@@ -278,7 +278,7 @@ def test_openai_format_accepts_arbitrary_vendor_and_model(tmp_path):
     assert "任意厂商回复" in result.content
 
 @pytest.mark.parametrize('url,local',[('http://127.0.0.1:12345/v1',True),('https://test.invalid/v1',False)])
-def test_library_review_allows_slow_local_inference_without_changing_remote_timeout(tmp_path,monkeypatch,url,local):
+def test_library_review_allows_slow_local_and_remote_inference(tmp_path,monkeypatch,url,local):
     eng=make_engine(tmp_path/'review-timeout.sqlite');SQLModel.metadata.create_all(eng)
     crypto=Crypto(Fernet.generate_key());seen=[]
     def complete(**kwargs):seen.append(kwargs);return _fake_litellm_completion(**kwargs)
@@ -290,7 +290,20 @@ def test_library_review_allows_slow_local_inference_without_changing_remote_time
     client.complete(provider,'fixture',[{'role':'user','content':'draft'}],request_kind='library_review')
     timeout=seen[0]['timeout']
     if local:assert isinstance(timeout,httpx.Timeout) and timeout.read is None and timeout.connect==10
-    else:assert timeout==180
+    else:assert isinstance(timeout,httpx.Timeout) and timeout.read==900 and timeout.connect==10
+
+
+def test_other_request_kinds_keep_their_generation_timeouts(tmp_path,monkeypatch):
+    client,provider=_provider(tmp_path,'openai_compat','https://test.invalid/v1')
+    seen=[]
+    def complete(**kwargs):
+        seen.append(kwargs)
+        return _fake_litellm_completion(**kwargs)
+    monkeypatch.setattr('app.providers.client.litellm.completion',complete)
+    client.complete(provider,'writer',[{'role':'user','content':'step'}],request_kind='research')
+    client.complete(provider,'writer',[{'role':'user','content':'check'}],request_kind='evidence_review')
+    assert seen[0]['timeout']==90
+    assert seen[1]['timeout']==300
 
 
 @pytest.mark.parametrize('effort,seconds', [('medium',300),('high',600),('xhigh',600),('max',600)])
@@ -309,7 +322,8 @@ def test_review_and_rerank_wait_for_configured_reasoning_without_extending_other
     monkeypatch.setattr('app.providers.client.litellm.responses',complete)
     client.complete(provider,'writer',[{'role':'user','content':'draft'}],request_kind='library_review',reasoning_effort='low')
     timeout=seen[-1]['timeout']
-    assert isinstance(timeout,httpx.Timeout) and timeout.read==seconds and timeout.connect==10
+    # 综述分章写作放宽到 900 秒（实测 glm-5.3 六章有五章在 180 秒超时）
+    assert isinstance(timeout,httpx.Timeout) and timeout.read==900 and timeout.connect==10
     assert seen[-1]['num_retries']==0
     # 配置了推理档位的共用模型做重排同样按档位等待（docs/rerank-reasoning-budget.md：真实回放48.12秒，固定45秒会截断）
     client.complete(provider,'writer',[{'role':'user','content':'rank'}],request_kind='rerank_llm')

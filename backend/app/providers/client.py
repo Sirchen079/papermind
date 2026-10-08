@@ -28,6 +28,18 @@ def _generation_timeout(api_base, effort):
     return 180
 
 
+def _review_generation_timeout(api_base, effort):
+    """Review chapters emit ~3500 tokens over long inputs; slow remote models
+    missed the old 180s cap, so only library_review waits up to 900s. Loopback
+    keeps the unlimited read timeout; all remote effort levels are uniformly
+    900s (the previous 300/600 values are all below it)."""
+    import httpx
+    from app.providers.local import is_loopback_url
+    if is_loopback_url(api_base):
+        return _generation_timeout(api_base, effort)
+    return httpx.Timeout(900, connect=10, write=60, pool=60)
+
+
 class EmptyResponseError(ValueError):
     """The provider consumed a call but supplied no final assistant text."""
 
@@ -232,7 +244,7 @@ class ProviderClient:
             kwargs["timeout"] = 300 if request_kind == "evidence_review" else 180
             kwargs["num_retries"] = 0
             if request_kind == 'library_review':
-                kwargs['timeout'] = _generation_timeout(route.api_base, review_effort)
+                kwargs['timeout'] = _review_generation_timeout(route.api_base, review_effort)
         if route.call == "responses":
             kwargs["input"] = [{**m, "content": responses_content(m.get("content"))} for m in kwargs.pop("messages")]
             if max_tokens is not None:
