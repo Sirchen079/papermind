@@ -22,6 +22,9 @@ CARD_PROMPT = '''你在为研究者制作一张论文精读卡片。只依据给
 
 SNIPPET_QUERIES = ('method approach proposed', 'data experiment field synthetic', 'limitation however future work')
 CARD_FIELDS = ('problem', 'mechanism', 'data_setting', 'boundary')
+# build_card turns provider exceptions into fallback cards whose warning is the
+# bare exception type name; parse failures carry a Chinese message instead.
+_EXCEPTION_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$')
 
 
 def card_inputs(session: Session, paper: Paper) -> dict:
@@ -155,3 +158,65 @@ def save_card(session: Session, paper_id: int, fingerprint: str, result: dict, m
     row.updated_at = utcnow()
     session.add(row)
     session.commit()
+
+
+def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, warnings) -> None:
+    """Build or reuse paper cards alongside a review (and later the map flow).
+
+    Cards are paper-level reading aids: they never feed synthesis or writing
+    and are not part of any generation key. One paper's failure only appends a
+    warning; the surrounding task always continues.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+    from contextvars import copy_context
+
+    def complete(system, user):
+        result = client.complete(
+            provider, model,
+            [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
+            request_kind='library_review', ref_id=ref_id, max_tokens=2000, reasoning_effort='low',
+        )
+        return result.content or ''
+
+    def build_one(pid):
+        with Session(engine) as s:
+            paper = s.get(Paper, pid)
+            if paper is None or paper.is_deleted:
+                return None
+            inputs = card_inputs(s, paper)
+            fingerprint = card_fingerprint(inputs, model)
+            row = s.exec(select(PaperCard).where(PaperCard.paper_id == pid)).first()
+            if row and row.fingerprint == fingerprint and row.status in {'done', 'metadata_only'}:
+                return None
+            result = build_card(s, paper, complete)
+            save_card(s, pid, fingerprint, result, model)
+            return result
+
+    iterator = iter(paper_ids)
+    finished = 0
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        pending = {}
+
+        def submit():
+            pid = next(iterator, None)
+            if pid is not None:
+                pending[pool.submit(copy_context().run, build_one, pid)] = pid
+
+        for _ in range(3):
+            submit()
+        while pending:
+            done, _ = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            if not active():
+                return
+            for future in done:
+                pending.pop(future)
+                finished += 1
+                try:
+                    result = future.result()
+                    if (result is not None and result['status'] == 'fallback'
+                            and _EXCEPTION_NAME.match(result.get('warning') or '')):
+                        warnings.append(f'第 {finished} 篇精读卡片未生成（{result["warning"]}）')
+                except Exception as exc:
+                    warnings.append(f'第 {finished} 篇精读卡片未生成（{type(exc).__name__}）')
+            if active():
+                submit()

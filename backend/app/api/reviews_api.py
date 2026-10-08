@@ -72,6 +72,19 @@ def add(review_id:str,body:AddBody,session:Session=Depends(get_session)):
 def edit(review_id:str,body:EditBody,session:Session=Depends(get_session)):
     return invoke(service.save_content,session,review_id,body.content,body.expected_version)
 
+@router.get('/{review_id}/cards')
+def review_cards(review_id:str,session:Session=Depends(get_session)):
+    invoke(service.get,session,review_id)
+    import json
+    from app.models.card import PaperCard
+    entries=service.papers(session,review_id)
+    rows={r.paper_id:r for r in session.exec(select(PaperCard).where(PaperCard.paper_id.in_([e.paper_id for e in entries])))}
+    return [{'paper_id':e.paper_id,'title':e.title,
+             'status':rows[e.paper_id].status if e.paper_id in rows else 'pending',
+             'card':json.loads(rows[e.paper_id].card_json) if e.paper_id in rows else None,
+             'warning':rows[e.paper_id].warning if e.paper_id in rows else '',
+             'updated_at':rows[e.paper_id].updated_at if e.paper_id in rows else None} for e in entries]
+
 @router.get('/{review_id}/papers/{paper_id}')
 def source(review_id:str,paper_id:int,session:Session=Depends(get_session)):
     row=session.exec(select(ReviewPaper).where(ReviewPaper.review_id==review_id,ReviewPaper.paper_id==paper_id)).first()

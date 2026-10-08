@@ -717,6 +717,22 @@ def run(engine, review_id, token):
             return
         with Session(engine) as s:
             entries = papers(s, review_id)
+        # 精读卡片是论文级辅助材料：不参与综合与写作，也不进入 generation_key。
+        stage("精读卡片")
+        from app.reviews import cards
+
+        cards.ensure_cards(
+            engine,
+            [p.paper_id for p in entries if p.status != "missing"],
+            client,
+            provider,
+            model,
+            review_id,
+            active,
+            run_warnings,
+        )
+        if not active():
+            return
         usable = [p for p in entries if p.status != "missing" and p.analysis]
         if not usable:
             with Session(engine) as s:
