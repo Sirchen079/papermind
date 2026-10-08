@@ -109,7 +109,8 @@ def test_complete_exception_falls_back_with_type_name(client):
 
     pid = _add_paper(abstract=ABSTRACT)
     result = build_card(_session(), _get_paper(pid), complete)
-    assert result['status'] == 'fallback' and result['warning'] == 'ValueError'
+    # 卡 20：fallback warning 改为“异常类名：异常消息前 120 字”
+    assert result['status'] == 'fallback' and result['warning'] == 'ValueError: provider down'
 
 
 def test_abstract_only_skips_hybrid(client, monkeypatch):
@@ -300,3 +301,30 @@ def test_paper_card_endpoint_returns_200_and_404(client, monkeypatch):
     missing = client.get(f'/api/papers/{lonely_id}/card')
     assert missing.status_code == 404
     assert missing.json()['detail'] == '这篇论文还没有精读卡片'
+
+
+def test_ensure_cards_reports_unavailable_without_raising(client):
+    from app.reviews import cards as cards_mod
+
+    with Session(get_engine()) as s:
+        rows = [Paper(source='manual', title=f'Failing {i}', abstract='Abstract text.')
+                for i in range(8)]
+        s.add_all(rows)
+        s.commit()
+        ids = [r.id for r in rows]
+
+    class Boom:
+        def complete(self, provider, model, messages, **kwargs):
+            raise RuntimeError('key invalid')
+
+    warnings = []
+    result = cards_mod.ensure_cards(get_engine(), ids, Boom(), SimpleNamespace(id=42, base_url=''),
+                                    'fake', 'rev-x', lambda: True, warnings)
+    assert result['unavailable']  # 非空：连续失败已中止
+    assert '模型连续调用失败' in ''.join(warnings)
+    assert not result['done']
+    with Session(get_engine()) as s:
+        rows = s.exec(select(PaperCard).where(PaperCard.paper_id.in_(ids))).all()
+        fallback = [r for r in rows if r.status == 'fallback']
+    assert len(fallback) <= 3 + 2  # 3 个并发任务可能已经在途
+    assert all(r.warning.startswith('RuntimeError') for r in fallback)
