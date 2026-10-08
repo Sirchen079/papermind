@@ -9,6 +9,7 @@ export type CardField = {
   found_in?: string | null;
   pages?: number[];
   missing_numbers?: string[];
+  similarity?: number | null;
 };
 export type FilterablePaper = {
   paper_id: number;
@@ -24,10 +25,10 @@ export type FilterablePaper = {
 
 export type PaperFilter = { query?: string; theme?: string; evidence?: string; status?: string };
 
-export function statusLabel(status: string): string {
+export function statusLabel(status: string, similarity?: number | null): string {
   switch (status) {
     case 'quote_verified':
-      return '已核对原文';
+      return similarity != null && similarity < 1 ? '近似核对原文' : '已核对原文';
     case 'number_mismatch':
       return '数字与原文不符';
     case 'quote_not_found':

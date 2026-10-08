@@ -207,7 +207,7 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
               const location = fieldLocation(field);
               return <p key={label} className="text-sm"><strong>{label}：</strong>{field.value}
                 {' '}<span className="text-xs" style={{ color: field.status === 'number_mismatch' ? 'var(--warning, #b45309)' : 'var(--muted, #6b7280)' }}>
-                  {statusLabel(field.status)}{field.missing_numbers?.length ? `：缺少 ${field.missing_numbers.join('、')}` : ''}{location.text ? `（${location.text}）` : ''}
+                  {statusLabel(field.status, field.similarity)}{field.missing_numbers?.length ? `：缺少 ${field.missing_numbers.join('、')}` : ''}{location.text ? `（${location.text}）` : ''}
                 </span>
                 {location.page !== undefined && <button className="btn-ghost text-xs" onClick={() => onOpenPaper(paper.paper_id, location.page)}>查看原文</button>}
                 {field.quote && <span className="block text-xs text-muted">原文：“{field.quote}”</span>}

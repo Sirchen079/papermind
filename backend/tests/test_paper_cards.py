@@ -328,3 +328,49 @@ def test_ensure_cards_reports_unavailable_without_raising(client):
         fallback = [r for r in rows if r.status == 'fallback']
     assert len(fallback) <= 3 + 2  # 3 个并发任务可能已经在途
     assert all(r.warning.startswith('RuntimeError') for r in fallback)
+
+
+def test_verified_field_includes_similarity():
+    from app.reviews.cards import _verified_field
+
+    sources = {'abstract': ABSTRACT, 'snippets': '', 'full_text': ''}
+    exact = _verified_field({'value': '物理约束', 'quote': 'a physics-constrained loop'}, sources, False)
+    assert 'similarity' in exact and exact['similarity'] == 1.0
+    missing = _verified_field({'value': '精度 52.9', 'quote': 'improves to 52.9'}, sources, False)
+    assert 'similarity' in missing
+
+
+def test_ensure_cards_reverifies_stored_cards_without_model_calls(client):
+    from app.reviews.cards import VERIFY_VERSION, card_fingerprint, card_inputs, ensure_cards
+
+    pid = _add_paper(abstract=ABSTRACT)
+    with Session(get_engine()) as s:
+        inputs = card_inputs(s, s.get(Paper, pid))
+        fingerprint = card_fingerprint(inputs, 'm1')
+        stored = {'metadata': inputs['metadata'], 'evidence_level': 'abstract',
+                  'problem': {'value': '精度 52.9', 'quote': 'improves to 52.9'},
+                  'mechanism': dict(GOOD['mechanism']), 'data_setting': dict(GOOD['data_setting']),
+                  'contributions': [dict(GOOD['contributions'][0])],
+                  'boundary': dict(GOOD['boundary'])}
+        s.add(PaperCard(paper_id=pid, fingerprint=fingerprint, status='done',
+                        card_json=json.dumps(stored), model='m1'))
+        s.commit()
+
+    class NoModel:
+        calls = 0
+
+        def complete(self, provider, model, messages, **kwargs):
+            NoModel.calls += 1
+            raise AssertionError('重核对不应调用模型')
+
+    result = ensure_cards(get_engine(), [pid], NoModel(), SimpleNamespace(id=1, base_url=''),
+                          'm1', 'rev-r', lambda: True, [])
+    assert NoModel.calls == 0
+    assert result['skipped'] == 1 and not result['unavailable']
+    with Session(get_engine()) as s:
+        row = s.exec(select(PaperCard).where(PaperCard.paper_id == pid)).first()
+        card = json.loads(row.card_json)
+        assert card['verify_version'] == VERIFY_VERSION == 2
+        assert row.status == 'done'
+        assert card['problem']['status'] == 'number_mismatch'  # 引文数字被改过，按新规则暴露
+        assert card['mechanism']['status'] == 'quote_verified'

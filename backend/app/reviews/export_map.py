@@ -62,7 +62,8 @@ def _e(value) -> str:
 def _field_label(field: dict) -> str:
     status = field.get('status')
     if status == 'quote_verified':
-        label = '已核对原文'
+        similarity = field.get('similarity')
+        label = '近似核对原文' if similarity is not None and similarity < 1 else '已核对原文'
         pages = field.get('pages') or []
         if pages:
             label += '，第 ' + '、'.join(str(p) for p in pages) + ' 页'

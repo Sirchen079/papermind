@@ -1,4 +1,4 @@
-from app.reviews.verify import check_field, find_quote, normalize, numbers_in
+from app.reviews.verify import _find_detail, check_field, find_quote, normalize, numbers_in
 
 
 def test_normalize_fullwidth_letters_digits_and_parens():
@@ -35,15 +35,15 @@ def test_normalize_collapses_whitespace_lowercases_and_strips():
 
 
 def test_find_quote_exact_returns_original_positions():
-    haystack = 'ABC hello world XYZ'
-    start, end = find_quote(haystack, 'HELLO\nWORLD')
-    assert haystack[start:end] == 'hello world'
+    haystack = 'ABC hello wonderful world XYZ'
+    start, end = find_quote(haystack, 'HELLO\nWONDERFUL\nWORLD')
+    assert haystack[start:end] == 'hello wonderful world'
 
 
 def test_find_quote_crosses_newline():
-    haystack = 'one two\nthree four'
-    start, end = find_quote(haystack, 'two three')
-    assert haystack[start:end] == 'two\nthree'
+    haystack = 'one two\nthree four five'
+    start, end = find_quote(haystack, 'two three four five')
+    assert haystack[start:end] == 'two\nthree four five'
 
 
 def test_find_quote_matches_hyphen_split_word():
@@ -59,8 +59,8 @@ def test_find_quote_matches_ligature_in_haystack():
 
 
 def test_find_quote_fullwidth_parens_and_digits():
-    haystack = '得分（52.7）较高'
-    start, end = find_quote(haystack, '(52.7)')
+    haystack = '总体得分（52.7）较高，明显高于基线'
+    start, end = find_quote(haystack, '总体得分(52.7)较高,明显高于')
     assert '52.7' in haystack[start:end]
 
 
@@ -85,10 +85,11 @@ def test_find_quote_fabricated_long_quote_not_found():
     assert find_quote(haystack, quote) is None
 
 
-def test_find_quote_short_quote_is_exact_match_only():
+def test_find_quote_short_quote_never_matches():
     haystack = 'score 48.1 here'
     assert find_quote(haystack, 'score 48.2') is None
-    assert find_quote(haystack, 'score 48.1') is not None
+    # 新规则：规范化后不足 MIN_QUOTE_CHARS 的引文，逐字出现也不算命中
+    assert find_quote(haystack, 'score 48.1') is None
 
 
 def test_find_quote_empty_returns_none():
@@ -198,3 +199,48 @@ def test_find_quote_long_text_absent_long_words_return_none():
     text, _ = _long_text_with_sentence()
     quote = 'xylophone quadrilateral unrecognized abracadabra phenomenon entirely fabricated'
     assert find_quote(text, quote) is None
+
+
+def test_check_field_compares_numbers_against_source_text():
+    source = 'we measure an accuracy of 48.1 percent on the benchmark suite with care'
+    # 模糊命中，但引文里的数字被模型改过
+    result = check_field('准确率 58.1', 'we measure an accuracy of 58.1 percent on the benchmark suite',
+                         {'abstract': source})
+    assert result['status'] == 'number_mismatch'
+    assert '58.1' in result['missing_numbers']
+
+
+def test_check_field_exact_hit_with_matching_number_is_verified():
+    source = 'we measure an accuracy of 48.1 percent on the benchmark suite with care'
+    result = check_field('准确率 48.1',
+                         'we measure an accuracy of 48.1 percent on the benchmark suite',
+                         {'abstract': source})
+    assert result['status'] == 'quote_verified'
+    assert result['missing_numbers'] == []
+    assert result['similarity'] == 1.0
+
+
+def test_check_field_fuzzy_hit_saves_similarity_below_one():
+    source = 'we measure an accuracy of 48.1 percent on the benchmark suite with care'
+    quote = 'we report an accuracy of 48.1 percent on the benchmark suite'  # 只改了非数字词
+    result = check_field('精度', quote, {'abstract': source})
+    assert result['status'] == 'quote_verified'
+    assert result['similarity'] is not None and result['similarity'] < 1
+
+
+def test_short_quotes_are_never_verified():
+    source = 'the quick brown fox jumps over the lazy dog again and again'
+    assert check_field('那一只', 'the', {'abstract': source})['status'] == 'quote_not_found'
+    assert check_field('省略', '...', {'abstract': source})['status'] == 'quote_not_found'
+
+
+def test_word_boundary_prevents_matching_inside_numbers():
+    source = 'the survey measured 1952.7 m/s in total and nothing else here today'
+    quote = '52.7 m/s was observed'
+    assert check_field('速度', quote, {'abstract': source})['status'] == 'quote_not_found'
+    # 规范化后 6 个字符，不足 MIN_QUOTE_CHARS，本实现直接返回 None（长度不足）
+    assert _find_detail('in 1952.7 we', '52.7 we') is None
+
+
+def test_numbers_in_handles_trailing_letters_and_units():
+    assert numbers_in('52.7ms and 12dB in 3D') == ['52.7', '12', '3']
