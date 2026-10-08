@@ -164,7 +164,9 @@ def test_scan_without_model_and_restart_state_are_actionable(client):
     assert client.post(f'/api/papers/{pid}/document', json={'mode': 'ocr'}).status_code == 422
     client.post(f'/api/papers/{pid}/document', json={})
     state = finish(client, pid)
-    assert state['status'] == 'error' and '选择' in state['error']
+    # The scan fixture keeps a hidden text layer, so its pages are published
+    # as unverified native text instead of being discarded for missing OCR.
+    assert state['status'] == 'ready' and '2 页文字层未验证' in state['error']
     with Session(get_engine()) as session:
         row = session.get(PaperDocument, pid); row.status = 'running'
         session.add(row); session.commit()
