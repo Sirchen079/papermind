@@ -255,6 +255,105 @@ def run_map(engine, review_id, token):
                 s.commit()
             done += len(batch)
 
+        # 4. 主题综合（每主题一次调用；指纹命中即跳过）
+        with Session(engine) as s:
+            row = _map(s, review_id)
+            theme_list = json.loads(row.themes_json or '[]')
+            assignments = json.loads(row.assignments_json or '{}')
+            syntheses = json.loads(row.syntheses_json or '{}')
+            card_rows = {r.paper_id: r for r in s.exec(
+                select(PaperCard).where(PaperCard.paper_id.in_(ids)))}
+            paper_rows = {p.id: p for p in s.exec(
+                select(service.Paper).where(service.Paper.id.in_(ids)))}
+        members_of = {t['id']: [] for t in theme_list}
+        for pid_str, entry in assignments.items():
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+            for tid in entry.get('themes') or []:
+                if tid in members_of:
+                    members_of[tid].append(pid)
+
+        def verified_count(card):
+            fields = [card.get(name) or {} for name in ('problem', 'mechanism', 'data_setting', 'boundary')]
+            fields += card.get('contributions') or []
+            return sum(1 for field in fields if field.get('status') == 'quote_verified')
+
+        total = len(theme_list)
+        for index, theme in enumerate(theme_list):
+            if not active():
+                return
+            stage(f'主题综合 {index}/{total}')
+            tid = theme['id']
+            member_ids = members_of.get(tid, [])
+            cards_by_pid = {}
+            member_stats = []
+            for pid in member_ids:
+                card_row = card_rows.get(pid)
+                card = json.loads(card_row.card_json) if card_row is not None else {}
+                cards_by_pid[pid] = card
+                paper = paper_rows.get(pid)
+                member_stats.append({
+                    'paper_id': pid,
+                    'year': (card.get('metadata') or {}).get('year') or (paper.year if paper else None),
+                    'evidence_level': card.get('evidence_level') or '',
+                    'data_setting_value': (card.get('data_setting') or {}).get('value') or '',
+                })
+            stats = themes.theme_stats(member_stats)
+            fingerprint = service.digest([
+                theme,
+                sorted((card_rows[pid].fingerprint if pid in card_rows else '') for pid in member_ids),
+                themes.SYNTHESIZE_THEME,
+            ])
+            existing = syntheses.get(tid)
+            if isinstance(existing, dict) and existing.get('fingerprint') == fingerprint:
+                continue
+
+            def brief(pid):
+                card, paper = cards_by_pid.get(pid) or {}, paper_rows.get(pid)
+                meta = card.get('metadata') or {}
+                return {'paper_id': pid, 'year': meta.get('year') or (paper.year if paper else None),
+                        'title': meta.get('title') or (paper.title if paper else '')}
+
+            def full(pid):
+                card = cards_by_pid.get(pid) or {}
+
+                def field(name):
+                    item = card.get(name) or {}
+                    return {'value': item.get('value') or '', 'status': item.get('status') or ''}
+                payload = brief(pid)
+                payload.update({
+                    'problem': field('problem'), 'mechanism': field('mechanism'),
+                    'data_setting': field('data_setting'), 'boundary': field('boundary'),
+                    'contributions': [{'value': c.get('value') or '', 'status': c.get('status') or ''}
+                                      for c in card.get('contributions') or []],
+                })
+                return payload
+
+            ranked = sorted(member_ids, key=lambda pid: -verified_count(cards_by_pid.get(pid) or {}))
+            cards_payload = ([full(pid) for pid in ranked[:themes.SYNTH_FULL_CARDS]]
+                            + [brief(pid) for pid in ranked[themes.SYNTH_FULL_CARDS:]])
+            user = service.encode({'theme': theme, 'stats': stats, 'cards': cards_payload})
+            validated = themes.validate_synthesis(
+                themes.parse_payload(ask(themes.SYNTHESIZE_THEME, user, 3000)),
+                member_ids, ids)
+            if validated is None:  # 解析失败重试一次
+                validated = themes.validate_synthesis(
+                    themes.parse_payload(ask(themes.SYNTHESIZE_THEME, user, 3000)),
+                    member_ids, ids)
+            if validated is None:
+                syntheses[tid] = {'error': '本主题综合未完成，可重新运行', 'stats': stats}
+            else:
+                syntheses[tid] = {**validated, 'stats': stats, 'fingerprint': fingerprint}
+            with Session(engine) as s:
+                row = _map(s, review_id)
+                if row.run_token != token:
+                    return
+                row.syntheses_json = service.encode(syntheses)
+                s.add(row)
+                s.commit()
+
         with Session(engine) as s:
             row = _map(s, review_id)
             if row.run_token != token:

@@ -41,11 +41,25 @@ class FakeMapModel:
         self.merge_response = themes_payload()
         self.card_payload = card_payload
         self.propose_users, self.merge_users, self.assign_users = [], [], []
+        self.synth_users = []
+        self.synthesize = self.default_synthesize
+
+    @staticmethod
+    def default_synthesize(user):
+        data = json.loads(user)
+        ids = [c['paper_id'] for c in data['cards']]
+        return json.dumps({
+            'trend': '该路线从稀疏恢复演进到检索增强。',
+            'open_questions': [{'question': 'q', 'why': 'w', 'cannot_claim': 'c', 'cards': ids[:1]}],
+            'combination_opportunities': [{'idea': 'i', 'expected': 'e', 'risk': 'r', 'cards': ids[:1]}],
+            'representative': [{'paper_id': pid, 'why': '代表'} for pid in ids[:3]],
+        }, ensure_ascii=False)
 
     def complete(self, provider, model, messages, **kwargs):
         system, user = messages[0]['content'], messages[-1]['content']
         if '论文精读卡片' in system:
-            return SimpleNamespace(content=self.card_payload)
+            payload = self.card_payload(user) if callable(self.card_payload) else self.card_payload
+            return SimpleNamespace(content=payload)
         if '请提出 6 到 10 个研究主题' in system:
             self.propose_users.append(user)
             payload = self.propose_responses.pop(0) if self.propose_responses else themes_payload()
@@ -56,6 +70,9 @@ class FakeMapModel:
         if '分配 1 到 2 个最贴切的主题 id' in system:
             self.assign_users.append(user)
             return SimpleNamespace(content=self.assign_for(user))
+        if '文献地图中一个研究主题的分析' in system:
+            self.synth_users.append(user)
+            return SimpleNamespace(content=self.synthesize(user))
         raise AssertionError(f'unexpected prompt: {system[:40]} / {user[:40]}')
 
     @staticmethod
@@ -331,3 +348,151 @@ def test_update_themes_rejects_version_conflict_and_running(client, monkeypatch)
                      json={'themes': result['themes'], 'expected_version': result['version']})
     assert res.status_code == 409
     assert '请先暂停' in res.json()['detail']
+
+
+def test_theme_stats_counts_years_settings_and_evidence():
+    from app.reviews import themes as themes_mod
+
+    members = [
+        {'paper_id': 1, 'year': 2021, 'evidence_level': 'full_text', 'data_setting_value': 'Marmousi 合成数据'},
+        {'paper_id': 2, 'year': 2021, 'evidence_level': 'abstract', 'data_setting_value': 'field case study'},
+        {'paper_id': 3, 'year': None, 'evidence_level': 'metadata', 'data_setting_value': 'Field 与 synthetic 并用'},
+        {'paper_id': 4, 'year': 2020, 'evidence_level': 'abstract', 'data_setting_value': '数值模拟 numerical'},
+        {'paper_id': 5, 'year': 2020, 'evidence_level': 'metadata', 'data_setting_value': ''},
+    ]
+    stats = themes_mod.theme_stats(members)
+    assert stats['count'] == 5
+    assert stats['years'] == {'2020': 2, '2021': 2, '未知': 1}
+    assert stats['setting'] == {'field': 1, 'synthetic': 2, 'both': 1, 'unknown': 1}
+    assert stats['evidence'] == {'full_text': 1, 'abstract': 2, 'metadata': 2}
+
+
+def test_synthesis_drops_unknown_ids_and_marks_source_missing(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=6)
+
+    def synthesize(user):
+        data = json.loads(user)
+        valid = [c['paper_id'] for c in data['cards']]
+        return json.dumps({
+            'trend': '演变说明',
+            'open_questions': [
+                {'question': '只引坏号', 'why': 'w', 'cannot_claim': 'c', 'cards': [999]},
+                {'question': '混合', 'why': 'w', 'cannot_claim': 'c', 'cards': [999] + valid[:1]},
+            ],
+            'combination_opportunities': [
+                {'idea': 'i', 'expected': 'e', 'risk': 'r', 'cards': [999]},
+                {'idea': 'j', 'expected': 'e', 'risk': 'r', 'cards': valid[:1]},
+            ],
+            'representative': [{'paper_id': valid[0], 'why': '成员'}] if valid else [],
+        }, ensure_ascii=False)
+
+    fake.synthesize = synthesize
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready', result['error']
+    for entry in result['syntheses'].values():
+        questions = entry['open_questions']
+        combos = entry['combination_opportunities']
+        assert questions[0]['cards'] == [] and questions[0]['source_missing'] is True
+        if entry['stats']['count']:  # 有成员的主题：混合条目保留 1 个合法编号
+            assert len(questions[1]['cards']) == 1 and 999 not in questions[1]['cards']
+            assert 'source_missing' not in questions[1]
+            assert 'source_missing' not in combos[1]
+        else:  # 空成员主题：合法编号不存在，全部按来源缺失处理
+            assert questions[1]['cards'] == [] and questions[1]['source_missing'] is True
+        assert combos[0]['cards'] == [] and combos[0]['source_missing'] is True
+        assert all(rep['paper_id'] != 999 for rep in entry['representative'])
+
+
+def test_synthesis_representative_must_be_theme_member(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    all_ids = list(ids)
+
+    def synthesize(user):
+        data = json.loads(user)
+        members = {c['paper_id'] for c in data['cards']}
+        outsiders = [p for p in all_ids if p not in members][:2]
+        return json.dumps({
+            'trend': 't',
+            'open_questions': [],
+            'combination_opportunities': [],
+            'representative': [{'paper_id': p, 'why': 'x'} for p in outsiders]
+            + [{'paper_id': p, 'why': '成员'} for p in sorted(members)[:1]],
+        }, ensure_ascii=False)
+
+    fake.synthesize = synthesize
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready'
+    assignments = result['assignments']
+    for tid, entry in result['syntheses'].items():
+        members = {int(pid) for pid, a in assignments.items() if tid in a['themes']}
+        for rep in entry['representative']:
+            assert rep['paper_id'] in members
+        assert len(entry['representative']) == 1  # 非成员条目被删
+
+
+VERIFIED_CARD = json.dumps({
+    'problem': {'value': '稀疏恢复问题', 'quote': 'Study of retrieval augmentation methods.'},
+    'mechanism': {'value': '检索增强机制', 'quote': 'Study of retrieval augmentation methods.'},
+    'data_setting': {'value': '合成数据', 'quote': 'Study of retrieval augmentation methods.'},
+    'contributions': [{'value': '提升效果', 'quote': 'Study of retrieval augmentation methods.'}],
+    'boundary': {'value': '需核对原文', 'quote': 'Study of retrieval augmentation methods.'},
+})
+
+
+def test_synthesis_caps_full_cards_at_40_ranked_by_verified_fields(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=45)
+    fake.card_payload = lambda user: VERIFIED_CARD if '"title": "Paper 44"' in user else VALID_CARD
+    fake.assign_for = staticmethod(lambda user: json.dumps({'assignments': [
+        {'paper_id': int(m), 'themes': ['T1'], 'reason': 'r'} for m in re.findall(r'^\[P(\d+)\]', user, re.M)
+    ]}, ensure_ascii=False))
+    client.post(prefix + '/map/run')
+    t1_user = next(u for u in fake.synth_users if json.loads(u)['theme']['id'] == 'T1')
+    data = json.loads(t1_user)
+    cards = data['cards']
+    assert len(cards) == 45
+    full = [c for c in cards if 'problem' in c]
+    brief = [c for c in cards if 'problem' not in c]
+    assert len(full) == 40 and len(brief) == 5
+    assert full[0]['paper_id'] == ids[44]  # 已核对字段数最多的排最前
+    assert all(set(c) == {'paper_id', 'year', 'title'} for c in brief)
+    result = client.get(prefix + '/map').json()
+    assert result['syntheses']['T1']['stats']['count'] == 45
+
+
+def test_synthesis_failure_isolated_other_themes_and_map_ready(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=6)
+
+    def synthesize(user):
+        data = json.loads(user)
+        if data['theme']['id'] == 'T2':
+            return 'not-json'
+        return FakeMapModel.default_synthesize(user)
+
+    fake.synthesize = synthesize
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready', result['error']
+    assert result['syntheses']['T2']['error'] == '本主题综合未完成，可重新运行'
+    assert 'stats' in result['syntheses']['T2'] and 'fingerprint' not in result['syntheses']['T2']
+    others = [e for tid, e in result['syntheses'].items() if tid != 'T2']
+    assert others and all('trend' in e for e in others)
+    assert sum(1 for u in fake.synth_users if json.loads(u)['theme']['id'] == 'T2') == 2  # 重试一次
+
+
+def test_synthesis_reuses_cache_and_partial_rerun_after_theme_edit(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    base = len(fake.synth_users)
+    client.post(prefix + '/map/run')  # 无变化 → 全部跳过
+    assert len(fake.synth_users) == base
+    result = client.get(prefix + '/map').json()
+    edited = [dict(t, name='改名') if t['id'] == 'T2' else t for t in result['themes']]
+    res = client.put(prefix + '/map/themes', json={'themes': edited, 'expected_version': result['version']})
+    assert res.status_code == 200
+    client.post(prefix + '/map/run')
+    assert len(fake.synth_users) == base + 1  # 只重新综合被改的主题
+    assert json.loads(fake.synth_users[-1])['theme']['id'] == 'T2'
+    final = client.get(prefix + '/map').json()
+    assert final['status'] == 'ready' and set(final['syntheses']) == {f'T{i}' for i in range(1, 8)}
