@@ -608,6 +608,20 @@ def add_external_paper(body: ExternalPaperIn, session: Session = Depends(get_ses
     return {"paper": _public(paper), "created": created}
 
 
+@router.get("/papers/{pid}/card")
+def get_paper_card(pid: int, session: Session = Depends(get_session)) -> dict:
+    from app.models.card import PaperCard
+
+    paper = session.get(Paper, pid)
+    if paper is None or paper.is_deleted:
+        raise HTTPException(404, "论文不存在。")
+    row = session.exec(select(PaperCard).where(PaperCard.paper_id == pid)).first()
+    if row is None:
+        raise HTTPException(404, "这篇论文还没有精读卡片")
+    return {"paper_id": pid, "status": row.status, "card": json.loads(row.card_json),
+            "warning": row.warning, "updated_at": row.updated_at}
+
+
 @router.get("/papers/{pid}/file")
 def get_paper_file(pid: int, session: Session = Depends(get_session)) -> FileResponse:
     """Serve the paper's stored PDF (P11.1, built-in reader).

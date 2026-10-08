@@ -10,8 +10,12 @@ from app.reviews import service
 
 
 class FakeWriter:
-    def __init__(self):self.calls=[];self.fail_paper=None;self.pause=None
+    def __init__(self):self.calls=[];self.fail_paper=None;self.pause=None;self.card_calls=0
     def complete(self,provider,model,messages,**kwargs):
+        # 精读卡片的调用不计入综述正文调用统计（卡 10）；解析失败即 fallback。
+        if '论文精读卡片' in messages[0]['content']:
+            self.card_calls+=1
+            return SimpleNamespace(content='not-a-card')
         text=messages[-1]['content'];self.calls.append(text)
         if self.pause:
             callback=self.pause;self.pause=None;callback()
@@ -184,6 +188,8 @@ def test_review_rebudgets_exhausted_reasoning_without_losing_completed_work(clie
         s.add(Model(provider_id=123,model_id='fake',reasoning_effort='high',context_window=32768));s.commit()
     original=fake.complete;caps=[]
     def complete(provider,model,messages,**kwargs):
+        if '论文精读卡片' in messages[0]['content']:
+            return original(provider,model,messages,**kwargs)  # 卡片调用不计入预算重试统计
         caps.append(kwargs['max_tokens'])
         assert total_tokens(messages)+caps[-1]<=32768
         if len(caps)==1:raise EmptyResponseError('empty',output_exhausted=True)

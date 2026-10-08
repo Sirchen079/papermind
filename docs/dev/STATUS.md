@@ -48,6 +48,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 | 07 | 本提交 | tests/test_review_verify.py：29 通过 / 0 失败 | 纯函数未接入综述流程（卡 08 接入）；模糊滑窗按卡规格（窗口 ±10%、步长 1/4、阈值 0.9），在超长全文上可能较慢，接入时如成瓶颈再议；行尾连字符合并仅限小写字母且在引号/破折号统一之前判断，避免误并真实破折号 |
 | 08 | 本提交 | tests/test_provider_client.py+test_library_reviews.py+test_review_continuation.py：45 通过 / 0 失败 | 仅 library_review 远程读超时放宽到 900 秒（新增 _review_generation_timeout，未改 _generation_timeout）；rerank_llm/对话/OCR 等其他请求超时不变；num_retries 仍为 0 |
 | 09 | 本提交 | tests/test_paper_cards.py+test_review_verify.py+test_review_models.py：48 通过 / 0 失败；tests/test_migration.py：13 通过 | 未接入综述流程、无 API（卡 10）；metadata.links 为含一个 DOI 链接的列表；contributions 列表内无效条目被跳过、有效条目 0 个视为解析失败；迁移 d7b4c2e9f6a3 建表 papercard（paper_id 唯一索引），downgrade 到 c5f9a3b7d201 |
+| 10 | 本提交 | tests/test_paper_cards.py+test_library_reviews.py+test_review_continuation.py+test_review_incremental.py：40 通过 / 0 失败 | ensure_cards 并发 3 线程、fingerprint 命中即复用；卡片 fallback 中文解析失败不追加 run_warnings（避免误标 incomplete），仅异常类名才计警告；阶段名“精读卡片”位于逐篇整理后；GET /api/reviews/{id}/cards 与 GET /api/papers/{pid}/card；test_review_rebudgets 局部 wrapper 排除卡片调用（mock 修改共 2 处，未删断言） |
 
 ## 阻塞
 （无）

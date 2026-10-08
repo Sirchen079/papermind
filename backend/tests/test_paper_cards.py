@@ -213,3 +213,90 @@ def test_card_migration_upgrade_and_downgrade(tmp_path):
     inspector = inspect(create_engine(f'sqlite:///{db}'))
     assert 'papercard' not in inspector.get_table_names()
     assert 'paperdocument' in inspector.get_table_names()
+
+
+VALID_CARD = json.dumps({
+    'problem': {'value': '稀疏恢复问题', 'quote': ''},
+    'mechanism': {'value': '检索增强机制', 'quote': ''},
+    'data_setting': {'value': '合成数据', 'quote': ''},
+    'contributions': [{'value': '提升效果', 'quote': ''}],
+    'boundary': {'value': '需核对原文', 'quote': ''},
+})
+
+
+def _card_responder(fake, ids=None, fail_for=None):
+    original = fake.complete
+    card_calls = []
+
+    def complete(provider, model, messages, **kwargs):
+        if '论文精读卡片' in messages[0]['content']:
+            card_calls.append(messages[-1]['content'])
+            if fail_for and f'"title": "Paper {fail_for}"' in messages[-1]['content']:
+                raise TimeoutError('card provider down')
+            return SimpleNamespace(content=VALID_CARD)
+        return original(provider, model, messages, **kwargs)
+
+    fake.complete = complete
+    return card_calls
+
+
+def test_review_run_builds_cards_and_lists_them(client, monkeypatch):
+    from test_library_reviews import setup
+
+    prefix, fake, ids = setup(client, monkeypatch, count=3)
+    client.post(prefix + '/run')
+    result = client.get(prefix).json()
+    assert result['status'] == 'ready', result['error']
+    with Session(get_engine()) as s:
+        rows = s.exec(select(PaperCard).where(PaperCard.paper_id.in_(ids))).all()
+        assert {r.paper_id for r in rows} == set(ids)
+    cards = client.get(prefix + '/cards').json()
+    assert len(cards) == 3
+    assert [c['paper_id'] for c in cards] == ids
+    assert all(c['card'] is not None and c['status'] in {'done', 'fallback'} for c in cards)
+    assert all('title' in c and c['title'].startswith('Paper ') for c in cards)
+
+
+def test_rerun_reuses_cards_without_model_calls(client, monkeypatch):
+    from test_library_reviews import setup
+
+    prefix, fake, ids = setup(client, monkeypatch, count=3)
+    card_calls = _card_responder(fake)
+    client.post(prefix + '/run')
+    assert len(card_calls) == 3
+    client.post(prefix + '/run')
+    assert len(card_calls) == 3  # 卡片缓存命中，不再调用模型
+
+
+def test_card_failure_keeps_review_ready_with_fallback(client, monkeypatch):
+    from test_library_reviews import setup
+
+    prefix, fake, ids = setup(client, monkeypatch, count=3)
+    _card_responder(fake, fail_for=1)
+    client.post(prefix + '/run')
+    result = client.get(prefix).json()
+    assert result['status'] == 'ready'
+    assert result['error']  # run_warnings 汇总为最终提示
+    cards = client.get(prefix + '/cards').json()
+    assert cards[1]['status'] == 'fallback'
+    assert cards[0]['status'] == 'done' and cards[2]['status'] == 'done'
+
+
+def test_paper_card_endpoint_returns_200_and_404(client, monkeypatch):
+    from test_library_reviews import setup
+
+    prefix, fake, ids = setup(client, monkeypatch, count=1)
+    _card_responder(fake)
+    with Session(get_engine()) as s:
+        lonely = Paper(source='manual', title='Never reviewed')
+        s.add(lonely)
+        s.commit()
+        lonely_id = lonely.id
+    client.post(prefix + '/run')
+    res = client.get(f'/api/papers/{ids[0]}/card')
+    assert res.status_code == 200
+    body = res.json()
+    assert body['status'] == 'done' and body['card']['problem']['value'] == '稀疏恢复问题'
+    missing = client.get(f'/api/papers/{lonely_id}/card')
+    assert missing.status_code == 404
+    assert missing.json()['detail'] == '这篇论文还没有精读卡片'
