@@ -43,12 +43,18 @@ dependency (avoids litellm's remote cost-map fetch).
 ## Test
 
 ```bash
-.venv/Scripts/python -m pytest
+.venv/Scripts/python -m pytest -q --basetemp=C:\pmt
 ```
 
-Tests use an isolated temp DB per case (path-keyed engine cache) and a
-project-local pytest basetemp, so no shared state and no reliance on the
-system temp dir.
+Tests use an isolated temp DB per case (path-keyed engine cache), so no shared
+state and no reliance on the system temp dir.
+
+On Chinese-locale or deeply nested checkout paths (e.g. `F:\论文管理\...`), the
+default project-local basetemp exceeds the Windows MAX_PATH limit and tests
+fail with spurious `FileNotFoundError`. Always pass a short `--basetemp`
+(any short path works), e.g. the full command above with `--basetemp=C:\pmt`.
+For the full-suite baseline run use a separate dir (per-card runs clear
+`C:\pmt`): `.venv\Scripts\python -m pytest -q -p no:warnings --basetemp=C:\pmtfull`.
 
 ## Modules
 
