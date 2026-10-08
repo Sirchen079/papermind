@@ -73,6 +73,54 @@ def normalize(text: str) -> str:
     return _normalize_with_map(text)[0]
 
 
+def _slide(h_norm: str, q_norm: str, threshold: float, lo: int, hi: int):
+    """Windowed fuzzy comparison over h_norm[lo:hi]; returns (start, end, ratio) or None."""
+    qlen = len(q_norm)
+    step = max(1, qlen // 4)
+    matcher = SequenceMatcher(None, q_norm, '')
+    best = None
+    for window in range(max(1, int(qlen * .9)), int(qlen * 1.1) + 1):
+        for start in range(lo, max(lo + 1, hi - window + 1), step):
+            matcher.set_seq2(h_norm[start:start + window])
+            if matcher.real_quick_ratio() < threshold or matcher.quick_ratio() < threshold:
+                continue
+            ratio = matcher.ratio()
+            if ratio >= threshold and (best is None or ratio > best[2]):
+                best = (start, start + window, ratio)
+    return best
+
+
+ANCHOR_MIN_LEN = 5
+ANCHOR_COUNT = 3
+LONG_TEXT = 20000
+
+
+def _anchor_spans(h_norm: str, q_norm: str) -> list[tuple[int, int]] | None:
+    """Searchable regions: one quote length around occurrences of the quote's longest
+    words. An empty list means no anchor occurs (no fuzzy hit possible); None means
+    no usable anchor word (caller falls back to a full scan)."""
+    words = [word for word in q_norm.split() if len(word) >= ANCHOR_MIN_LEN]
+    if not words:
+        return None
+    qlen = len(q_norm)
+    spans = []
+    for word in sorted(words, key=len, reverse=True)[:ANCHOR_COUNT]:
+        pos = h_norm.find(word)
+        while pos != -1:
+            spans.append((max(0, pos - qlen), min(len(h_norm), pos + len(word) + qlen)))
+            pos = h_norm.find(word, pos + 1)
+    if not spans:
+        return []
+    spans.sort()
+    merged = [spans[0]]
+    for lo, hi in spans[1:]:
+        if lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
 def _find_detail(haystack: str, quote: str, threshold: float = 0.9):
     """Positions in the original haystack plus the match similarity, or None."""
     if not quote or not quote.strip():
@@ -87,18 +135,18 @@ def _find_detail(haystack: str, quote: str, threshold: float = 0.9):
         return h_index[pos], h_index[end - 1] + 1, 1.0
     if len(q_norm) < 12:
         return None
-    qlen = len(q_norm)
-    step = max(1, qlen // 4)
-    matcher = SequenceMatcher(None, q_norm, '')
-    best = None
-    for window in range(max(1, int(qlen * .9)), int(qlen * 1.1) + 1):
-        for start in range(0, max(1, len(h_norm) - window + 1), step):
-            matcher.set_seq2(h_norm[start:start + window])
-            if matcher.real_quick_ratio() < threshold or matcher.quick_ratio() < threshold:
-                continue
-            ratio = matcher.ratio()
-            if ratio >= threshold and (best is None or ratio > best[2]):
-                best = (start, start + window, ratio)
+    if len(h_norm) <= LONG_TEXT:
+        best = _slide(h_norm, q_norm, threshold, 0, len(h_norm))
+    else:
+        spans = _anchor_spans(h_norm, q_norm)
+        if spans == []:
+            return None  # 锚词一个都不在文中，不可能模糊命中
+        regions = spans if spans is not None else [(0, len(h_norm))]
+        best = None
+        for lo, hi in regions:
+            found = _slide(h_norm, q_norm, threshold, lo, hi)
+            if found and (best is None or found[2] > best[2]):
+                best = found
     if best is None:
         return None
     start, end, ratio = best

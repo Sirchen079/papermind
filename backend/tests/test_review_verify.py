@@ -159,3 +159,42 @@ def test_check_field_full_text_pages_single_and_spanning():
     assert single['found_in'] == 'full_text' and single['pages'] == [3]
     spanning = check_field('52.7', 'alpha 52.7 beta gamma', {'full_text': full_text})
     assert spanning['pages'] == [3, 4]
+
+
+def _long_text_with_sentence():
+    paragraph = 'the quick brown fox jumps over the lazy dog and nothing else happens here at all. '
+    filler = paragraph * 1500  # 规范化后约 11 万字符，接近实测的慢场景
+    sentence = 'we restore the wavefield from sparse observations across several marine surveys and report uncertainties'
+    middle = len(filler) // 2
+    return filler[:middle] + sentence + '. ' + filler[middle:], sentence
+
+
+def test_find_quote_long_text_fuzzy_hit_covers_sentence():
+    text, sentence = _long_text_with_sentence()
+    quote = sentence.replace('observations', 'observation')  # 一处小改写
+    result = find_quote(text, quote)
+    assert result is not None
+    start, end = result
+    # 现有窗口规则按最高相似度选窗、步长为引文 1/4，返回区间与原句充分重叠即可
+    s_start = text.index(sentence)
+    overlap = min(end, s_start + len(sentence)) - max(start, s_start)
+    assert overlap >= len(sentence) * 0.7
+
+
+def test_find_quote_long_text_fabricated_quote_is_fast_none():
+    import time
+
+    text, _ = _long_text_with_sentence()
+    quote = ('uncertainties surveys wavefield observations marine sparse '
+             'restore report several reordered into nonsense')  # 长词都来自原句但顺序打乱
+    began = time.perf_counter()
+    result = find_quote(text, quote)
+    elapsed = time.perf_counter() - began
+    assert result is None
+    assert elapsed < 0.5, elapsed
+
+
+def test_find_quote_long_text_absent_long_words_return_none():
+    text, _ = _long_text_with_sentence()
+    quote = 'xylophone quadrilateral unrecognized abracadabra phenomenon entirely fabricated'
+    assert find_quote(text, quote) is None
