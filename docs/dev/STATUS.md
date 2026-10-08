@@ -45,6 +45,7 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 另：_ocr_model_missing 对“已配置但不可用”的 OCR 模型返回 False，沿用原 waiting_model 路径，不悄悄回退。
 | 05 | 本提交 | tests/test_enrich_metadata.py+test_sources.py+test_ingestion.py：19 通过 / 0 失败 | Crossref 查不到（含 404）按卡定义返回 unavailable 并带 error_type，不再尝试 OpenAlex；API 对不存在/已删除 id 返回 not_found 状态（卡未规定，为避免静默跳过）；测试用 client fixture（env 不建表） |
 | 06 | 本提交 | tests/test_open_fulltext.py+test_enrich_metadata.py+test_ingestion.py：23 通过 / 0 失败 | best_oa_location 本身即 OA 最佳位置，不做 is_oa 二次判断；locations[] 按 is_oa 过滤；import_paper_pdf 未改动，失败时 error_types 记录异常类名 |
+| 07 | 本提交 | tests/test_review_verify.py：29 通过 / 0 失败 | 纯函数未接入综述流程（卡 08 接入）；模糊滑窗按卡规格（窗口 ±10%、步长 1/4、阈值 0.9），在超长全文上可能较慢，接入时如成瓶颈再议；行尾连字符合并仅限小写字母且在引号/破折号统一之前判断，避免误并真实破折号 |
 
 ## 阻塞
 （无）
