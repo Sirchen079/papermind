@@ -78,3 +78,41 @@ test('raw HTML, unsafe links and trusted TeX commands do not create executable c
   assert.doesNotMatch(html,/<script|href="javascript:/);
   assert.doesNotMatch(html,/<iframe/);
 });
+
+test('Chinese prose and quotes cannot become part of a bare resource URL', () => {
+  const source = '论文称"资源在 https://example.org/"。实际读取该页（https://example.org/），还有代码（https://github.com/example/repo）、数据（https://example.org/data）及演示。';
+  const html = render(source);
+  assert.deepEqual([...html.matchAll(/href="([^"]*)"/g)].map(match=>match[1]), [
+    'https://example.org/', 'https://example.org/', 'https://github.com/example/repo', 'https://example.org/data',
+  ]);
+  assert.match(html,/实际读取该页/);
+  assert.match(html,/还有代码/);
+  assert.match(html,/及演示。/);
+});
+
+test('bare URLs in table cells keep Chinese punctuation outside the target', () => {
+  const html = render('| 资源 | 说明 |\n|---|---|\n| https://example.org/model，https://example.org/data。 | 另见 www.example.org/demo）；完成 |');
+  assert.deepEqual([...html.matchAll(/href="([^"]*)"/g)].map(match=>match[1]), [
+    'https://example.org/model', 'https://example.org/data', 'http://www.example.org/demo',
+  ]);
+  assert.match(html,/<table>/);
+  assert.match(html,/完成/);
+});
+
+test('explicit and international URLs, encoded punctuation and query strings retain their destinations', () => {
+  const html = render('[中文目录](https://example.org/目录（版本）)\n\nhttps://example.org/资料?q=中文&tag=a%EF%BC%89b。\n\n<https://example.org/目录（版本）>\n\n[quoted](https://example.org/%22file%22)');
+  assert.deepEqual([...html.matchAll(/href="([^"]*)"/g)].map(match=>match[1]), [
+    'https://example.org/%E7%9B%AE%E5%BD%95%EF%BC%88%E7%89%88%E6%9C%AC%EF%BC%89',
+    'https://example.org/%E8%B5%84%E6%96%99?q=%E4%B8%AD%E6%96%87&amp;tag=a%EF%BC%89b',
+    'https://example.org/%E7%9B%AE%E5%BD%95%EF%BC%88%E7%89%88%E6%9C%AC%EF%BC%89', 'https://example.org/%22file%22',
+  ]);
+});
+
+test('literal URL repair leaves code, mail, fragments and unsafe explicit links unchanged', () => {
+  const html = render('`https://example.org/path）。`\n\n```text\nhttps://example.org/path）。\n```\n\ncontact@example.org\n\n[page](#pm-pdf-1-7)\n\n[bad](javascript:alert%281%29)');
+  assert.equal((html.match(/href="https:/g)||[]).length,0);
+  assert.match(html,/href="mailto:contact@example.org"/);
+  assert.match(html,/href="#pm-pdf-1-7"/);
+  assert.doesNotMatch(html,/href="javascript:/);
+  assert.match(html,/https:\/\/example.org\/path）。/);
+});

@@ -21,6 +21,8 @@ import { useConfirm } from "./ui/ConfirmDialog";
 import type { PaperExcerpt, PaperNote } from "../api";
 import { useApi, useWorkspace } from '../workspaceContext';
 import { ReadingCompanion, type ReadingSelection } from './ReadingCompanion';
+import {isTopDialog} from './ui/dialogOrder';
+import {MarkdownContent} from './MarkdownContent';
 import { TranslationPopover, type TranslationSelection } from './TranslationPopover';
 import { DocumentProcessingPanel } from './DocumentProcessingPanel';
 import { shouldSubmitOnEnter } from "../pages/keyGuardModel";
@@ -65,7 +67,7 @@ interface PdfReaderProps {
   /** P11.5：翻页后上报进度（父级做 2s 防抖节流写回）。 */
   onProgress: (page: number) => void;
   onClose: () => void;
-  onOpenPaper: (id: number) => void;
+  onOpenPaper: (id: number, page?: number) => void;
   onRefreshNotes: () => Promise<void>;
 }
 
@@ -96,6 +98,7 @@ export default function PdfReader({
   onOpenPaper,
   onRefreshNotes,
 }: PdfReaderProps) {
+  const readerDialogRef=useRef<HTMLDivElement>(null);
   const {base}=useWorkspace();
   const api = useApi();
   const [tab, setTab] = useState<'ai' | 'notes'>('ai');
@@ -172,6 +175,7 @@ export default function PdfReader({
   useEffect(() => {
     const onEscape = (event: KeyboardEvent) => {
       if (processingOpen) return;
+      if (!isTopDialog(readerDialogRef.current)) return;
       if (event.key !== "Escape" || event.isComposing || event.defaultPrevented || document.querySelector('[role="alertdialog"]')) return;
       // Editors and IME candidates own Escape while the user is typing.
       if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]')) return;
@@ -599,7 +603,7 @@ export default function PdfReader({
   const resetZoom = useCallback(() => setScale(DEFAULT_SCALE), []);
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col" style={{ backgroundColor: "var(--bg)" }} role="dialog" aria-modal="true" aria-label="阅读 PDF">
+    <div ref={readerDialogRef} className="fixed inset-0 z-40 flex flex-col" style={{ backgroundColor: "var(--bg)" }} role="dialog" aria-modal="true" aria-label="阅读 PDF">
       <header
         className="flex shrink-0 flex-wrap items-center gap-2 border-b px-4 py-2"
         style={{ borderColor: "var(--border)", backgroundColor: "var(--surface)" }}
@@ -696,7 +700,11 @@ export default function PdfReader({
             <button className="btn-ghost ml-auto text-xs md:hidden" onClick={() => setNotesOpen(false)}>收起</button>
           </div>
           <div className={tab === 'ai' ? 'min-h-0 flex-1' : 'hidden'}>
-            <ReadingCompanion key={paperId} paperId={paperId} title={title} selection={readingSelection} preparation={preparation} onOpenPaper={id => { void leaveReader(() => onOpenPaper(id)); }} />
+            <ReadingCompanion key={paperId} paperId={paperId} title={title} selection={readingSelection} preparation={preparation}
+              currentPage={currentPage} pageReady={!loading && !errorMsg && !pageError && !rendering && renderedPageRef.current === currentPage} onOpenPaper={(id, page) => {
+              if (id === paperId && page) goToPage(page);
+              else void leaveReader(() => onOpenPaper(id, page));
+            }} />
           </div>
           <div className={tab === 'notes' ? 'min-h-0 flex-1 overflow-auto p-3' : 'hidden'}>
             <h4 className="mb-2 text-sm font-semibold">笔记与摘录</h4>
@@ -823,7 +831,10 @@ export default function PdfReader({
                       <span className="chip text-muted">{NOTE_KIND_LABELS[note.kind] ?? note.kind}</span>
                       {note.tags.length > 0 && <span className="truncate text-faint">{note.tags.join(", ")}</span>}
                     </div>
-                    <p className="whitespace-pre-wrap text-muted">{note.content}</p>
+                    <MarkdownContent content={note.content} images={false} paperId={paperId} onPdfPage={(_id,page)=>{
+                      if(page>pageCount){toast.error(`这份 PDF 只有 ${pageCount} 页，请核对笔记中的页码。`);return;}
+                      goToPage(page);
+                    }}/>
                   </li>
                 ))}
               </ul>

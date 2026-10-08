@@ -1,15 +1,26 @@
+import {chatTurnIdentity,documentReferenceText} from './documentIdentityModel';
 import { useApi, useWorkspace } from '../workspaceContext';
 import { useEffect, useRef, useState } from "react";
 import { MarkdownContent } from '../components/MarkdownContent';
-import { type ChatAttachment, type ChatModel, type Source, type TopicSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
+import { type ChatAttachment, type ChatModel, type Source, type TopicSource, type WebSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
+import { ChatWebSources } from '../components/ChatWebSources';
 import { ChatTopicSources } from '../components/ChatTopicSources';
+import { ChatSavedArtifacts } from '../components/ChatSavedArtifacts';
+import { ChatDocumentEditor } from '../components/ChatDocumentEditor';
+import { DocumentEditProposals } from '../components/DocumentEditProposals';
+import { SavedDocuments } from '../components/SavedDocuments';
+import { AttachmentChip } from '../components/AttachmentPreview';
+import type { ChatDocumentRevision, SavedDocumentReference } from '../api';
+import { ChatPaperSource } from '../components/ChatPaperSource';
+import { ChatPaperSources } from '../components/ChatPaperSources';
+import { paperSourceHistory } from './chatSourceHistoryModel';
 import { AskUserCard } from "../components/AskUserCard";
 import { DiscussionPapers } from '../components/DiscussionPapers';
 import { useChatDraft } from '../components/useChatDraft';
 import { appendQueued, nextQueued, finishQueued } from './chatQueueModel';
 import { libraryScope } from '../components/usePaperDraft';
 import { usePaperDraft } from '../components/usePaperDraft';
-import { AlertTriangle, BookOpen, Check, Copy, Lightbulb, Menu, MessageSquare, Pencil, Save, SquareIcon, Wrench, X } from "../icons";
+import { AlertTriangle, BookOpen, Check, ChevronDown, Copy, Lightbulb, Menu, MessageSquare, Pencil, Save, SquareIcon, Wrench, X } from "../icons";
 import { useToast } from "../components/ui/Toast";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -50,8 +61,10 @@ interface RetryTurn {
   extra?: ChatMessageExtra;
 }
 interface QueuedTurn { id: string; state: 'waiting' | 'sending'; text: string; extra: ChatMessageExtra; }
-interface ComposerMaterials { attachments: ChatAttachment[]; queue: QueuedTurn[]; }
+export interface ComposerMaterials { attachments: ChatAttachment[]; queue: QueuedTurn[]; workflow?: ChatMessageExtra['workflow']; }
 interface Msg {
+  serverMessageId?:number;
+  documentRevision?: ChatDocumentRevision|null;
   attachments?: ChatAttachment[];
   status?: string;
   id: number;
@@ -60,7 +73,9 @@ interface Msg {
   model: string;
   sources?: Source[];
   topic_sources?: TopicSource[];
+  web_sources?: WebSource[];
   tools?: ToolStep[];
+  updates?: { content: string }[];
   stopped?: boolean;
   error?: string;
   retry?: RetryTurn;
@@ -84,7 +99,8 @@ function argSummary(name: string, args: Record<string, unknown>): string {
   const vals = Object.values(args ?? {});
   if (!vals.length) return "";
   const first = vals[0];
-  const shown = typeof first === "string" ? `"${first}"` : JSON.stringify(first);
+  const raw = typeof first === "string" ? `"${first}"` : JSON.stringify(first);
+  const shown = raw.length > 100 ? raw.slice(0, 100) + '…' : raw;
   return vals.length > 1 ? `(${shown}, …)` : `(${shown})`;
 }
 
@@ -100,15 +116,19 @@ export default function Chat({
   embedded = false,
   onModelSelected,
   initialDraft,
+  initialReview,
+  initialResearch,
   onInitialDraftConsumed,
 }: {
   embedded?: boolean;
   onModelSelected?: (id: number | undefined) => void;
   initialDraft?: string;
+  initialReview?: string;
+  initialResearch?: {task_id:string;version:number};
   onInitialDraftConsumed?: () => void;
   activeConv: number | null;
   setActiveConv: (id: number | null) => void;
-  onOpenPaper: (id: number) => void;
+  onOpenPaper: (id: number, page?: number) => void;
   paperContext: PaperChatContext | null;
   onClearPaperContext: () => void;
   onSelectionConsumed: () => void;
@@ -120,11 +140,22 @@ export default function Chat({
   const draftKey = `${libraryScope()}:${workspace.id}:${activeConv ?? 0}`;
   const [convs, setConvs] = useState<Conv[]>([]);
   const [messages, setMessages] = useState<Msg[]>([]);
+  const [editingDocument,setEditingDocument]=useState<{filename:string;content:string}|null>(null);
+  const [savedDocumentsOpen,setSavedDocumentsOpen]=useState(false);
+  const [savingAnswerId,setSavingAnswerId]=useState<number|null>(null);
+  useEffect(()=>setSavingAnswerId(null),[draftKey]);
+  const [documentToOpen,setDocumentToOpen]=useState<SavedDocumentReference|null>(null);
+  useEffect(()=>{setSavedDocumentsOpen(false);setDocumentToOpen(null);},[draftKey]);
+  useEffect(()=>setEditingDocument(null),[draftKey]);
+  const [paperSources, setPaperSources] = useState<{current:Source[];earlier:Source[]} | null>(null);
+  useEffect(() => setPaperSources(null), [draftKey]);
+  function showPaperSource(message: Msg, paperId: number) {
+    const matches = paperSourceHistory(messages,message.id,paperId);
+    if (matches.current.length || matches.earlier.length) setPaperSources(matches);
+    else onOpenPaper(paperId);
+  }
   const [composerDraft, setComposerDraft, clearComposerDraft] = usePaperDraft(activeConv ?? 0, {content:''}, 'chat-composer');
-  useEffect(() => {
-    if (initialDraft && !composerDraft.content) setComposerDraft({content: initialDraft});
-    if (initialDraft) onInitialDraftConsumed?.();
-  }, []);
+  const initialMaterial=useRef({draft:initialDraft,review:initialReview,research:initialResearch});
   const input=composerDraft.content;
   const setInput=(content:string)=>setComposerDraft({content});
   const [manualSkills, setManualSkills] = useState<{id: number; name: string}[]>([]);
@@ -134,9 +165,33 @@ export default function Chat({
   const [busy, setBusy] = useState(false);
   const materials = useChatDraft<ComposerMaterials>(draftKey, { attachments: [], queue: [] });
   const { attachments, queue } = materials.value;
+  const workflow = materials.value.workflow ?? 'general';
+  const workflowLabel = workflow === 'literature-synthesis' ? '文献综合' : workflow === 'review-revision' ? '修订综述' : '自由研究';
+  const manualSkillName = manualSkills.find(skill => String(skill.id) === manualSkillId)?.name;
+  function setWorkflow(value: ChatMessageExtra['workflow']) {
+    materials.update(previous => ({ ...previous, workflow: value }));
+    if (value !== 'general') setManualSkillId('');
+  }
   function setAttachments(value: ChatAttachment[] | ((items: ChatAttachment[]) => ChatAttachment[])) {
     materials.update(previous => ({ ...previous, attachments: typeof value === 'function' ? value(previous.attachments) : value }));
   }
+  useEffect(() => {
+    if(!materials.ready)return;
+    const initial=initialMaterial.current;
+    if(!initial.draft&&!initial.review&&!initial.research)return;
+    let active=true;
+    if(initial.draft&&!composerDraft.content)setComposerDraft({content:initial.draft});
+    const reference=initial.research;
+    const text=reference
+      ?`关联已保存的论文研究 v${reference.version}，包含研究判断和原文依据。请从这个版本继续，保留已有人工修改，并结合当前问题补查。`
+      :initial.review?`关联专题研究：#research?mode=review&review=${encodeURIComponent(initial.review)}\n这是已保存研究材料的入口，包含论文分析和章节草稿，可按当前问题继续读取。`:'';
+    const done=()=>{if(active){initialMaterial.current={draft:undefined,review:undefined,research:undefined};onInitialDraftConsumed?.();}};
+    if(!text){done();return;}
+    materials.update(previous=>({...previous,attachments:previous.attachments.some(a=>a.kind==='text'&&a.text===text)?previous.attachments:[...previous.attachments,
+      {name:reference?`论文研究 v${reference.version}`:'专题研究链接',kind:'text',text,data_url:'',size:new TextEncoder().encode(text).length,...(reference?{research_task:reference}:{})}]}))
+      .then(saved=>{if(saved)done();});
+    return()=>{active=false;};
+  }, [materials.ready]);
   const [queuePaused, setQueuePaused] = useState(true);
   const pauseRef = useRef(true);
   function pauseQueue() { pauseRef.current = true; setQueuePaused(true); }
@@ -255,9 +310,10 @@ export default function Chat({
         if (alive)
           setMessages(
             c.messages.flatMap((m) => {
-              const row = mk(m.role, m.content, m.model, { sources: m.sources ?? [], topic_sources: m.topic_sources ?? [], clarification: m.clarification, attachments: m.attachments, tools: m.tools });
+              const row = mk(m.role, m.content, m.model, { serverMessageId:m.id, documentRevision:m.document_revision, sources: m.sources ?? [], topic_sources: m.topic_sources ?? [], web_sources: m.web_sources ?? [], clarification: m.clarification, attachments: m.attachments, tools: m.role === 'assistant' ? m.tools : undefined, updates: m.role === 'assistant' ? m.updates : undefined });
               if (m.role !== "user" || !["failed", "pending"].includes(m.delivery_status ?? "")) return [row];
               return [row, mk("assistant", "", "", {
+                tools: m.tools, updates: m.updates, sources: m.sources ?? [], topic_sources: m.topic_sources ?? [], web_sources: m.web_sources ?? [],
                 ...(m.delivery_status === 'pending' && !m.retryable
                   ? { status: '后台正在生成回答…' }
                   : { error: m.error_message || '上次回答尚未完成。' }),
@@ -425,10 +481,10 @@ export default function Chat({
     if (paperContext && selectedTextOverLimit(paperContext.selectedText)) { toast.error("选中文本过长，请缩短后发送"); return; }
     const item: QueuedTurn = { id: crypto.randomUUID(), state: 'waiting', text: input.trim() || "请分析所附材料。", extra: {
       ...chatMessagePayload(input, paperContext), attachments, model_config_id: selectedModel?.id, review_evidence: reviewEvidence,
-      skill_ids: manualSkillId ? [Number(manualSkillId)] : [],
+      workflow, skill_ids: manualSkillId ? [Number(manualSkillId)] : [],
     } };
     try {
-      materials.update(previous => ({ attachments: [], queue: appendQueued(previous.queue, item) }));
+      materials.update(previous => ({ ...previous, attachments: [], queue: appendQueued(previous.queue, item) }));
       clearComposerDraft(composerDraft);
       if (paperContext?.selectedText) onSelectionConsumed();
       // Only a currently successful foreground run can drain a fresh queue.
@@ -454,7 +510,7 @@ export default function Chat({
     setBusy(true); setStopping(false); setContextUsage(null); followRef.current = true;
     let serverId = retry?.serverId;
     const extra: ChatMessageExtra = retry?.extra ?? queued?.extra ?? { review_evidence: reviewEvidence, attachments: turnAttachments, model_config_id: turnModelId ? Number(turnModelId) : undefined, ...(answer ? { clarification_response: answer } :
-      { ...chatMessagePayload(text, paperContext), skill_ids: manualSkillId ? [Number(manualSkillId)] : [] }) };
+      { ...chatMessagePayload(text, paperContext), workflow, skill_ids: manualSkillId ? [Number(manualSkillId)] : [] }) };
     let placeholderId: number | null = null;
     let userPlaceholderId: number | null = null;
     let completed = false;
@@ -525,23 +581,26 @@ export default function Chat({
             return row;
           }));
           if (data.title) await loadConvs();
+          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, tools: data.tools ?? [], updates: data.updates ?? [], sources: data.sources ?? [], web_sources: data.web_sources ?? [], topic_sources: data.topic_sources ?? [] } : row));
         } else if (event === "status") {
           if (data.context) setContextUsage(previous => ({ ...data.context, compacted: !!data.context.compacted || !!previous?.compacted, summarized: data.context.compacted ? data.context.summarized : previous?.summarized ?? false }));
           const stage = agentActivityLabel(data.phase, data.name, text);
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, status: `${stage} · ${data.step}/${data.max_steps} 轮` } : row));
+        } else if (event === 'update') {
+          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, updates: [...(row.updates ?? []), { content: data.content ?? '' }] } : row));
         } else if (event === "tool") {
-          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, tools: [...(row.tools ?? []), { name: data.name, args: data.args ?? {}, result: data.result ?? "", ok: data.ok }] } : row));
+          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, tools: [...(row.tools ?? []), { name: data.name, args: data.args ?? {}, result: data.result ?? "", ok: data.ok }], sources: data.sources ?? row.sources, web_sources: data.web_sources ?? row.web_sources, topic_sources: data.topic_sources ?? row.topic_sources } : row));
         } else if (event === "delta") {
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, content: data.content ?? "" } : row));
         } else if (event === "ask_user") {
           completed = true;
           setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, content: data.content,
-            model: data.model, sources: data.sources ?? [], topic_sources: data.topic_sources ?? [], clarification: data.clarification } : row));
+            model: data.model, sources: data.sources ?? [], web_sources: data.web_sources ?? [], topic_sources: data.topic_sources ?? [], clarification: data.clarification } : row));
           break;
         } else if (event === "done") {
           completed = true;
           succeeded = true;
-          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, content: data.content, model: data.model, sources: data.sources ?? [], topic_sources: data.topic_sources ?? [] } : row));
+          setMessages(rows => rows.map(row => row.id === placeholderId ? { ...row, serverMessageId:data.message_id, content: data.content, model: data.model, sources: data.sources ?? [], web_sources: data.web_sources ?? [], topic_sources: data.topic_sources ?? [] } : row));
           if (data.title) await loadConvs();
         } else if (event === "error") {
           serverId = data.user_message_id ?? serverId;
@@ -574,8 +633,35 @@ export default function Chat({
     }
   }
 
+  async function saveAnswerDocument(message: Msg) {
+    if(activeConv==null||!message.serverMessageId||savingAnswerId!=null)return;
+    const origin=scopeRef.current;
+    setSavingAnswerId(message.id);
+    try {
+      const saved=await api.saveAnswerDocument(activeConv,message.serverMessageId);
+      if(!mountedRef.current||scopeRef.current!==origin)return;
+      setLoadRevision(n=>n+1);
+      setEditingDocument({filename:saved.filename,content:saved.content});
+      toast.success('已在本机保存，可直接修改');
+    } catch(e) {
+      if(mountedRef.current&&scopeRef.current===origin)toast.error(e instanceof Error?e.message:String(e));
+    } finally {
+      if(mountedRef.current&&scopeRef.current===origin)setSavingAnswerId(null);
+    }
+  }
+
   return (
     <div className={`chat-workspace relative flex gap-4 ${embedded ? "chat-embedded" : "px-4 sm:px-6 lg:px-10"}`}>
+      <ChatPaperSource sources={paperSources?.current ?? null} earlierSources={paperSources?.earlier} onClose={() => setPaperSources(null)} onOpenPaper={onOpenPaper}/>
+      {savedDocumentsOpen&&<SavedDocuments onOpenPaper={(id,page)=>{setSavedDocumentsOpen(false);onOpenPaper(id,page);}} initialDocument={documentToOpen} onClose={()=>setSavedDocumentsOpen(false)} onPaperCitation={(doc,id)=>{setSavedDocumentsOpen(false);const sources=doc.sources.filter(s=>s.paper_id===id);if(sources.length)setPaperSources({current:sources,earlier:[]});else onOpenPaper(id);}} onOpenConversation={embedded?undefined:id=>{setSavedDocumentsOpen(false);setActiveConv(id);}} onUse={(doc,passage)=>{
+        const text=documentReferenceText(doc)+(passage?`\n\n[待核查的研究稿选文]\n${passage}\n[选文结束]\n这段是待核查的研究稿，不是原始文献。请围绕它回读已有来源，必要时补查论文方法、实验条件或作者资源。以一段可直接替换的局部修订为主要产物，再简要说明改动和实际出处；保留有依据的内容，未核实的比较或确定性结论改为待验证问题，避免在建议稿中重新断言。需要修改时可调用 propose_document_edit 生成对照建议卡，before 使用所读版本的精确 Markdown。保留原稿，不自动覆盖文档。`:'');
+        if(text.length>60000){toast.error('选文超过单条材料容量，请减少选择');return;}
+        if(attachments.length>=4&&!attachments.some(a=>a.kind==='text'&&a.text===text)){toast.error('当前已关联四份材料，请先移除一份再加入');return;}
+        setAttachments(items=>items.some(a=>a.kind==='text'&&a.text===text)?items:[...items,{name:(doc.filename+(passage?' · 选文':'')).slice(0,255),kind:'text',text,data_url:'',size:new TextEncoder().encode(text).length,saved_document:{message_id:doc.message_id,filename:doc.filename}}]);
+        if(passage&&!input.trim())setInput('请核查选中的这段内容，给出有原始依据的局部替换建议，并简要说明改动与出处。');
+        setSavedDocumentsOpen(false);toast.success(passage?'选文和文档已加入，可补充问题后发送':'已加入当前对话，可输入接下来的研究问题');
+      }}/>}
+      {editingDocument&&activeConv!=null&&<ChatDocumentEditor key={`${draftKey}:${editingDocument.filename}`} conversationId={activeConv} {...editingDocument} onClose={()=>setEditingDocument(null)} onSaved={()=>{setEditingDocument(null);setLoadRevision(n=>n+1);toast.success('已保存你的修订版');}}/>}
       {!embedded && <aside
         className={`conversation-list absolute inset-y-0 left-0 z-20 flex w-64 shrink-0 flex-col overflow-hidden p-0 transition-transform duration-200 md:static md:z-auto md:w-56 md:translate-x-0 ${
           navOpen ? "translate-x-0 visible" : "-translate-x-full invisible md:visible"
@@ -701,20 +787,20 @@ export default function Chat({
               {loading && <p role="status" className="text-sm text-muted">正在加载对话…</p>}
               {loadError && <div role="alert" className="text-sm">无法加载对话：{loadError}<button className="btn-ghost ml-2" onClick={() => setLoadRevision(n => n + 1)}>重试</button>{embedded && <button className="btn-ghost" onClick={() => setActiveConv(null)}>开始新的伴读对话</button>}</div>}
               {messages.length===0&&<div className="chat-starters"><ResearchMotif icon={<MessageSquare size={24}/>}/><h2>想讨论什么研究问题？</h2><p className="text-sm text-muted">写下问题，或从一个方向开始。</p><div className="flex flex-wrap justify-center gap-2">{['一起梳理我的研究背景与目标','讨论一个研究 idea 的可行性','比较几篇论文的方法'].map(prompt=><button key={prompt} className="btn-ghost text-xs" onClick={()=>{setInput(prompt);taRef.current?.focus();}}>{prompt}</button>)}</div></div>}
-              {messages.map((m) => (
+              {messages.map((m) => {const turn=chatTurnIdentity(m.role,m.documentRevision);return (
                 <div
                   key={m.id}
-                  className={`chat-turn ${m.role === "user" ? "chat-turn-user text-right" : "chat-turn-assistant group/msg"}`}
+                  className={`chat-turn ${turn.own ? "chat-turn-user text-right" : "chat-turn-assistant group/msg"}`}
                 >
-                  <div className="chat-role"><span className="chat-avatar" aria-hidden="true">{m.role === 'user' ? '你' : 'AI'}</span><span>{m.role === 'user' ? '你' : '研究助手'}</span>{m.role === 'assistant' && m.model && <span className="chat-model-name">{m.model}</span>}</div>
+                  <div className="chat-role"><span className="chat-avatar" aria-hidden="true">{turn.avatar}</span><span>{turn.label}</span>{m.role === 'assistant' && m.model && <span className="chat-model-name">{m.model}</span>}</div>
                   <div
                     className={
-                      m.role === "user"
+                      turn.own
                         ? "user-message inline-block max-w-[90%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed"
                         : "assistant-message w-full space-y-2 py-3"
                     }
                     style={
-                      m.role === "user"
+                      turn.own
                         ? {
                             backgroundColor: "var(--surface-2)",
                             color: "var(--text)",
@@ -722,7 +808,22 @@ export default function Chat({
                         : { backgroundColor: "transparent" }
                     }
                   >
-                    {m.attachments?.length ? <div className="mb-2 flex flex-wrap gap-2 justify-end">{m.attachments.map((a, i) => <AttachmentChip key={i} attachment={a} />)}</div> : null}
+                    {m.attachments?.length ? <div className="mb-2 flex flex-wrap gap-2 justify-end">{m.attachments.map((a, i) => <AttachmentChip key={`${draftKey}:${i}`} attachment={a} onOpenPaper={onOpenPaper} onOpenDocument={ref=>{setDocumentToOpen(ref);setSavedDocumentsOpen(true);}} />)}</div> : null}
+                    {m.role === 'assistant' && m.updates?.some(u => u.content.trim() && u.content.trim() !== m.content.trim()) ? (
+                      <details open aria-label="本轮阶段记录" className="rounded-xl border border-[var(--border)] bg-[var(--surface-1)] p-4">
+                        <summary className="cursor-pointer text-xs text-muted">阶段记录</summary>
+                        <div className="mt-3 max-h-[32rem] space-y-4 overflow-y-auto">
+                          {m.updates.filter(u => u.content.trim() && u.content.trim() !== m.content.trim()).map((u, i) => (
+                            <div key={i} className="space-y-2">
+                              <MarkdownContent content={u.content} onPaperCitation={id => showPaperSource(m, id)} />
+                              <button type="button" className="btn-ghost text-xs" onClick={() => copyMessage({ ...m, content: u.content })}>
+                                <Copy size={11} /> 复制这段
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    ) : null}
                     {m.tools?.map((t, i) => (
                       <details key={i} className="tool-card">
                         <summary title={t.ok ? "工具执行成功" : "工具执行失败"}>
@@ -735,12 +836,14 @@ export default function Chat({
                         <div className="tool-result">{t.result}</div>
                       </details>
                     ))}
+                    {(m.role==='assistant'&&m.tools?.length)||m.documentRevision ? <div className="text-left whitespace-normal"><ChatSavedArtifacts tools={m.tools??[]} manualDocument={m.documentRevision} onOpenPaper={onOpenPaper} onPaperCitation={id => showPaperSource(m, id)} onVersions={m.serverMessageId?filename=>{setDocumentToOpen({message_id:m.serverMessageId!,filename});setSavedDocumentsOpen(true);}:undefined} onEdit={!busy&&!serverPending&&!loading?(filename,content)=>setEditingDocument({filename,content}):undefined}/></div> : null}
+                    {m.tools?.length&&activeConv!=null?<div className="text-left whitespace-normal"><DocumentEditProposals tools={m.tools} conversationId={activeConv} revisions={messages.flatMap(row=>row.documentRevision?[row.documentRevision]:[])} disabled={busy||serverPending||loading} onSaved={()=>{setLoadRevision(n=>n+1);toast.success('已采用修改并保存新版本');}} onPaperCitation={id=>showPaperSource(m,id)}/></div>:null}
                     {m.error && <div role="alert" className="mb-2 text-sm text-[var(--danger)]"><p>回答未完成：{m.error}</p>{m.retry && <button type="button" className="btn-ghost mt-2 text-xs" disabled={busy || serverPending || loading} onClick={() => void sendTurn(m)}>{m.retry.continuable ? "从已保存进度继续" : "重试原问题"}</button>}</div>}
                     {m.clarification ? <AskUserCard request={m.clarification} conversationId={activeConv}
                       disabled={busy || loading || !!loadError || creating}
                       onAnswer={(response, text) => void sendTurn(undefined, response, text)} /> : m.role === "assistant" ? (
                       m.content ? (
-                        <MarkdownContent content={m.content} />
+                        <MarkdownContent content={m.content} onPaperCitation={id => showPaperSource(m, id)} />
                       ) : (busy || serverPending) && !m.error ? (
                         <AgentActivity stopping={stopping} label={stopping ? '正在停止' : m.status || '正在连接模型'} />
                       ) : m.stopped ? (
@@ -754,9 +857,17 @@ export default function Chat({
                   </div>
                   {/* Row of actions/sources under an assistant message. */}
                   {m.role === "assistant" &&
-                    !m.error && !m.clarification && (m.content || m.tools?.length) &&
+                    !m.clarification && (m.content || m.tools?.length || m.updates?.length) &&
                     (m.sources?.length || m.content) && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-1">
+                        {m.content&&m.serverMessageId&&(()=>{
+                          const captured=messages.find(row=>row.documentRevision?.revision_kind==='saved_answer'&&row.documentRevision.source_message_id===m.serverMessageId);
+                          return <button type="button" className="rounded px-1.5 py-0.5 text-[11px]" style={{color:'var(--faint)',backgroundColor:'var(--surface-2)'}} disabled={busy||serverPending||loading||savingAnswerId!=null}
+                            title="在本机保存正文与来源，随后可编辑、下载和继续研究"
+                            onClick={()=>{if(captured?.serverMessageId&&captured.documentRevision){setDocumentToOpen({message_id:captured.serverMessageId,filename:captured.documentRevision.filename});setSavedDocumentsOpen(true);}else void saveAnswerDocument(m);}}>
+                            <Save size={11}/> {savingAnswerId===m.id?'保存中…':captured?'查看已存文档':'保存为文档'}
+                          </button>;
+                        })()}
                         {m.content && (
                           <button
                             type="button"
@@ -793,21 +904,6 @@ export default function Chat({
                             <Lightbulb size={11} /> 存为研究想法
                           </button>
                         )}
-                        {m.sources?.map((s, index) => (
-                          <button
-                            key={`${s.paper_id}:${index}`}
-                            type="button"
-                            onClick={() => onOpenPaper(s.paper_id)}
-                            className="inline-block max-w-[260px] cursor-pointer truncate rounded-full px-2 py-0.5 text-[11px] transition-opacity hover:opacity-80"
-                            style={{
-                              backgroundColor: "var(--accent-soft)",
-                              color: "var(--accent)",
-                            }}
-                            title={s.snippet}
-                          >
-                            <BookOpen size={11} /> {s.title}
-                          </button>
-                        ))}
                         {captureFor?.msgId === m.id && (
                           <CapturePanel
                             mode={captureFor.mode}
@@ -824,35 +920,55 @@ export default function Chat({
                         )}
                       </div>
                     )}
-                  {m.role === 'assistant' && !m.error && <ChatTopicSources sources={m.topic_sources ?? []} />}
+                  {m.role === 'assistant' && <ChatPaperSources sources={m.sources??[]} onOpen={id=>showPaperSource(m,id)}/>}
+                  {m.role === 'assistant' && <ChatTopicSources sources={m.topic_sources ?? []} />}
+                  <ChatWebSources sources={m.web_sources ?? []}/>
                 </div>
-              ))}
+              );})}
               <div ref={endRef} />
             </div>
+            <div className="chat-controls">
             {paperContext && (!embedded || paperContext.selectedText || paperContext.papers) && (
               <div
-                className="flex flex-wrap items-center gap-2 border-t px-3 py-2 text-xs"
+                className="chat-paper-context flex flex-wrap items-center gap-2 border-t px-3 py-2 text-xs"
                 style={{ borderColor: "var(--border)", backgroundColor: "var(--surface-2)" }}
               >
                 <span className="rounded-full px-2 py-0.5" style={{ backgroundColor: "var(--accent-soft)", color: "var(--accent)" }}>
                   {contextBadgeLabel(paperContext)}
                 </span>
-                <span className="text-faint">
+                {(!paperContext.papers || selectedTextOverLimit(paperContext.selectedText)) && <span className="text-faint">
                   {selectedTextOverLimit(paperContext.selectedText)
                     ? "选中文本过长，本次提问将只携带论文上下文"
                     : paperContext.papers ? '优先围绕所选论文讨论，可连续追问、比较方法和探索 idea；需要时读取全文。' : "回答会优先基于这篇论文的摘要、审阅矩阵、你的笔记与摘录"}
-                </span>
+                </span>}
                 <button onClick={onClearPaperContext} disabled={busy || queue.length > 0} className="btn-ghost ml-auto py-0.5 text-xs">
                   {embedded && paperContext.selectedText ? '取消选文' : '退出论文上下文'}
                 </button>
                 {paperContext.papers && <DiscussionPapers papers={paperContext.papers} onOpenPaper={onOpenPaper} />}
               </div>
             )}
-            <details className="chat-settings" open={embedded ? undefined : true}>
-              <summary className="chat-settings-summary">{selectedModel?.name ?? '默认模型'} · 模型与工具设置</summary>
+            {!embedded&&!paperContext&&!loading&&<p className="px-3 py-1 text-xs text-muted">材料范围：当前项目论文库，按问题查找。</p>}
+            <details key={draftKey} className="chat-settings">
+              <summary className="chat-settings-summary" aria-label={`研究设置：${workflowLabel} · ${selectedModel?.name ?? '未配置模型'}${manualSkillName ? ` · ${manualSkillName}` : ''}${reviewEvidence ? ' · 额外证据复核已开启' : ''}`}>
+                <span className="chat-settings-current"><span>{workflowLabel}</span><span aria-hidden="true">·</span><span className="chat-settings-model" title={selectedModel ? `${selectedModel.provider} · ${selectedModel.name}` : '在设置中连接模型'}>{selectedModel?.name ?? '未配置模型'}</span></span>
+                {manualSkillName && <span className="chat-settings-active" title={manualSkillName}>技能：{manualSkillName}</span>}
+                {reviewEvidence && <span className="chat-settings-active">额外复核已开</span>}
+                <span className="chat-settings-toggle">研究设置 <ChevronDown size={13}/></span>
+              </summary>
+              <div className="chat-settings-body">
+            <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
+              <label className="flex items-center gap-2">本轮任务
+                <select aria-label="本轮研究任务" className="input w-auto" value={workflow} disabled={loading || !materials.ready} onChange={e => setWorkflow(e.target.value as ChatMessageExtra['workflow'])}>
+                  <option value="general">自由研究</option>
+                  <option value="literature-synthesis">文献综合</option>
+                  <option value="review-revision">修订综述</option>
+                </select>
+              </label>
+              {workflow !== 'general' && <span className="text-xs text-muted">{workflow === 'literature-synthesis' ? '围绕问题综合材料，形成有依据的研究判断。' : '围绕你的修改要求，保留已有材料和有效段落。'}</span>}
+            </div>
             {manualSkills.length > 0 && <label className="flex items-center gap-2 px-3 py-2 text-xs text-muted">
               本轮技能
-              <select aria-label="本轮手动技能" className="input w-auto" disabled={loading} value={manualSkillId} onChange={e => setManualSkillId(e.target.value)}>
+              <select aria-label="本轮手动技能" className="input w-auto" disabled={loading} value={manualSkillId} onChange={e => { setWorkflow('general'); setManualSkillId(e.target.value); }}>
                 <option value="">不使用手动技能</option>
                 {manualSkills.map(skill => <option key={skill.id} value={skill.id}>{skill.name}</option>)}
               </select>
@@ -869,7 +985,6 @@ export default function Chat({
                 <input type="checkbox" checked={reviewEvidence} onChange={e => setReviewEvidence(e.target.checked)} aria-label="额外证据复核" />额外证据复核
               </label>
               {contextUsage && <span title="上次请求的服务端消息估算，含系统提示、材料和工具结果；不含工具定义和输出预留，图片按固定值估算，并非服务商精确用量">上次请求约 {contextUsage.after.toLocaleString()} / {contextUsage.window.toLocaleString()} tokens</span>}
-              {contextUsage?.compacted && <span role="status">较早消息已{contextUsage.summarized ? '压缩为摘要' : '移出本次上下文'}，完整历史仍保留</span>}
             </div>
             {configOpen && selectedModel && <div className="mx-3 rounded-lg border border-[var(--border)] p-3 flex flex-wrap items-end gap-3 text-xs">
               <label>上下文 tokens<input aria-label="上下文 tokens" type="number" min="1" className="input" value={contextDraft} onChange={e => setContextDraft(e.target.value)} placeholder="自动" /></label>
@@ -879,7 +994,9 @@ export default function Chat({
               <button className="btn-ghost" onClick={() => setConfigOpen(false)}>取消</button>
               <p className="w-full text-faint">设置应用于此模型的后续调用；共享连接会同步。思考等级需与服务商支持的参数一致。</p>
             </div>}
+              </div>
             </details>
+            {contextUsage?.compacted && <p role="status" className="px-3 text-xs text-muted">较早消息已{contextUsage.summarized ? '压缩为摘要' : '移出本次上下文'}，完整历史仍保留</p>}
             {!materials.ready && <p role="status" className="px-3 text-xs">正在恢复附件和排队草稿…</p>}
             {materials.error && <p role="alert" className="px-3 text-xs text-[var(--danger)]">附件或排队草稿未能保存到本机，请勿关闭页面。<button className="btn-ghost" onClick={() => materials.update(value => ({ ...value }))}>重试保存</button></p>}
             {materials.saving && <p role="status" className="px-3 text-xs text-faint">正在保存草稿…</p>}
@@ -896,15 +1013,14 @@ export default function Chat({
                   setReviewEvidence(!!item.extra.review_evidence);
                   setManualSkillId(String(item.extra.skill_ids?.[0] ?? ''));
                   onContextLoaded(activeConv!, item.extra.paper_ids?.length ? paperSetContext(item.extra.paper_ids.map(id => ({id, title: paperContext?.papers?.find(p => p.id === id)?.title ?? null}))) : item.extra.paper_id == null ? null : {paperId: item.extra.paper_id, paperTitle: null, selectedText: item.extra.selected_text ?? null});
-                  materials.update(previous => ({ attachments: item.extra.attachments ?? [], queue: finishQueued(previous.queue, item.id) }));
+                  materials.update(previous => ({ ...previous, workflow: item.extra.workflow ?? 'general', attachments: item.extra.attachments ?? [], queue: finishQueued(previous.queue, item.id) }));
                   pauseQueue();
                 }} aria-label={`编辑排队消息 ${index + 1}`}>编辑</button>}
                 <button className="btn-ghost" disabled={busy && item.state === 'sending'} onClick={() => materials.update(previous => ({ ...previous, queue: finishQueued(previous.queue, item.id) }))} aria-label={`移除排队消息 ${index + 1}`}>移除</button>
               </div>)}
               {pendingQuestion && <p>请先回答 AI 的补充问题，再继续队列。</p>}
             </div>}
-            {attachments.length > 0 && <div className="flex flex-wrap gap-2 px-3 py-2">{attachments.map((a, i) => <AttachmentChip key={i} attachment={a} onRemove={() => setAttachments(items => items.filter((_, index) => index !== i))} />)}</div>}
-            {attachments.some(a => a.kind === 'text') && <p className="px-3 pb-1 text-xs text-faint">文件按提取的文字发送，可点击附件预览；PDF、Word 中的图表请另附截图。</p>}
+            {attachments.length > 0 && <div className="chat-attachments flex flex-wrap gap-2 px-3 py-1" aria-label="本轮关联材料">{attachments.map((a, i) => <AttachmentChip key={`${draftKey}:${i}`} attachment={a} onOpenPaper={onOpenPaper} onOpenDocument={ref=>{setDocumentToOpen(ref);setSavedDocumentsOpen(true);}} onRemove={() => setAttachments(items => items.filter((_, index) => index !== i))} />)}</div>}
             {attachments.some(a => a.kind === 'image') && selectedModel?.supports_images === false && <p role="alert" className="px-3 text-sm text-[var(--danger)]">当前模型仅支持文本，请切换支持图片的模型后发送。</p>}
             <div
               onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault(); }}
@@ -914,6 +1030,7 @@ export default function Chat({
             >
               <input ref={fileRef} type="file" multiple className="hidden" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp,.pdf,.docx,.txt,.md,.csv,.tsv,.json,.log,.py,.js,.ts,.tex,.bib,.yaml,.yml,.xml,.html,.css,.r" onChange={e => { void addFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
               <button type="button" className="btn-ghost shrink-0" disabled={uploading || loading || !materials.ready} onClick={() => fileRef.current?.click()} title="添加图片、PDF、Word 或文本；每个最多 10 MB">{uploading ? "读取中…" : "+ 附件"}</button>
+              <button type="button" className="btn-ghost shrink-0" disabled={uploading||loading||busy||serverPending||!materials.ready||attachments.length>=4} onClick={()=>{setDocumentToOpen(null);setSavedDocumentsOpen(true);}}>已保存文档</button>
               <textarea
                 onPaste={e => { const files = Array.from(e.clipboardData.items).filter(i => i.kind === 'file').map(i => i.getAsFile()).filter((f): f is File => !!f); if (files.length) { e.preventDefault(); void addFiles(files); } }}
                 ref={taRef}
@@ -955,6 +1072,7 @@ export default function Chat({
                   发送
                 </button>
               )}
+            </div>
             </div>
           </>
         )}
@@ -1062,16 +1180,4 @@ function CapturePanel({
       )}
     </div>
   );
-}
-
-function AttachmentChip({ attachment: a, onRemove }: { attachment: ChatAttachment; onRemove?: () => void }) {
-  const [expanded, setExpanded] = useState(false);
-  return <div className="rounded-lg border border-[var(--border)] bg-[var(--surface-2)] p-2 text-left text-xs max-w-full">
-    <button type="button" className="flex items-center gap-2" onClick={() => setExpanded(!expanded)} title="查看附件">
-      {a.kind === 'image' && <img src={a.data_url} alt={a.name} className="h-12 w-16 rounded object-contain" />}
-      <span className="max-w-[220px] truncate">{a.name}</span><span className="text-faint">{a.kind === 'text' ? `${a.text.length} 字符` : '图片'}</span>
-    </button>
-    {expanded && (a.kind === 'image' ? <img src={a.data_url} alt={a.name} className="mt-2 max-h-96 max-w-full object-contain" /> : <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap">{a.text}</pre>)}
-    {onRemove && <button type="button" className="btn-ghost text-xs mt-1" aria-label={`移除 ${a.name}`} onClick={onRemove}>移除</button>}
-  </div>;
 }

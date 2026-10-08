@@ -38,6 +38,7 @@ export default function Research({params,onNavigate,onOpenPaper}:{params:Record<
   const [error,setError]=useState('');
   const [notice,setNotice]=useState('');
   const [storageError,setStorageError]=useState(false);
+  const handoffPending=useRef(false);
   const taskId=params.task;
   const generation=useRef(0);
   const requestId=useRef(crypto.randomUUID());
@@ -141,6 +142,29 @@ export default function Research({params,onNavigate,onOpenPaper}:{params:Record<
     const url=URL.createObjectURL(new Blob([content],{type:'text/markdown;charset=utf-8'}));
     const a=document.createElement('a');a.href=url;a.download=name;a.click();URL.revokeObjectURL(url);
   }
+  async function continueResearch() {
+    if(!task||busy||handoffPending.current||!content.trim())return;
+    handoffPending.current=true;
+    const g=generation.current,id=task.id,submitted={...editorRef.current};
+    setBusy(true);setError('');setNotice('');
+    try{
+      let saved=task;
+      if(dirty||!task.artifact){
+        saved=await researchApi.action(id,'artifacts',{expected_version:editorVersion,content:submitted.content,evidence_refs:submitted.refs});
+        if(g!==generation.current)return;
+        if(!sameResearchEdit(submitted,editorRef.current)){
+          adoptResponse(saved,false);setEditorVersion(saved.artifact?.version??0);
+          setNotice('提交的版本已保存；你又补充了内容，保留在当前草稿中，可再次继续研究。');return;
+        }
+        adoptResponse(saved);
+      }
+      const conversation=await researchApi.continueInChat(id,saved.artifact!.version);
+      if(g!==generation.current)return;
+      if(!sameResearchEdit({content:saved.artifact!.content,refs:saved.artifact!.evidence_refs},editorRef.current)){setNotice('研究对话已创建；当前新增编辑仍保留，保存后可再次带入。');return;}
+      onNavigate({page:'chat',params:{conversation:String(conversation.id),research_task:conversation.research_task.task_id,version:String(conversation.research_task.version),question:`围绕“${task.question}”继续研究：沿用已有判断和来源，保留人工修订，说明下一步值得补查或比较的问题。`}});
+    }catch(e){if(g===generation.current)setError((e as Error).message);}
+    finally{handoffPending.current=false;if(g===generation.current)setBusy(false);}
+  }
   const evidence=task?.materials.flatMap(m=>m.evidence.map(e=>({...e,title:m.title})))??[];
   const savedEvidence=task?.artifact?.evidence_snapshot??[];
   const reviewEvidence=dirty?evidence:[...savedEvidence,...evidence.filter(e=>!savedEvidence.some(s=>s.ref===e.ref))];
@@ -150,6 +174,7 @@ export default function Research({params,onNavigate,onOpenPaper}:{params:Record<
   const version=task?.artifact?.version??0;
   return <Shell max={taskId?"wide":"narrow"}><div className="research-workspace space-y-6">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="page-title">论文研究</h1><p className="page-subtitle mt-2">选几篇论文，围绕一个问题总结或比较，再对照原文核对。</p></div><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{}})}>换一个问题</button></div>
+    <button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{mode:'review'}})}>整理专题综述 · 支持最多 1000 篇论文</button>
     {error&&<div role="alert" className="card text-sm text-red-600 break-words">{error}</div>}
     {notice&&<p role="status" className="text-sm text-muted">{notice}</p>}
     {storageError&&<p role="alert" className="text-sm text-amber-700">浏览器暂时无法持久保存草稿，编辑已保留在当前应用中。关闭页面前请保存判断。</p>}
@@ -172,6 +197,7 @@ export default function Research({params,onNavigate,onOpenPaper}:{params:Record<
     {task&&<>
       <p className="text-sm text-muted">{task.status==='running'?'正在整理。你可以先阅读原文，也可以离开页面，稍后回来。':!task.artifact?'下一步：等待生成结果，或先写下你自己的判断。':dirty?'下一步：保存你的修改，然后重新核对原文依据。':task.artifact.support_status==='pending'?'下一步：读一读原文依据，再记录“原文能支持这句话吗？”。':'下一步：可保存组会素材、下载结果，或者先停在这里。'}</p>
       <section className="card space-y-3"><h2 className="font-semibold break-words">{task.question}</h2><p className="text-sm text-muted">{statusLabels[task.status]??task.status} · {task.depth==='quick'?'快速了解':'逐篇比较'} · {task.materials.length} 篇材料 · 无需课题即可开始</p>
+        <div className="flex flex-wrap items-center gap-3"><button className="btn-primary" disabled={busy||!content.trim()} onClick={continueResearch}>{dirty||!task.artifact?'保存并继续研究':'与 AI 继续研究'}</button><span className="text-sm text-muted">带上当前判断、论文范围和原文依据，继续补查、比较或修订。</span></div>
         {task.cache_summary&&<div className="cache-summary" aria-label="缓存与调用记录"><span>本地复用 <b>{task.cache_summary.local_reused_steps}</b> 步</span><span>已完成步骤调用 <b>{task.cache_summary.api_calls}</b> 次</span><span>服务端缓存读取 <b>{task.cache_summary.cache_reported?task.cache_summary.cached_input_tokens.toLocaleString()+' tokens':'未报告'}</b></span><small>本地复用不发起模型请求。这里只汇总已保存步骤，失败调用的用量请在设置中查看。</small></div>}
         <div className="flex flex-wrap gap-2">{task.status!=='running'&&<button className="btn-primary" disabled={busy} onClick={()=>perform('run')}>{Object.keys(task.steps).length?'检查材料并继续':'开始整理'}</button>}<button className="btn-ghost" disabled={busy||task.status==='paused'} onClick={()=>perform('stop')}>目前足够，留在这里</button><button className="btn-ghost" onClick={()=>onNavigate('settings')}>模型设置</button></div>
         {task.status==='running'&&<p role="status" className="text-sm text-muted">已保留 {Object.keys(task.steps).filter(k=>k!=='synthesis').length} 篇抽取结果；可离开页面，任务继续。停止后不再启动下一步骤，当前已发出的调用可能仍计费。</p>}

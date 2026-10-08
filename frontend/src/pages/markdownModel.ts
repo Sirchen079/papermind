@@ -4,8 +4,9 @@ import remarkMath from 'remark-math';
 import remarkBreaks from 'remark-breaks';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
+import {remarkReadableAutolinks} from './markdownLinksModel.js';
 
-export const markdownRemarkPlugins: Options['remarkPlugins'] = [remarkGfm, remarkMath, remarkBreaks];
+export const markdownRemarkPlugins: Options['remarkPlugins'] = [remarkGfm, remarkReadableAutolinks, remarkMath, remarkBreaks];
 export const markdownRehypePlugins: Options['rehypePlugins'] = [
   [rehypeKatex, { trust: false, strict: 'ignore', maxExpand: 200, maxSize: 20, errorColor: 'currentColor' }],
   [rehypeHighlight, { detect: false }],

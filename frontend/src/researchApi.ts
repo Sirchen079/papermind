@@ -18,6 +18,7 @@ return {
   get:(id:string)=>scopedRequest<ResearchTask>('/'+encodeURIComponent(id)),
   create:(body:{request_id:string;question:string;paper_ids:number[];depth:string})=>scopedRequest<ResearchTask>('',body),
   action:(id:string,action:string,body:unknown={})=>scopedRequest<ResearchTask>('/'+encodeURIComponent(id)+'/'+action,body),
+  continueInChat:(id:string,version:number)=>scopedRequest<{id:number;research_task:{task_id:string;version:number}}>('/'+encodeURIComponent(id)+'/conversation',{expected_version:version}),
 };
 }
 export const supportLabels:Record<string,string>={pending:'支持关系待核对',supported:'研究者已核对支持关系',partial:'仅部分支持',unsupported:'来源不支持',unclear:'仍无法判断'};

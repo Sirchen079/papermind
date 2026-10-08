@@ -1,7 +1,10 @@
 import { useApi } from '../workspaceContext';
 import { SharedConnectionsPanel } from '../components/SharedConnectionsPanel';
+import { LocalModelsPanel } from '../components/LocalModelsPanel';
+import { ManagedModelsPanel } from '../components/ManagedModelsPanel';
 import { TranslationModelSettings } from '../components/TranslationModelSettings';
 import { DocumentModelSettings } from '../components/DocumentModelSettings';
+import { ReviewModelSettings } from '../components/ReviewModelSettings';
 import { useEffect, useState } from "react";
 import {
   type ArchiveStatus,
@@ -549,9 +552,12 @@ export default function Settings() {
   return (
     <Shell max="narrow" className="space-y-6">
       <PageHeader title="设置" subtitle="连接 AI 服务，或管理本地资料备份" />
+      <ManagedModelsPanel onChanged={load}/>
+      <LocalModelsPanel onChanged={load}/>
       <SharedConnectionsPanel providers={providers} onChanged={load}/>
       <TranslationModelSettings refreshKey={models} />
       <DocumentModelSettings refreshKey={models} />
+      <ReviewModelSettings refreshKey={models} />
       <p className="text-sm text-muted">首次使用 AI：填写服务商信息 → 添加提供商 → 获取或添加模型 → 选择文本 AI 角色。导入、阅读与笔记可以先使用，不必配齐所有功能。</p>
 
       <section className="card">
@@ -815,8 +821,7 @@ export default function Settings() {
         <h3 className="mb-1 font-semibold">检索（RAG）</h3>
         <p className="mb-3 text-sm text-muted">
           在上方为某个模型分配 <span className="chip">embedding</span> 角色，让对话能基于论文全文作答。
-          任何 OpenAI 兼容的 embeddings 端点都行——例如通过{" "}
-          <code>openai_compat</code> 提供商接入硅基流动的免费 <code>bge</code> 模型。配置后为论文库建立索引。
+          可以使用上方连接的本机向量模型，也可接入服务商的 OpenAI 兼容向量接口。更换向量模型后，请为论文库重建索引。
         </p>
         <button onClick={reindex} disabled={indexing} className="btn-primary">
           {indexing ? "索引中…" : "重建索引"}
