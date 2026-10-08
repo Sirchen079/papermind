@@ -63,6 +63,8 @@ for pkg in (
     "websockets",
     "tiktoken_ext",
     "webview",
+    "openpyxl",
+    "docx",
 ):
     try:
         d, b, h = collect_all(pkg)

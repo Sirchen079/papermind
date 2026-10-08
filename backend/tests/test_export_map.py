@@ -8,7 +8,7 @@ from sqlmodel import Session
 from app.db.engine import get_engine
 from app.models import Paper
 from app.reviews import service
-from app.reviews.export_map import render_html
+from app.reviews.export_map import render_csv, render_docx, render_html, render_xlsx
 from test_review_map import FakeMapModel
 
 STATS = {'count': 2, 'years': {'2019': 1, '2020': 1},
@@ -156,10 +156,113 @@ def test_export_endpoint_conflicts_unsupported_format_and_ok(client, monkeypatch
     assert res.status_code == 409
     assert res.json()['detail'] == '请先生成文献地图'
     assert client.post(prefix + '/map/run').status_code == 202
-    res = client.get(prefix + '/map/export?format=xlsx')
+    res = client.get(prefix + '/map/export?format=pptx')  # 卡 16 扩展后 xlsx 已支持，换仍无效的格式
     assert res.status_code == 422
     res = client.get(prefix + '/map/export')
     assert res.status_code == 200
     assert res.headers['content-type'].startswith('text/html')
     assert 'attachment' in res.headers.get('content-disposition', '')
     assert '<!DOCTYPE html>' in res.text and '地图' in res.text
+
+
+def test_render_xlsx_roundtrip():
+    from io import BytesIO
+
+    import openpyxl
+
+    wb = openpyxl.load_workbook(BytesIO(render_xlsx(PAYLOAD)))
+    assert wb.sheetnames == ['主表', '精读卡片', '主题与问题']
+    main = wb['主表']
+    assert main.max_row == len(PAYLOAD['papers']) + 1
+    assert main.freeze_panes == 'A2'
+    assert main.auto_filter.ref
+    headers = [c.value for c in main[1]]
+    assert headers[:3] == ['编号', '年份', '题名']
+    cards = wb['精读卡片']
+    assert cards.max_row == len(PAYLOAD['papers']) + 1
+    assert '已核对原文' in str([c.value for c in cards[2]])
+    themes_sheet = wb['主题与问题']
+    assert themes_sheet.max_row == len(PAYLOAD['themes']) + 1
+
+
+def test_render_docx_roundtrip():
+    from io import BytesIO
+
+    from docx import Document
+
+    doc = Document(BytesIO(render_docx(PAYLOAD)))
+    text = '\n'.join(p.text for p in doc.paragraphs)
+    for name in ('稀疏恢复', '检索增强'):
+        assert name in text
+    assert '精读卡片' in text
+    assert '[P1] Paper One（2019）' in text
+
+
+def test_render_csv_bom_and_quoting_roundtrip():
+    import copy
+    import csv
+    import io
+
+    payload = copy.deepcopy(PAYLOAD)
+    payload['papers'][0]['title'] = 'Comma, and "quotes" title'
+    text = render_csv(payload)
+    assert text.startswith('\ufeff')
+    rows = list(csv.reader(io.StringIO(text)))
+    assert len(rows) == len(payload['papers']) + 1
+    assert rows[1][2] == 'Comma, and "quotes" title'
+    assert rows[1][0] == 'P1'
+
+
+def test_render_bibtex_keys_and_roundtrip(client, monkeypatch):
+    from app.ingestion.sources import parse_bibtex
+    from app.reviews.export_map import map_payload, render_bibtex
+
+    with Session(get_engine()) as s:
+        first = Paper(source='manual', title='Same Topic', year=2020, citation_key='dupe2020same',
+                      abstract='Abstract one.')
+        second = Paper(source='manual', title='Same Topic Too', year=2020, citation_key='dupe2020same',
+                       abstract='Abstract two.')
+        s.add(first)
+        s.add(second)
+        s.commit()
+        ids = [first.id, second.id]
+    fake = FakeMapModel()
+    monkeypatch.setattr(service, 'pick_llm', lambda *_: (fake, SimpleNamespace(id=7, base_url=''), 'map-fake'))
+    monkeypatch.setattr('app.rag.scalable.hybrid', lambda *a, **k: [])
+    response = client.post('/api/reviews', json={'request_id': str(uuid4()), 'question': '地图',
+                                                 'paper_ids': ids})
+    prefix = '/api/reviews/' + response.json()['id']
+    with Session(get_engine()) as s:
+        payload = map_payload(s, prefix.rsplit('/', 1)[-1])
+        text = render_bibtex(payload, s)
+    keys = re.findall(r'@article\{([^,]+),', text)
+    assert keys == ['dupe2020same', 'dupe2020same2']  # 键冲突第二个加后缀
+    assert len(parse_bibtex(text)) == 2
+
+
+def test_export_endpoint_all_formats(client, monkeypatch):
+    with Session(get_engine()) as s:
+        rows = [Paper(source='manual', title=f'Paper {i}', year=2020,
+                      abstract='Study of retrieval augmentation methods.') for i in range(3)]
+        s.add_all(rows)
+        s.commit()
+        ids = [r.id for r in rows]
+    fake = FakeMapModel()
+    monkeypatch.setattr(service, 'pick_llm', lambda *_: (fake, SimpleNamespace(id=7, base_url=''), 'map-fake'))
+    monkeypatch.setattr('app.rag.scalable.hybrid', lambda *a, **k: [])
+    response = client.post('/api/reviews', json={'request_id': str(uuid4()), 'question': '地图', 'paper_ids': ids})
+    prefix = '/api/reviews/' + response.json()['id']
+    client.post(prefix + '/map/run')
+    expected = {
+        'html': 'text/html',
+        'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'csv': 'text/csv',
+        'bib': 'application/x-bibtex',
+    }
+    for fmt, media in expected.items():
+        res = client.get(prefix + f'/map/export?format={fmt}')
+        assert res.status_code == 200, (fmt, res.status_code)
+        assert res.headers['content-type'].startswith(media), (fmt, res.headers['content-type'])
+        assert res.headers['content-disposition'].startswith('attachment')
+        assert res.content
