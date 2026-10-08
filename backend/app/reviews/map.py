@@ -118,21 +118,41 @@ def update_themes(session, review_id, theme_list, expected_version):
 
 def detail_map(session, review_id):
     service.get(session, review_id)
-    ids = [p.paper_id for p in service.papers(session, review_id) if p.status != 'missing']
+    entries = service.papers(session, review_id)
+    all_ids = [e.paper_id for e in entries]
+    ids = [e.paper_id for e in entries if e.status != 'missing']
+    paper_rows = {p.id: p for p in session.exec(
+        select(service.Paper).where(service.Paper.id.in_(all_ids)))}
+    cards = {r.paper_id: r for r in session.exec(
+        select(PaperCard).where(PaperCard.paper_id.in_(all_ids)))}
     row = _map(session, review_id)
+    assignments = json.loads(row.assignments_json or '{}') if row is not None else {}
+    papers_payload = []
+    for entry in entries:
+        paper = paper_rows.get(entry.paper_id)
+        card_row = cards.get(entry.paper_id)
+        card = json.loads(card_row.card_json) if card_row is not None else {}
+        papers_payload.append({
+            'paper_id': entry.paper_id,
+            'title': (paper.title if paper else None) or entry.title,
+            'year': paper.year if paper else None,
+            'venue': paper.venue if paper else '',
+            'doi': paper.doi if paper else '',
+            'themes': (assignments.get(str(entry.paper_id)) or {}).get('themes') or [],
+            'evidence_level': card.get('evidence_level') or '',
+            'card_status': card_row.status if card_row is not None else 'pending',
+        })
     if row is None:
         return {'status': 'draft', 'stage': '', 'error': '', 'version': 0, 'themes': [],
-                'assignments': {}, 'syntheses': {}, 'overview': {},
+                'assignments': {}, 'syntheses': {}, 'overview': {}, 'papers': papers_payload,
                 'counts': {'papers': len(ids), 'cards_done': 0, 'assigned': 0, 'unassigned': len(ids)}}
-    cards = {r.paper_id: r for r in session.exec(
-        select(PaperCard).where(PaperCard.paper_id.in_(ids)))}
-    assignments = json.loads(row.assignments_json or '{}')
     assigned = sum(1 for pid in ids if assignments.get(str(pid), {}).get('themes'))
     return {
         'status': row.status, 'stage': row.stage, 'error': row.error, 'version': row.version,
         'themes': json.loads(row.themes_json or '[]'), 'assignments': assignments,
         'syntheses': json.loads(row.syntheses_json or '{}'),
         'overview': json.loads(row.overview_json or '{}'),
+        'papers': papers_payload,
         'counts': {'papers': len(ids),
                    'cards_done': sum(1 for pid in ids if cards.get(pid)
                                      and cards[pid].status in ('done', 'metadata_only')),
@@ -351,6 +371,55 @@ def run_map(engine, review_id, token):
                 if row.run_token != token:
                     return
                 row.syntheses_json = service.encode(syntheses)
+                s.add(row)
+                s.commit()
+
+        # 5. 总览与阅读路线（任一主题综合指纹变化即重新生成）
+        stage('总览与阅读路线')
+        overview_fp = service.digest([
+            [syntheses.get(t['id'], {}).get('fingerprint', '') for t in theme_list],
+            themes.OVERVIEW,
+        ])
+        with Session(engine) as s:
+            row = _map(s, review_id)
+            current = json.loads(row.overview_json or '{}')
+        if current.get('fingerprint') != overview_fp:
+            def member_stat(pid):
+                card = json.loads(card_rows[pid].card_json) if pid in card_rows else {}
+                paper = paper_rows.get(pid)
+                return {'paper_id': pid,
+                        'year': (card.get('metadata') or {}).get('year') or (paper.year if paper else None),
+                        'evidence_level': card.get('evidence_level') or '',
+                        'data_setting_value': (card.get('data_setting') or {}).get('value') or ''}
+
+            all_members = sorted({pid for pids in members_of.values() for pid in pids})
+            theme_inputs = []
+            for theme in theme_list:
+                entry = syntheses.get(theme['id'], {})
+                theme_inputs.append({
+                    'id': theme['id'], 'name': theme['name'], 'definition': theme['definition'],
+                    'trend': entry.get('trend', ''),
+                    'open_questions': [q.get('question', '') for q in entry.get('open_questions', [])],
+                    'representative': [
+                        {'paper_id': rep.get('paper_id'),
+                         'title': (paper_rows.get(rep.get('paper_id')).title
+                                   if rep.get('paper_id') in paper_rows else '')}
+                        for rep in entry.get('representative', [])],
+                })
+            user = service.encode({'themes': theme_inputs, 'stats': themes.theme_stats([member_stat(pid) for pid in all_members]),
+                                   'unassigned': len(ids) - len(all_members)})
+            validated = themes.validate_overview(
+                themes.parse_payload(ask(themes.OVERVIEW, user, 3000)), ids)
+            if validated is None:  # 解析失败重试一次
+                validated = themes.validate_overview(
+                    themes.parse_payload(ask(themes.OVERVIEW, user, 3000)), ids)
+            overview_entry = ({**validated, 'fingerprint': overview_fp} if validated is not None
+                              else {'error': '总览未完成，可重新运行'})
+            with Session(engine) as s:
+                row = _map(s, review_id)
+                if row.run_token != token:
+                    return
+                row.overview_json = service.encode(overview_entry)
                 s.add(row)
                 s.commit()
 

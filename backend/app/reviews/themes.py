@@ -27,6 +27,15 @@ SYNTHESIZE_THEME = '''你在为研究者撰写文献地图中一个研究主题�
 返回 JSON：{"trend": "...", "open_questions": [{"question": "...", "why": "...", "cannot_claim": "...", "cards": [12, 30]}], "combination_opportunities": [{"idea": "...", "expected": "...", "risk": "...", "cards": [5, 41]}], "representative": [{"paper_id": 12, "why": "..."}]}
 只输出 JSON。'''
 
+OVERVIEW = '''下面是一份文献地图中各研究主题的分析（含趋势、值得研究的问题、代表论文）和全局统计。
+请写：
+1. summary：一段话（150 到 300 字）总结这批文献反映的前沿格局：主要路线、证据集中在什么条件下、整体缺口在哪里。只使用给出的统计数字。
+2. reading_route：3 到 5 步建议阅读路线，从理解基本问题到前沿方法，每步写目标、2 到 5 篇论文编号和理由。
+3. research_steps：3 到 6 条从这些材料出发开展新研究的建议步骤（例如先复现哪类基线、用什么数据条件验证、怎样避免只在合成数据上成立的结论）。
+只能使用材料中出现的论文编号。
+返回 JSON：{"summary": "...", "reading_route": [{"step": 1, "goal": "...", "papers": [3, 8], "why": "..."}], "research_steps": ["..."]}
+只输出 JSON。'''
+
 FIELD_MARKERS = ('实测', '现场', 'field', 'real data', 'ocean-bottom', 'obn', 'obc', 'case study')
 SYNTHETIC_MARKERS = ('合成', 'synthetic', 'numerical', 'marmousi', 'overthrust')
 THEME_FIELDS = ('id', 'name', 'definition', 'include', 'exclude')
@@ -217,6 +226,41 @@ def validate_synthesis(data, member_ids, review_ids):
     result['representative'] = representative
     if not any(result.values()):
         return None  # 形同空壳，按解析失败重试
+    return result
+
+
+def validate_overview(data, review_ids):
+    """Drop ids outside the review; keep emptied route steps as source_missing."""
+    if not isinstance(data, dict):
+        return None
+
+    def as_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    review_set = set(review_ids)
+    route = []
+    items = data.get('reading_route') if isinstance(data.get('reading_route'), list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        papers = [as_int(value) for value in item.get('papers') or []]
+        papers = [value for value in papers if value in review_set]
+        entry = {'step': as_int(item.get('step')) or len(route) + 1,
+                 'goal': str(item.get('goal') or ''), 'why': str(item.get('why') or '')}
+        if papers:
+            entry['papers'] = papers
+        else:
+            entry['papers'] = []
+            entry['source_missing'] = True
+        route.append(entry)
+    steps = data.get('research_steps') if isinstance(data.get('research_steps'), list) else []
+    result = {'summary': str(data.get('summary') or ''), 'reading_route': route,
+              'research_steps': [str(step) for step in steps if isinstance(step, str)]}
+    if not result['summary'] and not route and not result['research_steps']:
+        return None
     return result
 
 

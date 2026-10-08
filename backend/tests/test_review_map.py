@@ -43,6 +43,22 @@ class FakeMapModel:
         self.propose_users, self.merge_users, self.assign_users = [], [], []
         self.synth_users = []
         self.synthesize = self.default_synthesize
+        self.overview_users = []
+        self.overview = self.default_overview
+
+    @staticmethod
+    def default_overview(user):
+        data = json.loads(user)
+        pool = sorted({r['paper_id'] for t in data['themes'] for r in t['representative']})
+        return json.dumps({
+            'summary': '主要路线围绕检索增强，证据以合成数据为主，实测闭环不足。',
+            'reading_route': [
+                {'step': 1, 'goal': '理解基本问题', 'papers': pool[:2], 'why': '开创'},
+                {'step': 2, 'goal': '掌握主流机制', 'papers': pool[2:4], 'why': '代表性改进'},
+                {'step': 3, 'goal': '进入前沿', 'papers': pool[4:6], 'why': '最新进展'},
+            ],
+            'research_steps': ['先复现经典基线', '在实测数据上验证', '避免只在合成数据上宣称结论'],
+        }, ensure_ascii=False)
 
     @staticmethod
     def default_synthesize(user):
@@ -73,6 +89,9 @@ class FakeMapModel:
         if '文献地图中一个研究主题的分析' in system:
             self.synth_users.append(user)
             return SimpleNamespace(content=self.synthesize(user))
+        if '一份文献地图中各研究主题的分析' in system:
+            self.overview_users.append(user)
+            return SimpleNamespace(content=self.overview(user))
         raise AssertionError(f'unexpected prompt: {system[:40]} / {user[:40]}')
 
     @staticmethod
@@ -496,3 +515,79 @@ def test_synthesis_reuses_cache_and_partial_rerun_after_theme_edit(client, monke
     assert json.loads(fake.synth_users[-1])['theme']['id'] == 'T2'
     final = client.get(prefix + '/map').json()
     assert final['status'] == 'ready' and set(final['syntheses']) == {f'T{i}' for i in range(1, 8)}
+
+
+def test_overview_full_run_has_summary_route_and_steps(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready', result['error']
+    overview = result['overview']
+    assert overview['summary']
+    assert 3 <= len(overview['reading_route']) <= 5
+    assert all('goal' in step and 'papers' in step and 'why' in step for step in overview['reading_route'])
+    assert len(overview['research_steps']) >= 3
+    assert 'fingerprint' in overview
+
+
+def test_overview_drops_unknown_ids_and_marks_missing_steps(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+
+    def overview(user):
+        data = json.loads(user)
+        known = sorted({r['paper_id'] for t in data['themes'] for r in t['representative']})
+        return json.dumps({
+            'summary': 's',
+            'reading_route': [
+                {'step': 1, 'goal': 'g1', 'papers': [999, known[0]], 'why': 'w'},
+                {'step': 2, 'goal': 'g2', 'papers': [999], 'why': 'w'},
+            ],
+            'research_steps': ['a', 'b'],
+        }, ensure_ascii=False)
+
+    fake.overview = overview
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    route = result['overview']['reading_route']
+    assert route[0]['papers'] == [result['overview']['reading_route'][0]['papers'][0]] and 999 not in route[0]['papers']
+    assert route[1]['papers'] == [] and route[1]['source_missing'] is True
+
+
+def test_overview_reuses_cache_and_regenerates_after_theme_change(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    base = len(fake.overview_users)
+    client.post(prefix + '/map/run')  # 无变化 → 跳过
+    assert len(fake.overview_users) == base
+    result = client.get(prefix + '/map').json()
+    edited = [dict(t, name='改名') if t['id'] == 'T3' else t for t in result['themes']]
+    client.put(prefix + '/map/themes', json={'themes': edited, 'expected_version': result['version']})
+    client.post(prefix + '/map/run')  # T3 综合指纹变化 → 总览重新生成
+    assert len(fake.overview_users) == base + 1
+    assert client.get(prefix + '/map').json()['status'] == 'ready'
+
+
+def test_overview_failure_keeps_map_ready(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=6)
+    fake.overview = lambda user: 'not-json'
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    assert result['status'] == 'ready', result['error']
+    assert result['overview']['error'] == '总览未完成，可重新运行'
+    assert len(fake.overview_users) == 2  # 重试一次
+
+
+def test_map_detail_includes_papers_with_themes_and_evidence(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    papers = result['papers']
+    assert len(papers) == 8
+    assert {p['paper_id'] for p in papers} == set(ids)
+    for paper in papers:
+        assert {'paper_id', 'title', 'year', 'venue', 'doi', 'themes', 'evidence_level',
+                'card_status'} <= set(paper)
+        assert isinstance(paper['themes'], list) and paper['themes']
+        assert paper['evidence_level'] == 'abstract' and paper['card_status'] == 'done'
+    by_id = {p['paper_id']: p for p in papers}
+    assert by_id[ids[0]]['title'] == 'Paper 0' and by_id[ids[0]]['year'] == 2020
