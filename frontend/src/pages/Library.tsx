@@ -1,4 +1,5 @@
 import { useApi } from '../workspaceContext';
+import {NoteHistory} from '../components/NoteHistory';
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MatrixRow,
@@ -24,6 +25,8 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { shouldCloseOnEscape, shouldSubmitOnEnter } from "./keyGuardModel";
 import { Drawer } from "../components/ui/Drawer";
 import PdfReader from "../components/PdfReader";
+import { PaperDocumentAccess } from '../components/PaperDocumentAccess';
+import {MarkdownContent} from '../components/MarkdownContent';
 import { usePaperDraft } from "../components/usePaperDraft";
 import { CopyPaperPanel } from '../components/CopyPaperPanel';
 import ThesisWorkspacePanel from "../components/ThesisWorkspacePanel";
@@ -189,6 +192,9 @@ interface ThesisIndex {
 }
 
 interface MetadataDraft {
+  volume: string;
+  issue: string;
+  pages: string;
   citation_key: string;
   title: string;
   authors: string;
@@ -302,6 +308,9 @@ function metadataDraftFromPaper(paper: Paper): MetadataDraft {
     authors: paper.authors.join("\n"),
     year: paper.year == null ? "" : String(paper.year),
     venue: paper.venue ?? "",
+    volume: paper.volume ?? "",
+    issue: paper.issue ?? "",
+    pages: paper.pages ?? "",
     doi: paper.doi ?? "",
     arxiv_id: paper.arxiv_id ?? "",
     abstract: paper.abstract ?? "",
@@ -339,6 +348,7 @@ function ImportResultList({
 
 export default function Library({
   openPaperId,
+  openPaperPage,
   onConsumedOpen,
   onNavigate,
   deepParams,
@@ -347,6 +357,7 @@ export default function Library({
   onDiscussPapers,
 }: {
   openPaperId: number | null;
+  openPaperPage?: number | null;
   onConsumedOpen: () => void;
   onNavigate?: (target: NavLocation | string) => void;
   deepParams: Record<string, string>;
@@ -377,9 +388,13 @@ export default function Library({
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   // P11: 内置 PDF 阅读器覆盖层（全屏），从详情弹窗的「阅读」按钮进入。
   const [readerOpen, setReaderOpen] = useState(false);
+  const [readerTarget, setReaderTarget] = useState<{paperId:number;page:number}|null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importTab, setImportTab] = useState<ImportTab>("manual");
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft>({
+    volume: "",
+    issue: "",
+    pages: "",
     citation_key: "",
     title: "",
     authors: "",
@@ -434,6 +449,7 @@ export default function Library({
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
   const [noteDraft, setNoteDraft, clearSavedNote, noteStorageError] = usePaperDraft<NoteForm>(selected?.id, { kind: "note", content: "", tags: "" }, "note");
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
+  const [noteEditVersion, setNoteEditVersion] = useState(1);
   const [noteEditDraft, setNoteEditDraft] = useState<NoteForm>({ kind: "note", content: "", tags: "" });
   const [excerptDraft, setExcerptDraft, clearSavedExcerpt, excerptStorageError] = usePaperDraft<ExcerptForm>(selected?.id, { quote: "", page: "", section: "", locator: "", note: "", tags: "" }, "excerpt");
   const [editingExcerptId, setEditingExcerptId] = useState<number | null>(null);
@@ -641,6 +657,10 @@ export default function Library({
     setEditingExcerptId(null);
   }, [selected?.id]);
 
+  useEffect(() => {
+    if (readerTarget && readerTarget.paperId === selected?.id) setReaderOpen(true);
+  }, [readerTarget, selected?.id]);
+
   // P12: 论断随选中论文加载（失败静默为空，不阻塞详情弹窗）。
   useEffect(() => {
     if (!selected) {
@@ -759,6 +779,9 @@ export default function Library({
         setSelectedTagId("");
         setSelectedCollectionId("");
         setWorkspace(r);
+        setReaderTarget(p.has_pdf && openPaperPage && openPaperPage > 0
+          ? {paperId:p.id,page:openPaperPage} : null);
+        if (openPaperPage && !p.has_pdf) toast.info('当前论文没有可打开的 PDF，已显示论文详情。');
         setRelated(null);
         setRelatedError(null);
       })
@@ -767,7 +790,7 @@ export default function Library({
     return () => {
       alive = false;
     };
-  }, [openPaperId, onConsumedOpen]);
+  }, [openPaperId, openPaperPage, onConsumedOpen]);
 
   async function ingestBibtex() {
     if (!bibtex.trim()) return;
@@ -849,6 +872,7 @@ export default function Library({
       }
       if (imported) {
         await load();
+        toast.success('PDF 已保存，OCR 与 Markdown 的进度可在论文详情查看。');
         // 单篇成功直接打开详情并收起抽屉；批量保留结果列表并默认打开第一篇成功论文。
         const firstDone = firstDonePdfItem(latest);
         if (firstDone?.paperId != null) await openById(firstDone.paperId);
@@ -1031,6 +1055,9 @@ export default function Library({
           .filter(Boolean),
         year,
         venue: metadataDraft.venue.trim() || null,
+        volume: metadataDraft.volume.trim() || null,
+        issue: metadataDraft.issue.trim() || null,
+        pages: metadataDraft.pages.trim() || null,
         doi: metadataDraft.doi.trim() || null,
         arxiv_id: metadataDraft.arxiv_id.trim() || null,
         abstract: metadataDraft.abstract.trim() || null,
@@ -1099,6 +1126,7 @@ export default function Library({
     }
     await flushReaderProgress();
     setReaderOpen(false);
+    setReaderTarget(null);
   }
 
   // P11.3: 阅读器内划选保存为摘录（quote=选中文本，page=当前页）。
@@ -1225,6 +1253,7 @@ export default function Library({
 
   function beginEditNote(note: PaperNote) {
     setEditingNoteId(note.id);
+    setNoteEditVersion(note.version??1);
     setNoteEditDraft({
       kind: note.kind,
       content: note.content,
@@ -1240,7 +1269,7 @@ export default function Library({
       return;
     }
     try {
-      const updated = await api.patchNote(selected.id, note.id, payload);
+      const updated = await api.patchNote(selected.id, note.id, {...payload,expected_version:noteEditVersion});
       setWorkspace((prev) =>
         prev
           ? {
@@ -2069,12 +2098,14 @@ export default function Library({
           >
             <div className="shrink-0 border-b border-[var(--border)] p-6 pb-4">
               <div className="mb-2 flex items-start justify-between gap-4">
-                <h3 className="text-xl font-bold leading-snug">{selected.title ?? "（无标题）"}</h3>
-                <div className="flex shrink-0 items-center gap-2">
+                <h3 className="min-w-0 break-words text-xl font-bold leading-snug">{selected.title ?? "（无标题）"}</h3>
+                <button onClick={() => setSelected(null)} className="btn-subtle shrink-0 px-2" aria-label="关闭">
+                  <X size={18} />
+                </button>
+              </div>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
                   {selected.has_pdf && (
-                    <button onClick={() => setReaderOpen(true)} className="btn-primary px-2.5 py-1.5 text-xs">
-                      阅读
-                    </button>
+                    <><button onClick={() => setReaderOpen(true)} className="btn-primary px-2.5 py-1.5 text-xs">阅读</button><PaperDocumentAccess paperId={selected.id} /></>
                   )}
                   <button
                     onClick={() => onAskAboutPaper?.(selected.id, selected.title)}
@@ -2083,16 +2114,12 @@ export default function Library({
                   >
                     就这篇论文提问
                   </button>
-                  <span className="text-xs text-muted" role="status">{noteStorageError || excerptStorageError || matrixStorageError ? "本机草稿存储不可用，请保存后再关闭窗口。" : "新笔记、摘录和对照表草稿会保留在本机，提交后才计入成果。"}</span>
-                  <button onClick={() => setSelected(null)} className="btn-subtle px-2" aria-label="关闭">
-                    <X size={18} />
-                  </button>
                 </div>
-              </div>
+              <p className="mb-2 text-xs text-muted" role="status">{noteStorageError || excerptStorageError || matrixStorageError ? "本机草稿存储不可用，请保存后再关闭窗口。" : "新笔记、摘录和对照表草稿会保留在本机，提交后才计入成果。"}</p>
               <p className="mb-3 text-sm text-muted">
                 {selected.authors.join(", ")} {selected.year ? `· ${selected.year}` : ""}
               </p>
-              {selected.abstract && <p className="mb-3 text-sm leading-relaxed">{selected.abstract}</p>}
+              {selected.abstract && detailTab === 'overview' && <details className="mb-3 text-sm"><summary className="cursor-pointer">摘要</summary><p className="mt-2 max-h-28 overflow-y-auto leading-relaxed">{selected.abstract}</p></details>}
               {selected.concepts && selected.concepts.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {selected.concepts.map((c, i) => (
@@ -2171,6 +2198,20 @@ export default function Library({
                   value={metadataDraft.arxiv_id}
                   onChange={(e) => setMetadataDraft({ ...metadataDraft, arxiv_id: e.target.value })}
                 />
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 md:col-span-2">
+                  {([
+                    ["volume", "卷"], ["issue", "期"], ["pages", "页码或文章编号"],
+                  ] as const).map(([field, label]) => (
+                    <label key={field} className="min-w-0 text-xs text-muted">
+                      <span className="mb-1 block">{label}</span>
+                      <input
+                        className="input w-full py-1 text-xs"
+                        value={metadataDraft[field]}
+                        onChange={(e) => setMetadataDraft({ ...metadataDraft, [field]: e.target.value })}
+                      />
+                    </label>
+                  ))}
+                </div>
                 <textarea
                   className="input min-h-24 resize-y text-xs md:col-span-2"
                   placeholder="摘要"
@@ -2589,7 +2630,7 @@ export default function Library({
             {detailTab === "notes" && (
               <div className="space-y-4">
                 {workspace ? (
-                  <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                  <div className="space-y-4">
                     <div>
                       <h5 className="mb-2 text-sm font-semibold">笔记</h5>
                       <div className="mb-2 space-y-2">
@@ -2672,7 +2713,8 @@ export default function Library({
                                     删除
                                   </button>
                                 </div>
-                                <p className="whitespace-pre-wrap">{note.content}</p>
+                                <MarkdownContent content={note.content} images={false} paperId={selected.id} onPdfPage={selected.has_pdf?(id,page)=>{setReaderTarget({paperId:id,page});setReaderOpen(true);}:undefined}/>
+                                <NoteHistory note={note} kindLabel={kind=>NOTE_KIND_LABELS[kind]??kind} onEdit={revision=>{beginEditNote(note);setNoteEditDraft({kind:revision.kind,content:revision.content,tags:revision.tags.join(', ')});}} onPdfPage={selected.has_pdf?(id,page)=>{setReaderTarget({paperId:id,page});setReaderOpen(true);}:undefined}/>
                               </>
                             )}
                           </div>
@@ -3094,13 +3136,14 @@ export default function Library({
           onAskAi={(text) => onAskAboutPaper?.(selected.id, selected.title, text)}
           notes={workspace?.notes ?? []}
           excerpts={workspace?.excerpts ?? []}
-          initialPage={workspace?.state?.last_page ?? null}
+          initialPage={readerTarget?.paperId === selected.id ? readerTarget.page : workspace?.state?.last_page ?? null}
           onProgress={commitReaderProgress}
           onClose={closeReader}
-          onOpenPaper={async id => {
+          onOpenPaper={async (id, page) => {
             try {
               const [paper, reading] = await Promise.all([api.getPaper(id), api.getReadingWorkspace(id)]);
               await closeReader(); setSelected(paper); setWorkspace(reading);
+              setReaderTarget(paper.has_pdf && page ? {paperId: id, page} : null);
               setMetadataDraft(metadataDraftFromPaper(paper));
             } catch (e: any) { toast.error(e.message); }
           }}
@@ -3265,7 +3308,7 @@ export default function Library({
                 />
               </label>
               <p className="text-xs text-faint">
-                文字版 PDF 可以提取原文。扫描版或纯图片 PDF 可能无法读取文字。
+                PDF 保存后按项目设置转换，默认对全部页面使用 OCR，生成 Markdown 后供 AI 阅读并建立检索索引。未配置 OCR 模型时等待配置；可在论文详情查看进度、原页和 Markdown。
               </p>
               {pdfImportQueue.length > 0 && (
                 <div className="space-y-1 text-xs">

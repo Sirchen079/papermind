@@ -8,6 +8,7 @@ import { SkeletonGroup } from "../components/ui/Skeleton";
 import { Shell } from "../components/layout/Shell";
 import { EmptyState } from "../components/ui/EmptyState";
 import { PageHeader } from "../components/ui/PageHeader";
+import { BuiltinSkills } from '../components/BuiltinSkills';
 
 const TYPE_LABELS: Record<string, string> = { instruction: "回答指令", template: "内容模板", tool: "代码工具", persona: "助手角色" };
 const TRIGGER_LABELS: Record<string, string> = { manual: "手动选择", auto: "自动应用", keyword: "关键词触发", pipeline: "处理流程" };
@@ -140,6 +141,7 @@ export default function Skills() {
           </button>
         }
       />
+      <BuiltinSkills />
       <section className="card">
         <h3 className="mb-3 font-semibold">{editing ? `编辑技能：${editing.name}` : "新建技能"}</h3>
         <p className="mb-3 text-xs text-muted">手动选择的回答指令与助手角色保存后，在问答输入框上方的「本轮技能」中选择，再发送问题。</p>

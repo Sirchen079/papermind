@@ -1,20 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useApi } from '../workspaceContext';
-import { usePaperDraft } from './usePaperDraft';
+import { usePaperDraft, libraryScope } from './usePaperDraft';
+import { useChatDraft } from './useChatDraft';
+import { useWorkspace } from '../workspaceContext';
+import { useToast } from './ui/Toast';
+import {appendPageAttachment} from '../pages/chatMaterialsModel';
+import type {ComposerMaterials} from '../pages/Chat';
 import { AgentActivity } from './AgentActivity';
 import Chat from '../pages/Chat';
 import type { PaperChatContext } from '../pages/chatContextModel';
 
 export type ReadingSelection = {text: string; page: number; action: 'ask'; nonce: number};
 
-export function ReadingCompanion({paperId, title, selection, preparation, onOpenPaper}: {
+export function ReadingCompanion({paperId, title, selection, preparation, onOpenPaper, currentPage, pageReady}: {
   paperId: number; title: string | null; selection: ReadingSelection | null;
-  preparation: {status: string; message: string}; onOpenPaper: (id: number) => void;
+  preparation: {status: string; message: string}; onOpenPaper: (id: number, page?: number) => void;
+  currentPage: number; pageReady: boolean;
 }) {
   const api = useApi();
   const [saved, setSaved] = usePaperDraft(paperId, {conversation: 0, text: '', quote: '', page: 0}, 'companion');
+  const {workspace} = useWorkspace();
+  const toast = useToast();
+  const materials = useChatDraft<ComposerMaterials>(`${libraryScope()}:${workspace.id}:${saved.conversation}`, {attachments: [], queue: []});
+  const [addingPage, setAddingPage] = useState<number|null>(null);
+  const [pageError, setPageError] = useState('');
+  const addingRef = useRef(false);
+  const aliveRef = useRef(true);
+  useEffect(() => {aliveRef.current = true; return () => {aliveRef.current = false;};}, []);
   const savedRef = useRef(saved); savedRef.current = saved;
   const saveRef = useRef(setSaved); saveRef.current = setSaved;
+  async function bringPage() {
+    if (addingRef.current || !saved.conversation || !materials.ready || !pageReady) return;
+    const page = currentPage;
+    const conversation = saved.conversation;
+    // The captured update writes to this conversation's existing draft even
+    // when the reader changes conversations while the page is being rendered.
+    const target = materials.update;
+    addingRef.current = true; setAddingPage(page); setPageError('');
+    try {
+      const item = await api.paperPageAttachment(paperId, page);
+      const stored = await target(previous => appendPageAttachment(previous, item));
+      if (aliveRef.current) {
+        if (!stored) setPageError('原页已在输入区，附件草稿尚未保存成功；关闭前请重试带入本页。');
+        else if (savedRef.current.conversation === conversation) toast.success(`PDF第${page}页原图已带入，可以继续写问题。`);
+        else toast.info(`PDF第${page}页原图已加入此前的伴读会话，切回后可查看。`);
+      }
+    } catch (e: any) {if (aliveRef.current) setPageError(e.message || '原页读取失败，请重试。');}
+    finally {addingRef.current = false; if (aliveRef.current) setAddingPage(null);}
+  }
   const creating = useRef<Promise<{id: number; title: string}> | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState('');
@@ -49,6 +82,9 @@ export function ReadingCompanion({paperId, title, selection, preparation, onOpen
     <header className="companion-intro"><div className="companion-heading"><span className="companion-mark" aria-hidden="true">✦</span><div><h3>一起读，深入想</h3><p>阅读 · 讨论 · 行动</p></div></div>
       <p className="companion-paper" title={title ?? ''}>{title ?? '当前论文'}</p>
       <div className="companion-readiness"><span className={preparation.status === 'loading' ? 'status-dot is-loading' : 'status-dot'} /><span>{preparation.message}</span></div>
+      <button type="button" className="btn-ghost mt-2 text-xs" disabled={addingPage !== null || !pageReady || !saved.conversation || !materials.ready}
+        onClick={() => void bringPage()} title="把当前 PDF 页作为图片加入输入区，再写问题发送。">{addingPage !== null ? `正在带入第${addingPage}页…` : `带入第${currentPage}页原图`}</button>
+      {pageError && <p role="alert" className="mt-1 text-xs text-[var(--danger)]">{pageError}</p>}
     </header>
     {saved.conversation ? <Chat key={saved.conversation} embedded activeConv={saved.conversation} setActiveConv={selectConversation}
       initialDraft={saved.text} onOpenPaper={onOpenPaper} paperContext={context} onContextLoaded={loaded}

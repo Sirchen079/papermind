@@ -16,6 +16,7 @@ export const KNOWN_PAGES: readonly string[] = [
   "research",
   "wiki",
   "library",
+  "literature",
   "suggestions",
   "ideas",
   "graph",

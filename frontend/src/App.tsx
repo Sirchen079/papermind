@@ -31,7 +31,9 @@ const Suggestions = lazy(() => import("./pages/Suggestions"));
 const Ideas = lazy(() => import("./pages/Ideas"));
 const Home = lazy(() => import("./pages/Home"));
 const Research = lazy(() => import("./pages/Research"));
+const LibraryReview = lazy(() => import('./pages/LibraryReview'));
 const Wiki = lazy(() => import('./pages/Wiki'));
+const Literature = lazy(() => import('./pages/Literature'));
 const Help = lazy(() => import('./pages/Help'));
 
 function readInitialLocation(): NavLocation {
@@ -61,6 +63,7 @@ export default function App() {
   const [location, setLocation] = useState<NavLocation>(readInitialLocation);
   const [newCount, setNewCount] = useState(0);
   const [openPaperId, setOpenPaperId] = useState<number | null>(null);
+  const [openPaperPage, setOpenPaperPage] = useState<number | null>(null);
   const [activeConv, setActiveConv] = useState<number | null>(()=>{
     const explicit=location.page==='chat'?Number(location.params.conversation):0;
     if(Number.isSafeInteger(explicit)&&explicit>0)return explicit;
@@ -114,6 +117,17 @@ export default function App() {
     });
   }, []);
 
+  const startNewResearch = useCallback(async () => {
+    if(chatOpenPending.current)return;
+    chatOpenPending.current=true;setChatOpenError(null);
+    const revision=navigationRevision.current;
+    try{
+      const conversation=await api.createConversation();
+      if(navigationRevision.current===revision)navigate({page:'chat',params:{conversation:String(conversation.id)}});
+    }catch(error:any){if(navigationRevision.current===revision)setChatOpenError(error?.message??'无法开始研究，请重试。');}
+    finally{chatOpenPending.current=false;}
+  },[api,navigate]);
+
   // Library 内层状态变化时只更新参数，不重置页面。
   const updateLibraryParams = useCallback((params: Record<string, string>) => {
     setLocation((prev) => {
@@ -124,13 +138,14 @@ export default function App() {
 
   // Cross-page "open this paper" — e.g. clicking a RAG source chip in Chat.
   const openPaper = useCallback(
-    (id: number) => {
+    (id: number, sourcePage?: number) => {
       setOpenPaperId(id);
+      setOpenPaperPage(Number.isInteger(sourcePage) && (sourcePage ?? 0) > 0 ? sourcePage! : null);
       navigate("library");
     },
     [navigate],
   );
-  const clearOpenPaper = useCallback(() => setOpenPaperId(null), []);
+  const clearOpenPaper = useCallback(() => { setOpenPaperId(null); setOpenPaperPage(null); }, []);
   const guide = useGettingStarted(navigate,openPaper);
 
   // Explicit paper entry starts its own conversation. Materials belong to that
@@ -232,7 +247,7 @@ export default function App() {
     <ToastProvider>
     <ConfirmProvider>
     <div className="app-frame flex overflow-hidden"><a href="#main-content" className="skip-link" onClick={e=>{e.preventDefault();mainRef.current?.focus();}}>跳到内容</a>
-      <Sidebar page={page} open={sidebarOpen} onClose={()=>setSidebarOpen(false)} onNavigate={navigate} newCount={newCount}/>
+      <Sidebar page={page} open={sidebarOpen} onClose={()=>setSidebarOpen(false)} onNavigate={navigate} onNewResearch={startNewResearch} newCount={newCount}/>
 
       {sidebarOpen && (
         <div
@@ -282,11 +297,12 @@ export default function App() {
             }
           >
             {page === "home" && <Home guided={guide.state?.status==='welcome'||guide.state?.status==='active'} onOpenPaper={openPaper} onNavigate={navigate} />}
-            {page === "research" && <Research params={location.params} onNavigate={navigate} onOpenPaper={openPaper} />}
+            {page === "research" && (location.params.mode==='review' ? <LibraryReview params={location.params} onNavigate={navigate} onOpenPaper={openPaper}/> : <Research params={location.params} onNavigate={navigate} onOpenPaper={openPaper} />)}
             {page === 'wiki' && <Wiki params={location.params} onNavigate={navigate} onOpenPaper={openPaper}/>}
             {page === "library" && (
               <Library
                 openPaperId={openPaperId}
+                openPaperPage={openPaperPage}
                 onConsumedOpen={clearOpenPaper}
                 onNavigate={navigate}
                 deepParams={location.params}
@@ -296,12 +312,17 @@ export default function App() {
               />
             )}
             {page === "suggestions" && <Suggestions onOpenPaper={openPaper} />}
+            {page === "literature" && <Literature onOpenPaper={openPaper} />}
             {page === "ideas" && <Ideas />}
             {page === "graph" && <Graph theme={theme} brand={brand} onOpenPaper={openPaper} />}
             {chatOpenError && <div role="alert" className="p-4 text-sm">{chatOpenError}<button className="btn-ghost ml-2" onClick={() => setChatOpenError(null)}>关闭</button></div>}
             {page === "chat" && (
               <Chat
                 key={activeConv ?? 'empty-chat'}
+                initialDraft={location.params.question || (location.params.research_task ? '请基于关联的研究判断和保存来源继续讨论，保留已有修订，说明下一步值得补查或比较的问题。' : location.params.review ? '请基于关联专题已有的论文分析和草稿，梳理主要结论、分歧和下一步值得研究的问题。' : undefined)}
+                initialReview={location.params.review}
+                initialResearch={location.params.research_task&&Number(location.params.version)>0?{task_id:location.params.research_task,version:Number(location.params.version)}:undefined}
+                onInitialDraftConsumed={() => setLocation(prev => {const params={...prev.params};delete params.review;delete params.question;delete params.research_task;delete params.version;return {...prev,params};})}
                 activeConv={activeConv}
                 setActiveConv={selectConversation}
                 onOpenPaper={openPaper}

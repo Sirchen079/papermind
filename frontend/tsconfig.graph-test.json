@@ -12,9 +12,16 @@
     "noEmit": false
   },
   "include": [
+    "src/pages/documentIdentityModel.ts",
+    "src/pages/sourcePresentationModel.ts",
+    "src/pages/attachmentPreviewModel.ts",
+    "src/pages/chatSourceHistoryModel.ts",
+    "src/pages/chatArtifactsModel.ts",
     "src/pages/agentActivityModel.ts",
     "src/pages/chatQueueModel.ts",
+    "src/pages/chatMaterialsModel.ts",
     "src/pages/markdownModel.ts",
+    "src/pages/paperLocatorModel.ts",
     "src/pages/onboardingModel.ts",
     "src/pages/graphModel.ts",
     "src/pages/libraryDiagnosticsModel.ts",
@@ -35,6 +42,7 @@
     "src/pages/chatCaptureModel.ts",
     "src/pages/librarySearchModel.ts",
     "src/pages/externalPaperModel.ts",
+    "src/pages/literatureModel.ts",
     "src/pages/draftStorageModel.ts"
   ]
 }

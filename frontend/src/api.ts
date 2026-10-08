@@ -1,4 +1,6 @@
 import { parseApiErrorMessage } from "./pages/apiErrorModel";
+import type { RecentWork } from './pages/activityModel';
+import type { DocumentIdentity } from './pages/documentIdentityModel';
 
 const BASE = "/api";
 
@@ -38,14 +40,44 @@ export interface Clarification {
   status: "pending" | "answered" | "skipped";
   response?: Omit<ClarificationResponse, "message_id">;
 }
-export interface ChatAttachment { name: string; kind: "image" | "text"; text: string; data_url: string; size: number; }
+export interface ChatAttachment { name: string; kind: "image" | "text"; text: string; data_url: string; size: number; saved_document?: {message_id:number;filename:string}|null; research_task?:{task_id:string;version:number}|null; paper_page?:{paper_id:number;page:number;pdf_sha256:string;image_sha256:string}|null; }
+export interface ChatDocumentRevision extends DocumentIdentity { filename:string; parent_filename:string|null; download_url:string; content:string; proposal_id?:string;source_message_id?:number; }
 export interface ChatModel { id: number; name: string; provider: string; context_window: number | null; reasoning_effort: string | null; supports_images: boolean | null; is_default: boolean; }
 export interface DocumentModel { id: number; name: string; provider: string; supports_images: boolean | null; }
-export interface DocumentStatus {
-  status: string; mode: 'auto' | 'ocr'; total_pages: number; completed_pages: number; ocr_pages: number;
-  has_markdown: boolean; model_name: string; error: string; index_status: string;
+export interface LiteratureCandidate {
+  id: number; survey_id: number; openalex_id: string; doi: string; arxiv_id: string;
+  title: string; year: number | null; venue: string; authors: string[]; cited_by_count: number;
+  oa_pdf_url: string | null; abstract: string; relevance: string; keep: boolean | null;
+  status: string; paper_id: number | null; note: string;
 }
+export interface LiteratureSurveySummary {
+  id: number; query: string; years: number; max_results: number; status: string; error: string;
+  screened: boolean; import_status: string; created_at: string | null; finished_at: string | null;
+}
+export interface LiteratureSurveyDetail extends LiteratureSurveySummary {
+  candidates: LiteratureCandidate[]; counts: Record<string, number>; import_batch_cap: number;
+}
+export interface DocumentStatus {
+  status: string; mode: 'auto' | 'ocr' | 'advanced'; total_pages: number; completed_pages: number; ocr_pages: number;
+  advanced_pages: number; has_markdown: boolean; model_name: string; error: string; index_status: string;
+}
+export interface SavedChatDocument extends DocumentIdentity {
+  message_id:number; conversation_id:number; conversation_title:string; filename:string;
+  author:'user'|'assistant'; parent_filename:string|null; created_at:string; capture_message_id?:number|null;
+  snippet:string; superseded:boolean; total_chars:number;
+}
+export type SavedDocumentReference = Pick<SavedChatDocument,'message_id'|'filename'>;
+export type SavedDocumentVersion = Omit<SavedChatDocument,'snippet'|'superseded'|'total_chars'>;
+export interface DocumentGenerationRequest { message_id:number; conversation_id:number; content:string; note:string; }
+export interface DocumentInput extends SavedDocumentReference {
+  relations:('attached'|'read'|'read_unconfirmed'|'revision_parent')[];
+  reads:{part:string;start_char:number;loaded_chars:number;source_index?:number}[];
+  available:boolean; conversation_title?:string;
+}
+export interface SavedChatDocumentDetail extends SavedDocumentVersion { content:string; sources:Source[]; web_sources?:WebSource[]; download_url:string; conversation_url:string; newer_versions:SavedDocumentVersion[]; generation_request?:DocumentGenerationRequest|null; input_documents?:DocumentInput[]; }
+
 export interface ChatMessageExtra {
+  workflow?: 'general' | 'literature-synthesis' | 'review-revision';
   paper_ids?: number[];
   review_evidence?: boolean;
   attachments?: ChatAttachment[];
@@ -155,6 +187,9 @@ export interface Paper {
   abstract: string | null;
   year: number | null;
   venue: string | null;
+  volume?: string | null;
+  issue?: string | null;
+  pages?: string | null;
   doi: string | null;
   arxiv_id: string | null;
   parse_confidence: number | null;
@@ -349,10 +384,33 @@ export interface Model {
   role_default: string | null;
 }
 
+export interface WebSource {
+  material_kind?: string;
+  source_type: 'web';
+  snapshot_id: string;
+  url: string;
+  title: string;
+  retrieved_at: string;
+  start_char: number;
+  end_char: number;
+  snippet: string;
+  excerpt: string;
+  content_region?: string;
+  carried_from_message?: number;
+}
+
 export interface Source {
+  material_kind?: string;
   paper_id: number;
   title: string;
   snippet: string;
+  excerpt?: string;
+  excerpt_truncated?: boolean;
+  source_type?: string;
+  retrieved_by?: string;
+  carried_from_message?: number;
+  locator?: string;
+  pages?: number[];
 }
 
 export interface TopicSource {
@@ -396,7 +454,11 @@ export interface PaperNote {
   tags: string[];
   created_at: string;
   updated_at: string;
+  version?: number;
 }
+
+export interface NoteRevision {note_id:number;paper_id:number;version:number;current_version:number;kind:PaperNote['kind'];content:string;tags:string[];updated_at:string;changes_to_current:{before:string;after:string}[]}
+export interface NoteHistory {current_version:number;items:{version:number;kind:string;updated_at:string}[];next_offset:number|null}
 
 export interface PaperExcerpt {
   id: number;
@@ -850,6 +912,7 @@ return {
   reportPptxUrl: (id: number) => `${BASE}/reports/${id}/pptx`,
   readiness: () => req<ReadinessReport>("/readiness"),
   researchProgress: () => req<ResearchProgressReport>("/research/progress"),
+  recentWork: () => req<{items:RecentWork[]}>("/research/recent-work"),
   libraryDiagnostics: () => req<LibraryDiagnosticsReport>("/library/diagnostics"),
   repairLibraryDiagnostics: (action: "citation_keys" | "reanalyze") =>
     req<LibraryDiagnosticsRepairResult>("/library/diagnostics/repair", {
@@ -865,6 +928,8 @@ return {
     req<ReviewMatrixSuggestion>(`/papers/${id}/reading/matrix/suggest`, { method: "POST" }),
   createNote: (id: number, body: Record<string, unknown>) =>
     req<PaperNote>(`/papers/${id}/reading/notes`, { method: "POST", body: JSON.stringify(body) }),
+  noteHistory: (id:number,noteId:number,offset=0)=>req<NoteHistory>(`/papers/${id}/reading/notes/${noteId}/revisions?offset=${offset}`),
+  noteRevision: (id:number,noteId:number,version:number)=>req<NoteRevision>(`/papers/${id}/reading/notes/${noteId}/revisions/${version}`),
   patchNote: (id: number, noteId: number, body: Record<string, unknown>) =>
     req<PaperNote>(`/papers/${id}/reading/notes/${noteId}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteNote: (id: number, noteId: number) => req(`/papers/${id}/reading/notes/${noteId}`, { method: "DELETE" }),
@@ -983,11 +1048,17 @@ return {
     translateSelection: (id: number, text: string, target: string, model_config_id?: number, signal?: AbortSignal) => req<{text: string; model: string}>(`/papers/${id}/translate`, {method: "POST", body: JSON.stringify({text, target, model_config_id}), signal}),
     chatModels: () => req<ChatModel[]>("/chat/models"),
   stopChat: (id: number) => req(`/chat/conversations/${id}/stop`, { method: "POST" }),
+  reviseChatDocument: (id:number, filename:string, content:string) => req<ChatDocumentRevision & {message_id:number}>(`/chat/conversations/${id}/documents/revisions`, {method:'POST',body:JSON.stringify({filename,content})}),
+  saveAnswerDocument: (id:number, messageId:number) => req<ChatDocumentRevision & {message_id:number}>(`/chat/conversations/${id}/messages/${messageId}/document`, {method:'POST'}),
   uploadChatAttachment: (file: File) => {
     const form = new FormData(); form.append("file", file);
     return req<ChatAttachment>("/chat/attachments", { method: "POST", body: form });
   },
+  paperPageAttachment: (id: number, page: number) => req<ChatAttachment>(`/papers/${id}/page-attachment?page=${page}`),
   listConversations: () => req<{ id: number; title: string }[]>("/chat/conversations"),
+  listSavedDocuments: (q='',offset=0,includePrevious=false) => req<{items:SavedChatDocument[];total:number;next_offset:number|null}>(`/chat/saved-documents?q=${encodeURIComponent(q)}&offset=${offset}&include_previous_versions=${includePrevious}`),
+  getSavedDocument: (messageId:number,filename:string) => req<SavedChatDocumentDetail>(`/chat/saved-documents/${messageId}?filename=${encodeURIComponent(filename)}`),
+  applyDocumentEdit: (conversationId:number,proposalId:string,replacement:string) => req<ChatDocumentRevision>(`/chat/conversations/${conversationId}/documents/proposals/${proposalId}/apply`,{method:'POST',body:JSON.stringify({replacement})}),
   createConversation: (paperId?: number) => req<{ id: number; title: string }>("/chat/conversations", { method: "POST", body: JSON.stringify({ paper_id: paperId }) }),
   createPaperDiscussion: (paperIds: number[]) => req<{id: number; title: string}>("/chat/conversations", {method: "POST", body: JSON.stringify({paper_ids: paperIds})}),
   clearConversationPaper: (id: number) => req(`/chat/conversations/${id}`, { method: "PATCH", body: JSON.stringify({ paper_id: null }) }),
@@ -1001,13 +1072,13 @@ return {
     req<{
       id: number;
       title: string;
-      messages: { tools?: { name: string; args: Record<string, unknown>; result: string; ok: boolean }[]; attachments?: ChatAttachment[]; id: number; role: string; content: string; model: string; sources: Source[]; topic_sources?: TopicSource[]; delivery_status?: string; error_message?: string | null; retryable?: boolean; continuable?: boolean; clarification?: Clarification | null }[];
+      messages: { document_revision?:ChatDocumentRevision|null; updates?: { content: string }[]; tools?: { name: string; args: Record<string, unknown>; result: string; ok: boolean }[]; attachments?: ChatAttachment[]; id: number; role: string; content: string; model: string; sources: Source[]; topic_sources?: TopicSource[]; web_sources?:WebSource[]; delivery_status?: string; error_message?: string | null; retryable?: boolean; continuable?: boolean; clarification?: Clarification | null }[];
       paper_id: number | null;
       paper_title: string | null;
       papers: {id: number; title: string | null; unavailable?: boolean}[];
     }>(`/chat/conversations/${id}`),
   sendMessage: (id: number, content: string, extra?: ChatMessageExtra) =>
-    req<{ role: string; content: string; model: string; tokens: number; sources: Source[]; topic_sources: TopicSource[]; clarification?: Clarification }>(
+    req<{ role: string; content: string; model: string; tokens: number; sources: Source[]; topic_sources: TopicSource[]; web_sources?:WebSource[]; clarification?: Clarification }>(
       `/chat/conversations/${id}/messages`,
       { method: "POST", body: JSON.stringify({ content, ...extra }) }
     ),
@@ -1127,7 +1198,7 @@ return {
   // settings（通用 KV 设置，如 research_interests 研究方向描述）
   documentModels: () => req<{ ocr: DocumentModel[]; rerank: DocumentModel[]; rerank_llm: DocumentModel[] }>('/document-models'),
   documentStatus: (id: number) => req<DocumentStatus>(`/papers/${id}/document`),
-  convertDocument: (id: number, mode: 'auto' | 'ocr', force = false) => req<DocumentStatus>(`/papers/${id}/document`, {method: 'POST', body: JSON.stringify({mode, force})}),
+  convertDocument: (id: number, mode: 'auto' | 'ocr' | 'advanced', force = false) => req<DocumentStatus>(`/papers/${id}/document`, {method: 'POST', body: JSON.stringify({mode, force})}),
   cancelDocument: (id: number) => req<DocumentStatus>(`/papers/${id}/document/cancel`, {method: 'POST'}),
   documentMarkdown: (id: number) => req<{markdown: string}>(`/papers/${id}/document/markdown`),
   listSettings: () => req<Record<string, string | null>>("/settings"),
@@ -1136,5 +1207,15 @@ return {
       method: "PUT",
       body: JSON.stringify({ value }),
     }),
+  // literature survey（文献调研）
+  createLiteratureSurvey: (body: { query: string; years: number; max_results: number; screen: boolean }) =>
+    req<LiteratureSurveySummary>("/literature/surveys", { method: "POST", body: JSON.stringify(body) }),
+  literatureSurveys: () => req<{ items: LiteratureSurveySummary[] }>("/literature/surveys"),
+  literatureSurvey: (id: number) => req<LiteratureSurveyDetail>(`/literature/surveys/${id}`),
+  importLiteratureCandidates: (id: number, candidateIds: number[]) =>
+    req<{ queued: number; import_batch_cap: number }>(`/literature/surveys/${id}/import`, {
+      method: "POST", body: JSON.stringify({ candidate_ids: candidateIds }),
+    }),
+  deleteLiteratureSurvey: (id: number) => req<void>(`/literature/surveys/${id}`, { method: "DELETE" }),
 };
 }

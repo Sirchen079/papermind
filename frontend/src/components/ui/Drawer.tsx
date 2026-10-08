@@ -10,8 +10,9 @@
  * - 内部 flex 列：shrink-0 标题栏 + flex-1 独立滚动内容
  * - open=false 时不渲染（卸载子树）
  */
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "../../icons";
+import {isTopDialog} from './dialogOrder';
 
 export function Drawer({
   open,
@@ -27,10 +28,13 @@ export function Drawer({
   /** 抽屉最大宽度，Tailwind max-w-* 类。默认 max-w-lg (32rem)。 */
   width?: string;
 }) {
+  const dialogRef=useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !e.isComposing && !e.defaultPrevented && isTopDialog(dialogRef.current)) {
+        e.preventDefault();onClose();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -41,6 +45,7 @@ export function Drawer({
   return (
     <div className="modal-overlay z-50 animate-fade-in flex justify-end" onClick={onClose}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={typeof title === "string" ? title : "侧边抽屉"}

@@ -2,9 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { workspaceRequest } from '../workspaceApi';
 import { libraryScope, localStore } from './usePaperDraft';
 import { readDraft, writeDraft } from '../pages/draftStorageModel';
-import { emptyActivity, observeActivity, type Activity } from '../pages/activityModel';
+import { activityLabels as labels, emptyActivity, observeActivity, type Activity } from '../pages/activityModel';
 
-const labels:Record<string,string>={running:'正在运行',queued:'等待运行',pending:'正在回答',done:'候选已保存',ready:'研究结果已就绪',partial:'研究结果待补充',paused:'已暂停',failed:'未完成，请检查',interrupted:'运行中断',conflict:'候选待合并',complete:'回答已完成',awaiting_user:'等待你的回答'};
 export function WorkspaceActivity(){
   const key='pm-activity-'+libraryScope();
   const memory=useRef(readDraft(localStore(),key,emptyActivity));

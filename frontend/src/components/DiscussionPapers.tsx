@@ -27,8 +27,8 @@ export function DiscussionPapers({papers, onOpenPaper}: {
   const ready = papers.filter(p => !p.unavailable && states[p.id]?.status === 'ready').length;
   const errors = papers.some(p => p.unavailable || states[p.id]?.status === 'error');
   const pending = papers.some(p => !p.unavailable && (!states[p.id] || states[p.id].status === 'loading'));
-  return <details className="w-full" open>
-    <summary className="cursor-pointer" aria-live="polite">所选论文 · {ready}/{papers.length} 篇全文已就绪{pending ? ' · 论文加载中…' : ''}</summary>
+  return <details key={signature} className="w-full">
+    <summary className="cursor-pointer" aria-live="polite">所选论文 · {ready}/{papers.length} 篇全文已就绪{pending ? ' · 论文加载中…' : ''}{errors ? ' · 部分全文不可用，可展开重试' : ''}</summary>
     <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto">
       {papers.map(p => <li key={p.id} className="flex flex-wrap items-baseline gap-x-2">
         <button className="btn-ghost max-w-full truncate py-0.5 text-left text-xs" disabled={p.unavailable} onClick={() => onOpenPaper(p.id)}>{p.title ?? `论文 #${p.id}`}</button>
