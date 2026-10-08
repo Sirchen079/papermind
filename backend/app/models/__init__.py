@@ -9,6 +9,7 @@ from app.models.experiment import Experiment, ExperimentLog, ExperimentPaperLink
 from app.models.idea import Idea, IdeaPaperLink
 from app.models.organization import Collection, CollectionPaper, PaperTag, Tag
 from app.models.paper import AnalysisRun, Paper, Summary
+from app.models.card import PaperCard
 from app.models.radar import RadarSeen, Subscription
 from app.models.report import Report
 from app.models.provider import Model, Provider
@@ -51,6 +52,7 @@ __all__ = [
     "Paper",
     "AnalysisRun",
     "Summary",
+    "PaperCard",
     "Concept",
     "PaperConcept",
     "PaperCitation",
