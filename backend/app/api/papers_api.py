@@ -835,6 +835,32 @@ def enrich_metadata(body: EnrichMetadataIn, session: Session = Depends(get_sessi
     return {"results": results, "counts": counts}
 
 
+class FetchFulltextIn(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    paper_ids: list[int]
+
+
+@router.post("/papers/fetch-open-fulltext")
+def fetch_open_fulltext_route(body: FetchFulltextIn, session: Session = Depends(get_session)) -> dict:
+    """Attach open-access PDFs by DOI, reusing the agent's public-PDF importer."""
+    if len(body.paper_ids) > 50:
+        raise HTTPException(422, "一次最多获取 50 篇论文的公开全文。")
+    from app.ingestion.enrich import fetch_open_fulltext
+
+    results = []
+    counts: dict[str, int] = {}
+    for pid in body.paper_ids:
+        paper = session.get(Paper, pid)
+        if paper is None or paper.is_deleted:
+            item = {"paper_id": pid, "status": "not_found"}
+        else:
+            item = {"paper_id": pid, **fetch_open_fulltext(session, paper)}
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+        results.append(item)
+    return {"results": results, "counts": counts}
+
+
 @router.post("/papers/arxiv")
 def ingest_arxiv(body: ArxivIn, session: Session = Depends(get_session)) -> dict:
     from app.ingestion.sources import normalize_arxiv_id
