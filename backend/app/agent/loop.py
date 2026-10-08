@@ -5,6 +5,7 @@ calls, execute them, feed the results back, and loop; if it returns text, that
 is the answer. Emits events so the UI can show what the agent is doing:
 
   ("tool",  {"name", "args", "result", "ok"})   — a tool was called
+  ("update", {"content"})                       — visible writing before tools
   ("delta", {"content"})                        — (final) answer text
   ("done",  {"content"})                        — terminal
   ("error", {"message"})                        — unrecoverable failure
@@ -26,7 +27,7 @@ from app.agent.context import compact_history, total_tokens, DEFAULT_CONTEXT_WIN
 from app.agent.tools import get_tool, tool_schemas
 from app.agent.clarification import question_request
 from app.agent.provenance import tool_sources
-from app.agent.evidence_review import review_answer
+from app.agent.evidence_review import review_answer, tool_evidence_text
 
 MAX_ITERS = 100
 
@@ -75,6 +76,7 @@ def run_agent(
     evidence_context: str | None = None,
     cancelled=None,
     continuation: dict | None = None,
+    on_tools_unavailable=None,
 ) -> Iterator[tuple[str, dict[str, Any]]]:
     """Yield agent events until a final answer or the step limit."""
     review_evidence = (continuation or {}).get("review_evidence", review_evidence)
@@ -82,6 +84,9 @@ def run_agent(
     use_tools = bool(schemas)
     msgs = list(messages)
     tokens_used = (continuation or {}).get("tokens", 0)
+    def compaction_usage(tokens):
+        nonlocal tokens_used
+        tokens_used += tokens
     partial_full_text = (continuation or {}).get("partial_full_text", False)
     coverage_checked = (continuation or {}).get("coverage_checked", False)
     evidence=[{'text':evidence_context,'coverage':'provided context; distinguish original excerpts and notes'}] if evidence_context else []
@@ -96,7 +101,7 @@ def run_agent(
         yield ("status", {"phase": "thinking", "step": _ + 1, "max_steps": max_iters, "model": model_id})
         before = total_tokens(msgs)
         original = msgs
-        msgs = compact_history(msgs, client, provider, model_id, context_window)
+        msgs = compact_history(msgs, client, provider, model_id, context_window, on_usage=compaction_usage)
         yield ("status", {"phase": "thinking", "step": _ + 1, "max_steps": max_iters, "model": model_id,
                           "context": {"before": before, "after": total_tokens(msgs),
                                       "window": context_window or DEFAULT_CONTEXT_WINDOW,
@@ -112,10 +117,30 @@ def run_agent(
                 provider, model_id, msgs, "chat", tools=schemas if use_tools else None
             )
         except Exception as exc:  # noqa: BLE001
+            if cancelled is not None and cancelled.is_set():
+                yield ("error", {"message": "已停止，不再执行后续工具调用。"})
+                return
             if use_tools and _tools_unsupported(exc):
                 use_tools = False
+                from app.agent.presentation import plain_tool_messages
+                msgs = plain_tool_messages(msgs)
+                if on_tools_unavailable:
+                    context = on_tools_unavailable()
+                    if context:
+                        msgs.append({'role': 'user', 'content': context})
+                        evidence.append({'text': context, 'coverage': 'application retrieval for a provider without tools'})
                 continue
-            yield ("error", {"message": str(exc)})
+            payload = {"message": str(exc)}
+            if any(m.get('role') == 'tool' for m in msgs):
+                # The failed request did not execute a new batch. All tool calls
+                # in msgs already have results, including successful saves. Resume
+                # from those results instead of rerunning reads or mutations.
+                payload.update(continuable=True, state={
+                    'messages': msgs, 'evidence': evidence, 'tokens': tokens_used,
+                    'partial_full_text': partial_full_text,
+                    'coverage_checked': coverage_checked, 'review_evidence': review_evidence,
+                })
+            yield ("error", payload)
             return
         if cancelled is not None and cancelled.is_set():
             yield ("error", {"message": "已停止，不再执行后续工具调用。"})
@@ -123,6 +148,8 @@ def run_agent(
         tokens_used += turn.total_tokens
 
         if use_tools and turn.tool_calls:
+            if turn.content and turn.content.strip():
+                yield ('update', {'content': turn.content})
             msgs.append(_assistant_msg(turn))
             questions = [tc for tc in turn.tool_calls if tc.name == "ask_user"]
             if questions:
@@ -158,6 +185,8 @@ def run_agent(
                     # extra kwarg would otherwise TypeError and waste the turn.
                     allowed = set((tool.parameters.get("properties") or {}).keys())
                     call_args = {k: v for k, v in tc.arguments.items() if k in allowed}
+                    if tc.name == 'import_paper_pdf':
+                        call_args['cancelled'] = cancelled
                     try:
                         result = tool.run(session, **call_args)
                         ok = True
@@ -170,8 +199,9 @@ def run_agent(
                     except (ValueError, AttributeError):
                         pass
                 if sources or (ok and tc.name=='get_paper_full_text'):
-                    evidence.append({'text':json.dumps({'tool':tc.name,'arguments':tc.arguments,'result':result},ensure_ascii=False),'coverage':'actual tool execution; result may be metadata or an excerpt'})
-                yield ("tool", {"name": tc.name, "args": tc.arguments, "result": result[:800], "ok": ok, "sources": sources})
+                    evidence.append({'text':tool_evidence_text(tc.name,tc.arguments,result),'coverage':'actual tool execution; result may be metadata or an excerpt'})
+                from app.agent.presentation import public_tool_result
+                yield ("tool", {"name": tc.name, "args": tc.arguments, "result": public_tool_result(tc.name, result), "ok": ok, "sources": sources})
                 msgs.append({"role": "tool", "tool_call_id": tc.id, "content": result})
             continue
 

@@ -66,7 +66,7 @@ def restore(backup, data_dir, *, db_path=None, master_key_path=None, apply=False
     db, key = raw_db.resolve(), raw_key.resolve()
     if {db, key} & {root / JOURNAL, root / '.runtime-use.lock', root / 'api_token'}:
         raise ValueError('数据库和密钥路径与应用控制文件冲突')
-    directories = [root / 'pdfs', root / 'workspaces']
+    directories = [root / 'pdfs', root / 'workspaces', root / 'local_ai', root / 'skill_runs']
     plan = [
         ('workspaces.sqlite', root / 'workspaces.sqlite', 'application/workspaces.sqlite'),
         ('connections.sqlite', root / 'connections.sqlite', 'application/connections.sqlite'),
@@ -75,6 +75,8 @@ def restore(backup, data_dir, *, db_path=None, master_key_path=None, apply=False
         ('legacy.key', key, 'application/master.key'),
         ('pdfs', directories[0], 'application/pdfs'),
         ('workspaces', directories[1], 'application/workspaces'),
+        ('local_ai', directories[2], 'application/local_ai'),
+        ('skill_runs', directories[3], 'application/skill_runs'),
         ('old-restore-marker', root / 'restore-manifest.json', None),
     ]
     for database in [root / 'workspaces.sqlite', root / 'connections.sqlite', db]:

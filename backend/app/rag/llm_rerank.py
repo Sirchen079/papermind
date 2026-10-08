@@ -1,16 +1,18 @@
 """Bounded generative ranking: validate candidate IDs; never trust new text."""
 import json
 import re
+from app.providers.output_budget import response_budget
 
 
-def rank(ctx, query, documents, k, context_window=None):
+def rank(ctx, query, documents, k, context_window=None, reasoning_effort=None):
     if not documents or k <= 0:
         return []
     client, provider, model = ctx
     # Conservative character budget for multilingual text. Unknown models get
     # a small request; a configured small context never receives a huge batch.
     window = context_window or 16384
-    budget = min(24000, (window - 2048) // 2)
+    output = response_budget(window,2048,reasoning_effort)
+    budget = min(60000, (window - output) // 2)
     query = query[:2000]
     per_document = min(1800, (budget - len(query) - 500) // len(documents) - 50)
     if per_document < 120:
@@ -33,7 +35,7 @@ def rank(ctx, query, documents, k, context_window=None):
          'Return only JSON {"ranking":[candidate_id,...]} with exactly top_k distinct IDs, most relevant first. '
          'Use only supplied IDs. Do not answer the query, invent passages, or return explanations.'},
         {'role': 'user', 'content': json.dumps(prompt, ensure_ascii=False)},
-    ], request_kind='rerank_llm', max_tokens=2048, reasoning_effort='low')
+    ], request_kind='rerank_llm', max_tokens=output, reasoning_effort=reasoning_effort or 'low')
     content = result.content.strip()
     if content.startswith('```') and content.endswith('```'):
         content = content.split('\n', 1)[-1].rsplit('```', 1)[0].strip()

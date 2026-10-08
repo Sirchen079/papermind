@@ -31,7 +31,7 @@ def model_choices(session: Session = Depends(get_session)):
 
 
 class ConvertIn(BaseModel):
-    mode: Literal['auto', 'ocr'] = 'auto'
+    mode: Literal['auto', 'ocr', 'advanced'] = 'auto'
     force: bool = False
 
 

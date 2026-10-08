@@ -1,5 +1,6 @@
 from app.models.chat import Conversation, Message
 from app.models.document import PaperDocument
+from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision
 from app.models.chunk import PaperChunk
 from app.models.citation import PaperCitation
 from app.models.claim import Claim, ClaimRelation
@@ -12,7 +13,7 @@ from app.models.radar import RadarSeen, Subscription
 from app.models.report import Report
 from app.models.provider import Model, Provider
 from app.models.thesis import Chapter, ChapterDraft, PaperLink, Project
-from app.models.reading import PaperExcerpt, PaperNote, PaperReadingState, ReviewMatrixEntry
+from app.models.reading import PaperExcerpt, PaperNote, PaperNoteRevision, PaperReadingState, ReviewMatrixEntry
 from app.models.skill import Skill
 from app.models.setting import Setting
 from app.models.suggestion import Suggestion
@@ -21,6 +22,7 @@ from app.models.ai_cache import AIResultCache
 from app.models.research import ResearchTask, ResearchArtifact, ResearchReuse
 from app.models.workspace_copy import WorkspaceCopy
 from app.models.wiki import WikiPage, WikiRevision, WikiUpdate, WikiCopy
+from app.models.literature import LiteratureSurvey, LiteratureCandidate
 
 __all__ = [
     "PaperDocument",
@@ -33,6 +35,7 @@ __all__ = [
     "Model",
     "PaperReadingState",
     "PaperNote",
+    "PaperNoteRevision",
     "PaperExcerpt",
     "ReviewMatrixEntry",
     "Tag",
@@ -66,4 +69,6 @@ __all__ = [
     "Suggestion",
     "Claim",
     "ClaimRelation",
+    "LiteratureSurvey",
+    "LiteratureCandidate",
 ]

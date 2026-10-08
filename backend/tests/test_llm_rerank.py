@@ -136,7 +136,8 @@ def test_legacy_dedicated_config_and_mode_switch_preserve_choices(client):
 
 
 @pytest.mark.parametrize('kind', ['openai_chat', 'openai_responses', 'anthropic'])
-def test_llm_transport_timeout_and_usage_recording(client, monkeypatch, kind):
+@pytest.mark.parametrize('request_kind', ['rerank_llm','retrieval_query'])
+def test_llm_transport_timeout_and_usage_recording(client, monkeypatch, kind, request_kind):
     import litellm
     setup(client, kind)
     def completion(**kwargs):
@@ -149,10 +150,14 @@ def test_llm_transport_timeout_and_usage_recording(client, monkeypatch, kind):
     monkeypatch.setattr(litellm, 'responses', responses)
     with Session(get_engine()) as session:
         ctx = purpose_model(session, 'rerank_llm')
-        assert rank(ctx, 'Q', ['A'], 1) == [(0, 1.)]
+        if request_kind=='rerank_llm':
+            assert rank(ctx, 'Q', ['A'], 1) == [(0, 1.)]
+        else:
+            caller,provider,model=ctx
+            caller.complete(provider,model,[{'role':'user','content':'Translate a query'}],request_kind=request_kind,max_tokens=2048)
     with Session(get_engine()) as session:
         usage = session.exec(select(TokenUsage)).one()
-        assert usage.request_kind == 'rerank_llm' and usage.total_tokens == 15
+        assert usage.request_kind == request_kind and usage.total_tokens == 15
 
 
 def test_modes_persist_and_are_project_scoped(client):
@@ -166,3 +171,108 @@ def test_modes_persist_and_are_project_scoped(client):
     assert restarted.get(prefix + '/settings').json()['rerank_mode'] == 'llm'
     other = restarted.get('/api/w/' + ids[1] + '/settings').json()
     assert 'rerank_mode' not in other and 'rerank_llm_model_config_id' not in other
+
+
+@pytest.mark.parametrize('mode',['llm','dedicated'])
+def test_hybrid_reranks_both_recall_channels_once_and_preserves_final_order(client,monkeypatch,mode):
+    from app.rag.scalable import hybrid
+    provider,_=setup(client)
+    client.post(f'/api/providers/{provider}/models',json={'model_id':'vector','role_default':'embedding'})
+    if mode=='dedicated':
+        client.patch(f'/api/providers/{provider}',json={'base_url':'https://example.test/v1'})
+        mid=client.post(f'/api/providers/{provider}/models',json={'model_id':'ranker'}).json()['id']
+        assert client.put('/api/settings/rerank_model_config_id',json={'value':str(mid)}).status_code==200
+        client.put('/api/settings/rerank_mode',json={'value':'dedicated'})
+    monkeypatch.setattr(ProviderClient,'embed',lambda *a,**kw:[[1,0]])
+    calls=[]
+    def order(documents):
+        calls.append(documents)
+        assert len(documents)==2
+        assert all('private' not in text and 'deleted' not in text for text in documents)
+        return next(i for i,text in enumerate(documents) if 'improves' in text)
+    def complete(self,provider,model,messages,**kwargs):
+        assert mode=='llm'
+        docs=[d['text'] for d in json.loads(messages[1]['content'])['candidates']]
+        return SimpleNamespace(content=json.dumps({'ranking':[order(docs)]}))
+    def rerank(self,provider,model,query,documents,k):
+        assert mode=='dedicated'
+        return [(order(documents),1.0)]
+    monkeypatch.setattr(ProviderClient,'complete',complete)
+    monkeypatch.setattr(ProviderClient,'rerank',rerank)
+    with Session(get_engine()) as session:
+        a,b,c,d=add_papers(session)
+        for p,model in [(a,'vector'),(b,'old-vector'),(c,'vector'),(d,'vector')]:
+            session.add(PaperChunk(paper_id=p.id,text=p.full_text,embedding_model=model,embedding=serialize([1,0])))
+        session.commit()
+        # A is present in both branches; B is keyword-only. Its model-assigned
+        # first place must not subsequently be overridden by A's fusion score.
+        hits=hybrid(session,'protein folding',[a.id,b.id],k=1)
+        assert [h.paper_id for h in hits]==[b.id] and len(calls)==1
+        for query,ids,k in [('',[a.id],1),('protein',[],1),('protein',[a.id],0)]:
+            assert hybrid(session,query,ids,k)==[]
+        assert len(calls)==1
+
+
+def test_hybrid_keeps_lexical_evidence_when_embeddings_or_reranker_fail(client,monkeypatch):
+    from app.rag.scalable import hybrid
+    provider,_=setup(client)
+    client.post(f'/api/providers/{provider}/models',json={'model_id':'vector','role_default':'embedding'})
+    def unavailable(*a,**kw):raise TimeoutError('Unavailable')
+    monkeypatch.setattr(ProviderClient,'embed',unavailable)
+    monkeypatch.setattr(ProviderClient,'complete',unavailable)
+    with Session(get_engine()) as session:
+        a,b,_,_=add_papers(session)
+        for p in (a,b):
+            session.add(PaperChunk(paper_id=p.id,text=p.full_text,embedding_model='vector',embedding=serialize([1,0])))
+        session.commit()
+        assert {h.paper_id for h in hybrid(session,'protein folding',[a.id,b.id],k=12)}=={a.id,b.id}
+
+
+@pytest.mark.parametrize('scoped', [False, True])
+def test_hybrid_balances_library_discovery_without_starving_selected_papers(client,monkeypatch,scoped):
+    from app.rag.scalable import hybrid
+    provider,_=setup(client)
+    client.post(f'/api/providers/{provider}/models',json={'model_id':'vector','role_default':'embedding'})
+    monkeypatch.setattr(ProviderClient,'embed',lambda *a,**kw:[[1,0]])
+    seen=[]
+    def complete(self,provider,model,messages,**kwargs):
+        docs=json.loads(messages[1]['content'])['candidates'];seen.extend(docs)
+        assert sum('baseline' in d['text'] for d in docs)==(12 if scoped else 3)
+        assert any('improves' in d['text'] for d in docs)
+        ordered=sorted(docs,key=lambda d:'improves' not in d['text'])
+        k=json.loads(messages[1]['content'])['top_k']
+        return SimpleNamespace(content=json.dumps({'ranking':[d['id'] for d in ordered[:k]]}))
+    monkeypatch.setattr(ProviderClient,'complete',complete)
+    with Session(get_engine()) as session:
+        a,b,_,_=add_papers(session)
+        for ordinal in range(12):
+            session.add(PaperChunk(paper_id=a.id,ordinal=ordinal,text=a.full_text+str(ordinal),embedding_model='vector',embedding=serialize([1,0])))
+        session.add(PaperChunk(paper_id=b.id,text=b.full_text,embedding_model='vector',embedding=serialize([.9,.1])))
+        session.commit()
+        result=hybrid(session,'protein folding',[a.id,b.id] if scoped else None,k=12)
+        assert len(seen)==(13 if scoped else 4)
+        assert len(result)==(12 if scoped else 4)
+        assert result[0].paper_id==b.id
+
+
+def test_single_selected_paper_exposes_later_evidence_to_reranker_within_budget(client,monkeypatch):
+    from app.rag.scalable import hybrid
+    provider,_=setup(client)
+    client.post(f'/api/providers/{provider}/models',json={'model_id':'vector','role_default':'embedding'})
+    monkeypatch.setattr(ProviderClient,'embed',lambda *a,**kw:[[1,0]])
+    seen=[]
+    def complete(self,provider,model,messages,**kwargs):
+        payload=json.loads(messages[1]['content']);docs=payload['candidates'];seen.extend(docs)
+        evidence=next(d for d in docs if 'RESULT_TABLE' in d['text'])
+        return SimpleNamespace(content=json.dumps({'ranking':[evidence['id']]+[
+            d['id'] for d in docs if d['id']!=evidence['id']][:payload['top_k']-1]}))
+    monkeypatch.setattr(ProviderClient,'complete',complete)
+    with Session(get_engine()) as session:
+        a,_,_,_=add_papers(session)
+        for ordinal in range(50):
+            text='protein folding '+('RESULT_TABLE' if ordinal==12 else f'introduction {ordinal}')
+            session.add(PaperChunk(paper_id=a.id,ordinal=ordinal,text=text,embedding_model='vector',embedding=serialize([1,0])))
+        session.commit()
+        hits=hybrid(session,'protein folding',[a.id,a.id],k=8)
+        assert hits[0].ordinal==12
+        assert len(hits)==8 and len(seen)==30

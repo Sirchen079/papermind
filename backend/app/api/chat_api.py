@@ -1,5 +1,6 @@
 import json
 from threading import Event, Lock
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
@@ -9,6 +10,8 @@ from sqlmodel import Session, select
 from app.api.deps import get_session
 from app.agent.clarification import ClarificationResponse, answer_content, question_content
 from app.agent.provenance import merge_sources, public_sources, topic_sources
+from app.agent.presentation import public_updates, research_messages
+from app.agent.document_revisions import public_revision, revise_document, latest_turn, resume_with_revisions, revision_context
 from app.models import (
     Concept,
     Conversation,
@@ -30,6 +33,22 @@ from app.agent.attachments import Attachment, MAX_FILE_BYTES, attach_content, pr
 router = APIRouter()
 
 
+@router.get('/chat/saved-documents')
+def saved_chat_documents(q:str='',offset:int=0,limit:int=20,include_previous_versions:bool=False,session:Session=Depends(get_session)):
+    from app.agent.saved_documents import list_documents
+    return list_documents(session,q,offset,limit,include_previous_versions)
+
+
+@router.get('/chat/saved-documents/{message_id}')
+def saved_chat_document(message_id:int,filename:str,session:Session=Depends(get_session)):
+    from app.agent.saved_documents import get_document
+    try:
+        record = get_document(session,message_id,filename)
+        return {**record, **public_sources(record['sources'])}
+    except LookupError as exc:
+        raise HTTPException(404,str(exc)) from exc
+
+
 @router.get('/chat/documents/{filename}')
 def download_chat_document(filename: str):
     from pathlib import Path
@@ -44,6 +63,41 @@ def download_chat_document(filename: str):
 _cancel_events: dict[tuple[str, int], Event] = {}
 _active_turns: set[tuple[str, int]] = set()
 _turn_lock = Lock()
+
+
+class DocumentRevisionIn(BaseModel):
+    filename: str = Field(min_length=1,max_length=255)
+    content: str = Field(min_length=1,max_length=1_000_000)
+
+
+class DocumentEditApplyIn(BaseModel):
+    replacement: str = Field(max_length=1_000_000)
+
+
+@router.post('/chat/conversations/{cid}/documents/proposals/{proposal_id}/apply')
+def adopt_document_edit(cid:int,proposal_id:str,body:DocumentEditApplyIn,session:Session=Depends(get_session)):
+    from app.agent.document_edits import apply_document_edit
+    with _turn_lock:
+        if _turn_key(session,cid) in _active_turns:
+            raise HTTPException(409,'本轮仍在生成，修改内容已保留，请完成后保存。')
+        return apply_document_edit(session,cid,proposal_id,body.replacement)
+
+
+@router.post('/chat/conversations/{cid}/documents/revisions')
+def save_document_revision(cid:int,body:DocumentRevisionIn,session:Session=Depends(get_session)):
+    with _turn_lock:
+        if _turn_key(session,cid) in _active_turns:
+            raise HTTPException(409,'本轮仍在生成，编辑内容已保留，请完成后保存修订版。')
+        return revise_document(session,cid,body.filename,body.content)
+
+
+@router.post('/chat/conversations/{cid}/messages/{message_id}/document')
+def save_answer_document(cid:int,message_id:int,session:Session=Depends(get_session)):
+    from app.agent.document_revisions import capture_answer
+    with _turn_lock:
+        if _turn_key(session,cid) in _active_turns:
+            raise HTTPException(409,'本轮仍在生成，请在回答结束后保存文档。')
+        return capture_answer(session,cid,message_id)
 
 
 def pick_chat_model(session, config_id):
@@ -141,6 +195,15 @@ def _fail_turn(session: Session, message_id: int, error: str, state: dict | None
         session.commit()
 
 
+def _save_progress(session: Session, user_row: Message, tools: list, updates: list, sources: list):
+    """Journal visible work without pretending it is a completed answer or resumable context."""
+    state = json.loads(user_row.agent_state_json or '{}')
+    user_row.agent_state_json = json.dumps({**state, 'tools': tools, 'updates': updates}, ensure_ascii=False)
+    user_row.sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
+    session.add(user_row)
+    session.commit()
+
+
 # T5：论文上下文问答——selected_text 与各上下文小节的长度上限（字符）。
 SELECTED_TEXT_MAX = 4000
 _PAPER_CONTEXT_SECTION_MAX = 2000
@@ -148,6 +211,7 @@ _PAPER_CONTEXT_TOTAL_MAX = 9000
 
 
 class MessageIn(BaseModel):
+    workflow: Literal['general', 'literature-synthesis', 'review-revision'] = 'general'
     paper_ids: list[int] | None = Field(default=None, max_length=100)
     review_evidence: bool = False
     attachments: list[Attachment] = Field(default_factory=list, max_length=4)
@@ -230,23 +294,21 @@ def _retrieve_hits(
 def _sources_from_hits(
     hits: list[tuple[PaperChunk, float, Paper]], limit: int = 5
 ) -> list[dict]:
-    """Deduplicated, capped source list for the UI (RAG provenance).
-
-    One entry per paper (highest-scoring chunk wins), each with a short snippet
-    surfaced as the chip tooltip.
-    """
+    """Preserve each retrieved passage, including different locations in one paper."""
+    from app.agent.source_passages import indexed_pages, paper_source
     sources: list[dict] = []
-    seen: set[int] = set()
+    seen = set()
     for chunk, _score, paper in hits:
         pid = chunk.paper_id
-        if pid in seen:
+        key = (pid, chunk.ordinal, chunk.text)
+        if key in seen or (paper is not None and paper.is_deleted):
             continue
-        seen.add(pid)
+        seen.add(key)
         title = (paper.title if paper else None) or f"#{pid}"
-        snippet = " ".join(chunk.text.split())  # collapse whitespace/newlines
-        if len(snippet) > 160:
-            snippet = snippet[:157] + "…"
-        sources.append({"paper_id": pid, "title": title, "snippet": snippet})
+        pages = indexed_pages(chunk.text)
+        sources.append(paper_source(pid, title, chunk.text,
+                       'metadata' if chunk.ordinal == 0 and paper and (paper.title or paper.abstract) and not pages else 'full_text',
+                       'initial_retrieval', pages))
         if len(sources) >= limit:
             break
     return sources
@@ -356,17 +418,28 @@ from app.skills.research_evidence import research_skill_prompt
 
 CHAT_SYSTEM_PROMPT = (
     "所有对话入口具有相同的研究和行动能力；当前论文或论文集合只是初始背景，不限制可用工具。"
-    "需要外部资料时可以 search_web 和 read_webpage，读取用户指定的本地文件可用 read_local_file；上传的文件和图片直接参考消息材料。"
+    "需要外部资料时可以 search_web 和 read_webpage，读取用户指定的本地文件可用 read_local_file；"
+    "查找本地库之外的公开学术文献、核实书目信息或追溯某篇论文的相关工作时，可用 search_openalex 和 find_related_openalex，"
+    "拿到开放获取 PDF 链接后用 import_paper_pdf 入库再精读，不要求用户手动下载。上传的文件和图片直接参考消息材料。"
     "用户要求保存灵感、记笔记或整理文档时，使用 save_research_idea、save_paper_note 或 save_document 当场执行，"
     "不要求切换页面或重复确认已明确的请求。只有目标、内容等关键要素不清楚时才澄清。保存完成后报告工具返回的位置或记录 ID，不能假称已保存。\n\n"
     "你是一名帮助研究者提高效率的科研助手。优先直接回答用户当前的问题，给出具体分析、可讨论的 idea 和可执行的实验建议。"
     "讨论假设、机制、选题和实验设计时可以基于通用知识推理，不要求先取得论文证据；"
     "自然地区分原文事实、分析推断和待验证假设。缺少证据不等于不能讨论，也不等于假设不成立。"
     "不要为了完美无缺而只罗列限制、拒绝分析或反复提示核查。\n\n"
-    "需要确认用户论文库中的具体内容时，按需使用 search_library、get_paper、get_paper_full_text、"
-    "list_concepts、find_related；用户问自己的笔记、摘录、批注、判断或审阅矩阵时优先 search_research_notes。"
+    "需要确认用户论文库中的具体内容时，按需使用 search_library、get_paper、get_paper_full_text、list_concepts、find_related。"
+    "用户想接着此前保存的文档或比较笔记研究时，可用 search_saved_documents 跨当前项目的对话查找成果，"
+    "再用 read_saved_document 读取正文或其保存的原文来源；保留人工修订的事实与条件。"
+    "用户问自己的笔记、摘录、批注、判断或审阅矩阵时优先 search_research_notes。"
+    "查找论文里的实验、方法或解释时，可用 search_paper_text 按问题搜索正文，并用 paper_ids 聚焦相关论文；无需猜测原文的精确措辞。"
+    "用户从专题研究继续讨论时，用 read_review 读取链接中 review 参数对应的已有分析和草稿；不要求用户重复粘贴，也不必等待整篇完成。"
+    "用户关联论文整理成果时，用 read_research_task 按 task_id 和 version 读取其判断与保存来源，再围绕当前问题继续研究。"
     "已有材料足够就直接回答，不为普通讨论强制检索或精读全文。"
     "问题所需的具体事实确实缺失时，可用全文 query 或分页定位；不必为无关部分补齐全文。"
+    "比较方法或判断可行性时，围绕影响当前决策的事实回读方法与实验设置，区分各模块的作用、训练过程与实际使用条件；"
+    "可用全文工具 outline_only 查看章节目录，再用 section 读取具体步骤与实验设置；这比方法名首次命中的引言更适合判断能否使用。"
+    "other_matches 是定位预览，可能省略数值的归属和条件；影响路线选择的结论应回到相应章节或完整表格上下文。先交付有用的分析，缺口按需补查，不要求所有字段齐全才输出。"
+    "讨论实际复现或部署时，论文中存在训练步骤不等于用户必须重新训练；若这会改变建议，沿作者提供的项目或模型链接查现成权重和推理要求，区分已查到的资源与尚未确认的条件。"
     "不要编造引用、原文数值、已读取材料或已执行的操作；引用实际使用的来源。\n\n"
     "科研建议需要适合研究者的真实背景。首次深入讨论选题、idea 可行性或研究计划时，先结合当前项目、历史对话和用户已提供的信息，"
     "了解研究者的身份与研究阶段、相关知识和方法能力、研究背景与已有工作、研究方向和目标，以及可用的数据、设备、算力、时间和协作资源。"
@@ -392,6 +465,8 @@ def _turn_context(
     context_block: str | None = None,
     skill_ids: list[int] | None = None,
     sources: list[dict] | None = None,
+    workflow: str = 'general',
+    context_window: int | None = None,
 ) -> str:
     """Ground the assistant in the library (RAG).
 
@@ -432,7 +507,7 @@ def _turn_context(
         lines = []
         for chunk, _score, paper in hits:
             title = (paper.title if paper else None) or f"#{chunk.paper_id}"
-            lines.append(f"[{title}]\n{chunk.text}")
+            lines.append(f"[P{chunk.paper_id}] {title}\n{chunk.text}")
         base += "\n\nRelevant passages from your library:\n" + "\n\n".join(lines)
     elif not context_block or '[用户选择的论文讨论范围]' not in context_block:
         titles = "\n".join(f"- {title}" for title in recent_titles if title)
@@ -440,9 +515,14 @@ def _turn_context(
             base += f"\n\nRecent paper titles:\n{titles}"
 
     skills = select_for_chat(session, user_message, skill_ids)
-    blocks = [f"[Active skill — {s.name}]\n{s.body}" for s in skills]
+    from app.skills.builtin import chat_prompt
+    blocks = [f"[Active skill — {s.name}]\n{chat_prompt(s)}" for s in skills]
     if blocks:
         base += "\n\n" + "\n\n".join(blocks)
+    from app.skills.workflows import writing_workflow
+    workflow_block = writing_workflow(session, workflow, context_window)
+    if workflow_block:
+        base += '\n\n' + workflow_block
     return base
 
 
@@ -454,29 +534,101 @@ def _build_messages(
     context_block: str | None = None,
     current_message_id: int | None = None,
     skill_ids: list[int] | None = None,
+    context_window: int | None = None,
+    response_tokens: int = 2048,
 ) -> list[dict]:
     """System prompt + the full conversation history (compaction trims later)."""
     history = session.exec(
         select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id)
     ).all()
     if current_message_id is not None:
-        history = [m for m in history if m.id <= current_message_id]
-    current = next((m for m in reversed(history) if m.role == "user"), None)
-    if current is not None and current.model_context is None:
+        history = [m for m in history if m.id <= current_message_id or public_revision(m)]
+    current = (next((m for m in history if m.id==current_message_id),None) if current_message_id is not None
+               else next((m for m in reversed(history) if m.role == "user" and not public_revision(m)),None))
+    new_context = current is not None and current.model_context is None
+    if new_context:
         sources = _parse_sources(current.sources_json)
-        current.model_context = _turn_context(session, user_message, hits, context_block, skill_ids, sources)
+        request = json.loads(current.request_json or '{}')
+        current.model_context = _turn_context(session, user_message, hits, context_block, skill_ids, sources,
+                                             request.get('workflow', 'general'), context_window)
         current.sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
         session.add(current)
         session.commit()
     review_requested = bool(json.loads(current.request_json or '{}').get('review_evidence')) if current else False
     system = CHAT_SYSTEM_PROMPT + ('\n\n' + research_skill_prompt() if review_requested else '')
+    from app.skills.builtin import discovery_prompt
+    skill_directory = discovery_prompt(session)
+    if skill_directory:
+        system += '\n\n' + skill_directory
+    source_context = ''
+    if current is not None:
+        from app.agent.context import DEFAULT_CONTEXT_WINDOW, estimate_tokens, message_budget, total_tokens
+        from app.agent.source_memory import carry_sources
+        provided_texts = {}
+        window = context_window or DEFAULT_CONTEXT_WINDOW
+        if new_context:
+            from app.agent.selected_materials import collect_selected_texts
+            from app.agent.tools import tool_schemas
+            request = json.loads(current.request_json or '{}')
+            previous = next((m for m in reversed(history) if m.id < current.id), None)
+            source_allowance = min(4000, window // 5) if previous and _parse_sources(previous.sources_json) else 0
+            available = max(0, min(message_budget(window), window - response_tokens)
+                            - estimate_tokens(json.dumps(tool_schemas(), ensure_ascii=False)) - source_allowance)
+            original_context = current.model_context
+            def fits(block):
+                projection = _render_messages(history, system, current, '', current_message_id,
+                                              original_context + '\n\n' + block)
+                return total_tokens(projection) <= available
+            block, provided_texts, supplied = collect_selected_texts(session, request, fits, current.id)
+            if block:
+                current.model_context = original_context + '\n\n' + block
+                sources = _parse_sources(current.sources_json)
+                merge_sources(sources, supplied)
+                current.sources_json = json.dumps(sources, ensure_ascii=False)
+                session.add(current); session.commit()
+        state = json.loads(current.agent_state_json or '{}')
+        if 'source_context' not in state:
+            request = json.loads(current.request_json or '{}')
+            allowed = request.get('paper_ids')
+            if allowed is None and request.get('paper_id') is not None:
+                allowed = [request['paper_id']]
+            mandatory = total_tokens([{'role':'system', 'content':system},
+                {'role':'user', 'content':attach_content((current.model_context or '') + current.content, request.get('attachments', []))}])
+            budget = max(0, min(4000, window // 5, int(window * .75) - mandatory - 512))
+            source_context, carried = carry_sources(session, conversation.id, current.id, allowed, budget,
+                                                   provided_texts=provided_texts)
+            state['source_context'] = source_context
+            sources = _parse_sources(current.sources_json)
+            merge_sources(sources, carried)
+            current.sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
+            current.agent_state_json = json.dumps(state, ensure_ascii=False)
+            session.add(current); session.commit()
+        else:
+            source_context = state['source_context']
+    return _render_messages(history, system, current, source_context, current_message_id)
+
+
+def _render_messages(history, system, current, source_context, current_message_id, current_context=None):
+    """Project stored turns without changing their material snapshots."""
     msgs: list[dict] = [{"role": "system", "content": system}]
+    from app.agent.context_snapshots import coalesce_snapshots
+    snapshots = coalesce_snapshots([(m.id, current_context if current and m.id == current.id and current_context is not None else m.model_context) for m in history
+        if m.role == 'user' and m.model_context and not public_revision(m)])
     for m in history:
         content = m.content
-        if m.role == "user" and m.model_context:
-            content = m.model_context + "\n\n[本轮用户问题]\n" + content
+        if m.role == 'assistant':
+            msgs.extend(research_messages(content, json.loads(m.agent_state_json or '{}'), m.id))
+            continue
+        revision = public_revision(m)
+        if revision:
+            content = revision_context(m, revision)
+        elif m.role == "user" and m.model_context:
+            carried_context = ('\n\n' + source_context) if m.id == current.id and source_context else ''
+            content = snapshots.get(m.id, m.model_context) + carried_context + "\n\n[本轮用户问题]\n" + content
         attachments = json.loads(m.request_json or "{}").get("attachments", []) if m.role == "user" else []
         msgs.append({"role": m.role, "content": attach_content(content, attachments)})
+        if m.role == 'user' and m.id != current_message_id and m.delivery_status == 'failed':
+            msgs.extend(research_messages('', json.loads(m.agent_state_json or '{}'), m.id))
     return msgs
 
 
@@ -582,6 +734,7 @@ def get_conversation(cid: int, session: Session = Depends(get_session)) -> dict:
     if conv is None:
         raise HTTPException(404, "conversation not found")
     msgs = session.exec(select(Message).where(Message.conversation_id == cid).order_by(Message.id)).all()
+    last_turn=next((m for m in reversed(msgs) if not public_revision(m)),None)
     paper = session.get(Paper, conv.paper_id) if conv.paper_id else None
     return {
         "id": conv.id,
@@ -595,14 +748,16 @@ def get_conversation(cid: int, session: Session = Depends(get_session)) -> dict:
                 "id": m.id,
                 "role": m.role,
                 "content": m.content,
+                "document_revision": public_revision(m),
                 "delivery_status": m.delivery_status,
                 "error_message": m.error_message,
                 "continuable": bool(m.role == "user" and m.agent_state_json and "evidence" in json.loads(m.agent_state_json)),
-                "retryable": m.role == "user" and m == msgs[-1] and m.delivery_status in {"pending", "failed"} and _turn_key(session, cid) not in _active_turns,
+                "retryable": m.role == "user" and m == last_turn and m.delivery_status in {"pending", "failed"} and _turn_key(session, cid) not in _active_turns,
                 "model": m.model,
                 **public_sources(_parse_sources(m.sources_json)),
                 "clarification": _clarification(m),
                 "tools": json.loads(m.agent_state_json or "{}").get("tools", []),
+                "updates": public_updates(json.loads(m.agent_state_json or '{}')),
                 "attachments": json.loads(m.request_json or "{}").get("attachments", []),
             }
             for m in msgs
@@ -635,9 +790,11 @@ def _resume_clarification(session: Session, conv: Conversation, body: MessageIn,
     }]
     if body.attachments:
         messages.append({"role": "user", "content": attach_content("补充材料", [a.model_dump() for a in body.attachments])})
+    state=resume_with_revisions(session,conv.id,question.id,{**state,'messages':messages})
+    messages=state['messages']
     row = Message(conversation_id=conv.id, role="user", content=body.content,
                   delivery_status="pending", request_json=body.model_dump_json(),
-                  agent_state_json=json.dumps({**state, "messages": messages}, ensure_ascii=False),
+                  agent_state_json=json.dumps({**{k: v for k, v in state.items() if k not in {'tools', 'updates'}}, "messages": messages}, ensure_ascii=False),
                   sources_json=question.sources_json)
     session.add(row)
     session.flush()
@@ -656,6 +813,7 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
     conv = session.get(Conversation, cid)
     if conv is None:
         raise HTTPException(404, "conversation not found")
+    session.info['chat_conversation_id'] = cid
     if not body.content.strip() and body.attachments:
         body.content = "请分析所附材料。"
     if not body.content.strip() and body.clarification_response is None:
@@ -672,7 +830,7 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
     persisted_id = None
     try:
         if body.retry_message_id is not None:
-            user_row = session.exec(select(Message).where(Message.conversation_id == cid).order_by(Message.id.desc())).first()
+            user_row = latest_turn(session,cid)
             if (user_row is None or user_row.id != body.retry_message_id or user_row.role != "user"
                     or user_row.delivery_status not in {"pending", "failed"} or user_row.content != body.content):
                 raise HTTPException(409, "只能重试当前对话最后一条未完成的问题，请刷新对话。")
@@ -684,14 +842,16 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
                 user_row.request_json = body.model_dump_json()
             ctx = pick_chat_model(session, body.model_config_id)
             validate_images(session, ctx, body.attachments)
-            if user_row.agent_state_json:
+            if json.loads(user_row.agent_state_json or '{}').get('messages'):
+                state=resume_with_revisions(session,cid,user_row.id,json.loads(user_row.agent_state_json))
+                user_row.agent_state_json=json.dumps(state,ensure_ascii=False)
                 user_row.delivery_status = "pending"
                 user_row.error_message = None
                 session.add(user_row)
                 session.commit()
                 return conv, user_row, ctx, json.loads(user_row.agent_state_json)["messages"], _parse_sources(user_row.sources_json)
         else:
-            last = session.exec(select(Message).where(Message.conversation_id == cid).order_by(Message.id.desc())).first()
+            last = latest_turn(session,cid)
             pending = _clarification(last) if last is not None else None
             if body.clarification_response is None and pending and pending["status"] == "pending":
                 # The ordinary composer remains a valid free-text answer path.
@@ -748,9 +908,11 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
         session.refresh(user_row)
         persisted_id = user_row.id
         if user_row.model_context is None:
-            hits = _retrieve_hits(session, body.content, body.paper_ids) if body.paper_ids is not None else _retrieve_hits(session, body.content)
-            if body.paper_ids is not None:
-                hits = [hit for hit in hits if hit[0].paper_id in body.paper_ids]
+            # The agent sees the conversation and selected materials before
+            # choosing a library query. A follow-up such as "how many runs?"
+            # is not a standalone retrieval query. Search tools retain hybrid
+            # retrieval and reranking when new evidence is actually needed.
+            hits = []
             sources = _sources_from_hits(hits)
             user_row.sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
             session.add(user_row)
@@ -758,7 +920,13 @@ def _prepare_turn(cid: int, body: MessageIn, session: Session):
         else:
             hits = []
             sources = _parse_sources(user_row.sources_json)
-        messages = _build_messages(session, conv, body.content, hits, context_block, user_row.id, body.skill_ids)
+        from app.providers.output_budget import response_budget
+        from app.agent.context import DEFAULT_CONTEXT_WINDOW
+        window = _context_window(session, ctx[1], ctx[2])
+        response_tokens = response_budget(window or DEFAULT_CONTEXT_WINDOW, 2048,
+                                          ctx[0]._configured_effort(ctx[1], ctx[2]))
+        messages = _build_messages(session, conv, body.content, hits, context_block, user_row.id, body.skill_ids,
+                                   window, response_tokens)
         historical_images = [a for m in session.exec(select(Message).where(Message.conversation_id == cid)).all()
                              for a in json.loads(m.request_json or '{}').get('attachments', []) if a.get('kind') == 'image']
         if historical_images:
@@ -775,6 +943,7 @@ def _finish_turn(session: Session, user_row: Message, model_id: str, content: st
                  clarification: dict | None = None, agent_state: dict | None = None):
     user_row.delivery_status = "complete"
     user_row.error_message = None
+    user_row.agent_state_json = None
     msg = Message(conversation_id=user_row.conversation_id, role="assistant", content=content,
                   model=model_id, tokens_used=tokens,
                   clarification_json=json.dumps(clarification, ensure_ascii=False) if clarification else None,
@@ -792,7 +961,60 @@ def _pause_turn(session: Session, user_row: Message, model_id: str, payload: dic
     msg = _finish_turn(session, user_row, model_id, content, payload["tokens"], sources,
                        clarification=payload["request"], agent_state=payload["state"])
     return {"id": msg.id, "role": "assistant", "content": content, "model": model_id,
-            "tokens": payload["tokens"], **public_sources(sources), "title": title, "clarification": _clarification(msg)}
+            "tokens": payload["tokens"], **public_sources(sources), "title": title, "clarification": _clarification(msg),
+            'updates': public_updates(payload['state']), 'tools': payload['state'].get('tools', [])}
+
+
+def _evidence_context(user_row: Message, sources: list) -> str | None:
+    if not sources:
+        return None
+    # Give review the actual excerpts, not the JSON-encoded working catalog.
+    # Catalog-only entries were not read and must not become evidence here.
+    carried = '\n\n'.join(
+        f"{source.get('url') if source.get('source_type') == 'web' else '[P' + str(source.get('paper_id')) + ']'} {source.get('title', '')} · {source.get('source_type', '')}\n"
+        f"{source.get('locator') or source.get('retrieved_at', '')}\n{source.get('excerpt') or source.get('snippet') or ''}"
+        for source in sources if source.get('carried_from_message')
+    )
+    return '\n\n'.join(part for part in (user_row.model_context, carried) if part) or None
+
+
+def _plain_retrieval_fallback(session: Session, user_row: Message, sources: list):
+    """Legacy grounding only after the provider explicitly rejects tool calls.
+
+    Persist it with this turn so retry never spends a second retrieval request
+    or silently substitutes newly changed paper text.
+    """
+    marker = '[工具不可用时的论文检索]'
+    def retrieve():
+        request = json.loads(user_row.request_json or '{}')
+        if marker in (user_row.model_context or '') or any(
+                a.get('saved_document') or a.get('research_task') for a in request.get('attachments', [])):
+            return None
+        ids = request.get('paper_ids')
+        if ids is None and request.get('paper_id') is not None:
+            ids = [request['paper_id']]
+        supplied_ids = {s.get('paper_id') for s in sources if s.get('retrieved_by') == 'selected_full_text'
+                        and s.get('provided_message_id') == user_row.id}
+        if ids is not None:
+            ids = [pid for pid in ids if pid not in supplied_ids]
+            if not ids:
+                return None
+        try:
+            hits = _retrieve_hits(session, user_row.content, ids) if ids is not None else _retrieve_hits(session, user_row.content)
+            if ids is not None:
+                hits = [hit for hit in hits if hit[0].paper_id in ids]
+            extra = _sources_from_hits(hits)
+            text = '\n\n'.join(f"[P{s['paper_id']}] {s['title']}\n{s.get('excerpt') or s['snippet']}" for s in extra)
+            text = text or '此次检索未命中可用片段；仍可根据已有材料讨论。'
+            merge_sources(sources, extra)
+        except Exception:
+            text = '此次论文检索未能完成；仍可根据已有材料讨论，不视为论文库中没有相关研究。'
+        context = marker + '\n' + text
+        user_row.model_context = (user_row.model_context or '') + '\n\n' + context
+        user_row.sources_json = json.dumps(sources, ensure_ascii=False) if sources else None
+        session.add(user_row); session.commit()
+        return context
+    return retrieve
 
 
 @router.post("/chat/conversations/{cid}/messages")
@@ -802,27 +1024,34 @@ def send_message(cid: int, body: MessageIn, session: Session = Depends(get_sessi
     try:
         content, tokens, audit = "", 0, None
         tools = json.loads(user_row.agent_state_json or "{}").get("tools", [])
+        updates = public_updates(json.loads(user_row.agent_state_json or '{}'))
         for kind, payload in run_agent(client, provider, model_id, messages, session,
                 context_window=_context_window(session, provider, model_id),
                 review_evidence=bool(json.loads(user_row.request_json or "{}").get("review_evidence", False)),
                 max_iters=_max_iters(session),
                 cancelled=_cancel_events.get(_turn_key(session, cid)),
                 continuation=json.loads(user_row.agent_state_json) if user_row.agent_state_json else None,
-                evidence_context=user_row.model_context if sources else None):
+                evidence_context=_evidence_context(user_row, sources),
+                on_tools_unavailable=_plain_retrieval_fallback(session, user_row, sources)):
             if kind == "ask_user":
+                payload['state'].update(tools=tools, updates=updates)
                 return _pause_turn(session, user_row, model_id, payload, sources, conv.title)
+            elif kind == 'update':
+                updates.append({'content': payload['content']})
+                _save_progress(session, user_row, tools, updates, sources)
             elif kind == "tool":
                 merge_sources(sources, payload.get('sources', []))
                 tools.append({k: payload.get(k) for k in ("name", "args", "result", "ok")})
+                _save_progress(session, user_row, tools, updates, sources)
             elif kind == "done":
                 content, tokens = payload["content"], payload["tokens"]
                 audit=payload.get('evidence_review')
             elif kind == "error":
-                _fail_turn(session, user_row.id, payload["message"], ({**payload["state"], "sources": sources, "tools": tools} if payload.get("state") else None))
+                _fail_turn(session, user_row.id, payload["message"], ({**payload["state"], "sources": sources, "tools": tools, 'updates': updates} if payload.get("state") else None))
                 raise HTTPException(500, payload["message"])
-        msg = _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit, 'tools':tools})
-        return {"role": "assistant", "content": msg.content, "model": model_id,
-                "tokens": tokens, **public_sources(sources), "title": conv.title}
+        msg = _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit, 'tools':tools, 'updates': updates})
+        return {"role": "assistant", "message_id": msg.id, "content": msg.content, "model": model_id,
+                "tokens": tokens, **public_sources(sources), "title": conv.title, 'tools': tools, 'updates': updates}
     except Exception as exc:
         _fail_turn(session, user_row.id, str(exc))
         raise
@@ -840,9 +1069,11 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
         from app.agent.loop import run_agent
         content, tokens, audit = "", 0, None
         tools = json.loads(user_row.agent_state_json or "{}").get("tools", [])
+        updates = public_updates(json.loads(user_row.agent_state_json or '{}'))
         completed = False
         try:
             yield _sse("accepted", {"user_message_id": user_id, "content": user_row.content, "title": title,
+                                    'tools': tools, 'updates': updates, **public_sources(sources),
                                     "clarification_response": body.clarification_response.model_dump() if body.clarification_response else None})
             for kind, payload in run_agent(client, provider, model_id, messages, session,
                     context_window=_context_window(session, provider, model_id),
@@ -850,18 +1081,25 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
                     max_iters=_max_iters(session),
                     cancelled=_cancel_events.get(_turn_key(session, cid)),
                     continuation=json.loads(user_row.agent_state_json) if user_row.agent_state_json else None,
-                    evidence_context=user_row.model_context if sources else None):
+                    evidence_context=_evidence_context(user_row, sources),
+                    on_tools_unavailable=_plain_retrieval_fallback(session, user_row, sources)):
                 if kind == "ask_user":
+                    payload['state'].update(tools=tools, updates=updates)
                     result = _pause_turn(session, user_row, model_id, payload, sources, title)
                     completed = True
                     yield _sse("ask_user", result)
                     return
                 elif kind == "status":
                     yield _sse("status", payload)
+                elif kind == 'update':
+                    updates.append({'content': payload['content']})
+                    _save_progress(session, user_row, tools, updates, sources)
+                    yield _sse('update', {'content': payload['content']})
                 elif kind == "tool":
                     merge_sources(sources, payload.get('sources', []))
                     tools.append({k: payload.get(k) for k in ("name", "args", "result", "ok")})
-                    yield _sse("tool", payload)
+                    _save_progress(session, user_row, tools, updates, sources)
+                    yield _sse("tool", {**payload, **public_sources(sources)})
                 elif kind == "delta":
                     content = payload["content"]
                     yield _sse("delta", {"content": content})
@@ -869,12 +1107,12 @@ def stream_message(cid: int, body: MessageIn, session: Session = Depends(get_ses
                     content, tokens = payload["content"], payload["tokens"]
                     audit=payload.get('evidence_review')
                 elif kind == "error":
-                    _fail_turn(session, user_id, payload["message"], ({**payload["state"], "sources": sources, "tools": tools} if payload.get("state") else None))
+                    _fail_turn(session, user_id, payload["message"], ({**payload["state"], "sources": sources, "tools": tools, 'updates': updates} if payload.get("state") else None))
                     yield _sse("error", {**{k: v for k, v in payload.items() if k != "state"}, "user_message_id": user_id})
                     return
-            _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit, 'tools':tools})
+            saved = _finish_turn(session, user_row, model_id, content, tokens, sources,agent_state={'evidence_review':audit, 'tools':tools, 'updates': updates})
             completed = True
-            yield _sse("done", {"content": content, "model": model_id, "tokens": tokens,
+            yield _sse("done", {"message_id": saved.id, "content": content, "model": model_id, "tokens": tokens,
                                 **public_sources(sources), "title": title})
         except Exception as exc:
             _fail_turn(session, user_id, str(exc))

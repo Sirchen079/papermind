@@ -50,6 +50,7 @@ def pick_llm(session: Session, role: str) -> tuple[ProviderClient, Provider, str
         model = session.exec(select(Model).where(
             Model.provider_id.in_(enabled_ids),
             Model.id != rerank_id,
+            Model.id != (configured_id(session, 'ocr') or -1),
             (Model.role_default.is_(None)) | (Model.role_default.notin_(['embedding', 'rerank'])),
         ).order_by(Model.provider_id, Model.id)).first()
         if model is None:

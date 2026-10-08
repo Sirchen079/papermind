@@ -27,9 +27,19 @@ def get_setting(key: str, session: Session = Depends(get_session)) -> dict:
 
 @router.put("/settings/{key}")
 def upsert_setting(key: str, body: SettingIn, session: Session = Depends(get_session)) -> dict:
+    if key == 'pdf_ingest_mode' and body.value not in {'ocr', 'auto', 'advanced', 'manual'}:
+        raise HTTPException(422, '请选择有效的 PDF 导入解析方式。')
     if key == 'rerank_mode' and body.value not in {'off', 'dedicated', 'llm'}:
         raise HTTPException(422, '请选择关闭、专用模型或大模型重排序模式。')
-    if key in {'ocr_model_config_id', 'rerank_model_config_id', 'rerank_llm_model_config_id'} and body.value:
+    if key == 'advanced_parser_url' and body.value:
+        from app.security.url_guard import ensure_http_url
+
+        try:
+            ensure_http_url(body.value.strip())
+        except ValueError as exc:
+            raise HTTPException(422, '高级解析引擎地址需为有效的 http(s) URL。') from exc
+        body.value = body.value.strip()
+    if key in {'ocr_model_config_id', 'rerank_model_config_id', 'rerank_llm_model_config_id', 'review_writing_model_config_id'} and body.value:
         from app.providers.purposes import purpose_model
         try:
             model_id = int(body.value)
@@ -55,6 +65,9 @@ def upsert_setting(key: str, body: SettingIn, session: Session = Depends(get_ses
     session.add(row)
     session.commit()
     session.refresh(row)
+    if key in {'ocr_model_config_id', 'advanced_parser_url'} and body.value:
+        from app.ingestion.document_pipeline import resume_imports
+        resume_imports(session.get_bind(), waiting_only=True)
     return {"key": row.key, "value": row.value}
 
 

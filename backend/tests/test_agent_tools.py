@@ -76,7 +76,14 @@ def test_full_text_can_reach_late_sections_without_repeating_prefix():
 
 def test_tool_schemas_and_lookup():
     schemas = tool_schemas()
-    assert len(schemas) == len(TOOLS) == 16
+    assert len(schemas) == len(TOOLS) == len({tool.name for tool in TOOLS})
+    assert get_tool('read_research_task').parameters['required'] == ['task_id', 'version']
+    assert get_tool('propose_document_edit') is not None
+    assert get_tool('search_saved_documents') is not None
+    assert get_tool('read_saved_document') is not None
+    assert get_tool('load_builtin_skill') is not None
+    assert get_tool('read_builtin_skill_resource') is not None
+    assert get_tool('read_chat_sources') is not None
     assert get_tool("ask_user") is not None
     assert all(s["type"] == "function" for s in schemas)
     assert get_tool("search_library") is not None

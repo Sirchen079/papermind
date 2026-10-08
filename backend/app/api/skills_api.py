@@ -60,6 +60,7 @@ def _public(s: Skill) -> dict:
         "body": s.body,
         "enabled": s.enabled,
         "source": s.source,
+        "builtin_id": s.file_path.removeprefix('builtin://') if (s.file_path or '').startswith('builtin://') else None,
     }
 
 
@@ -97,7 +98,48 @@ def delete_skill(sid: int, session: Session = Depends(get_session)) -> None:
 @router.post("/skills/reload")
 def reload_skills(session: Session = Depends(get_session)) -> dict:
     count = load_skills_from_dir(session, default_skills_dir())
-    return {"loaded": count}
+    from app.skills.builtin import sync
+    return {"loaded": count, "builtin_loaded": sync(session)}
+
+
+@router.get('/builtin-skills')
+def builtin_catalog():
+    from app.skills.builtin import public_catalog
+    return public_catalog()
+
+
+@router.get('/builtin-skills/resources')
+def builtin_resources(skill_id:str):
+    from app.skills.builtin import resources
+    try:return resources(skill_id)
+    except LookupError as exc:raise HTTPException(404,str(exc)) from exc
+
+
+@router.get('/builtin-skills/runs/{run_id}/files/{artifact}')
+def download_skill_run(run_id: str, artifact: str):
+    from app.skills.paper_card import artifact_path
+    from fastapi.responses import FileResponse
+    try:
+        path = artifact_path(run_id, artifact)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path, filename=path.name)
+
+
+@router.get('/builtin-skills/resource')
+def builtin_resource(skill_id:str,path:str='SKILL.md',start:int=0):
+    from app.skills.builtin import read_resource
+    try:return read_resource(skill_id,path,start)
+    except LookupError as exc:raise HTTPException(404,str(exc)) from exc
+
+
+@router.get('/builtin-skills/resource/download')
+def download_builtin_resource(skill_id:str,path:str='SKILL.md'):
+    from app.skills.builtin import resource_path
+    from fastapi.responses import FileResponse
+    try:resolved=resource_path(skill_id,path)
+    except LookupError as exc:raise HTTPException(404,str(exc)) from exc
+    return FileResponse(resolved,filename=resolved.name)
 
 
 class RunIn(BaseModel):

@@ -41,6 +41,9 @@ class Paper(SQLModel, table=True):
     abstract: str | None = None
     year: int | None = None
     venue: str | None = None
+    volume: str | None = None
+    issue: str | None = None
+    pages: str | None = None
     doi: str | None = Field(default=None, index=True)
     arxiv_id: str | None = Field(default=None, index=True)
     pdf_path: str | None = None

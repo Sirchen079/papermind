@@ -20,6 +20,9 @@ def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "--run-skill":
         from app.skills.worker import run_script
         raise SystemExit(run_script(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == '--run-bundled-skill':
+        from app.skills.worker import run_job
+        raise SystemExit(run_job(sys.argv[2]))
     if os.environ.get("PAPERMIND_NO_BROWSER"):
         # A windowed Windows executable has no stdout/stderr. Uvicorn's
         # formatter probes stdout.isatty(), even in headless diagnostic mode.
@@ -35,7 +38,13 @@ def main() -> None:
         try:
             import uvicorn
             from app.main import create_app
-            uvicorn.run(create_app(), host="127.0.0.1", port=int(os.environ.get("PAPERMIND_PORT", "4278")), log_level="info")
+            port = int(os.environ.get("PAPERMIND_PORT", "4278"))
+            try:
+                from app.local_access import write_access_file
+                write_access_file(port)
+            except Exception:
+                pass
+            uvicorn.run(create_app(), host="127.0.0.1", port=port, log_level="info")
         except Exception:
             import traceback
             traceback.print_exc()

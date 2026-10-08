@@ -28,6 +28,7 @@ from app.api.organization_api import router as organization_router
 from app.api.papers_api import router as papers_router
 from app.api.documents_api import router as documents_router
 from app.api.providers_api import router as providers_router
+from app.api.managed_models_api import router as managed_models_router
 from app.api.radar_api import router as radar_router
 from app.api.reading_api import router as reading_router
 from app.api.readiness_api import router as readiness_router
@@ -39,6 +40,7 @@ from app.api.suggestions_api import router as suggestions_router
 from app.api.thesis_api import router as thesis_router
 from app.api.usage_api import router as usage_router
 from app.api.research_api import router as research_router
+from app.api.reviews_api import router as reviews_router
 from app.api.workspaces_api import router as workspaces_router
 from app.api.shared_connections_api import router as shared_connections_router
 from app.api.wiki_api import router as wiki_router
@@ -123,6 +125,8 @@ def _load_default_skills() -> None:
 
     with Session(get_engine()) as session:
         load_skills_from_dir(session, default_skills_dir(), overwrite=False)
+        from app.skills.builtin import sync
+        sync(session)
 
 
 def _create_app() -> FastAPI:
@@ -145,6 +149,8 @@ def _create_app() -> FastAPI:
                 recover_interrupted(get_engine())
                 from app.wiki.service import recover_interrupted as recover_wiki
                 recover_wiki(get_engine())
+                from app.reviews.service import recover_interrupted as recover_reviews
+                recover_reviews(get_engine())
             registry.mark_ready(workspace['id'])
         except Exception:
             # One project's damaged/missing database must not disable healthy
@@ -163,13 +169,17 @@ def _create_app() -> FastAPI:
         for workspace in registry.list():
             if not workspace['archived'] and workspace['available']:
                 with bind_workspace(registry.context(workspace['id'])):
+                    from app.ingestion.document_pipeline import resume_imports
+                    resume_imports(get_engine())
                     start_background_refresh()
         try:
             yield
         finally:
-            app.state.release_runtime_lease()
+            from app.providers.managed import manager
+            try:manager(registry.root).close()
+            finally:app.state.release_runtime_lease()
 
-    app = FastAPI(title="PaperMind", version="0.5.4", lifespan=lifespan)
+    app = FastAPI(title="PaperMind", version="0.6.29", lifespan=lifespan)
     from app.security.crypto import MissingKeyError
     from fastapi.responses import JSONResponse
 
@@ -198,9 +208,11 @@ def _create_app() -> FastAPI:
     app.include_router(wiki_router, prefix="/api")
     app.include_router(settings_router, prefix="/api")
     app.include_router(providers_router, prefix="/api")
+    app.include_router(managed_models_router, prefix="/api")
     app.include_router(models_router, prefix="/api")
     app.include_router(usage_router, prefix="/api")
     app.include_router(research_router, prefix="/api")
+    app.include_router(reviews_router, prefix="/api")
     app.include_router(papers_router, prefix="/api")
     app.include_router(documents_router, prefix="/api")
     app.include_router(claims_router, prefix="/api")
@@ -219,6 +231,11 @@ def _create_app() -> FastAPI:
     app.include_router(radar_router, prefix="/api")
     app.include_router(reports_router, prefix="/api")
     app.include_router(archive_router, prefix="/api")
+    from app.api.literature_api import router as literature_router
+    from app.api.agent_query_api import router as agent_query_router
+
+    app.include_router(literature_router, prefix="/api")
+    app.include_router(agent_query_router, prefix="/api")
 
     # Serve the built frontend (production single-app mode) when present.
     # API routes are registered above with the /api prefix, so they take

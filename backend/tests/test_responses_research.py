@@ -22,6 +22,29 @@ def test_responses_only_returns_final_message():
     assert _responses_text(response) == 'Final answer'
 
 
+@pytest.mark.parametrize('reason',['max_output_tokens','content_filter',None])
+@pytest.mark.parametrize('text',['','可用的部分正文'])
+def test_responses_empty_budget_metadata_keeps_nonempty_drafts(monkeypatch,reason,text):
+    from app.providers.client import EmptyResponseError
+    client=ProviderClient(lambda:None,Crypto(Fernet.generate_key()))
+    recorded=[]
+    monkeypatch.setattr(client,'_record_usage',lambda *a,**k:recorded.append(True))
+    monkeypatch.setattr('app.providers.client.litellm.responses',lambda **k:SimpleNamespace(
+        output_text=text,status='incomplete',incomplete_details={'reason':reason},
+        usage=SimpleNamespace(input_tokens=10,output_tokens=600,total_tokens=610)))
+    provider=Provider(name='test',type='openai_responses')
+    if text:
+        result=client.complete(provider,'fixture',[{'role':'user','content':'test'}],'library_review')
+        assert result.content==text
+        assert result.output_incomplete is True
+        assert result.output_exhausted is (reason=='max_output_tokens')
+    else:
+        with pytest.raises(EmptyResponseError) as error:
+            client.complete(provider,'fixture',[{'role':'user','content':'test'}],'library_review')
+        assert error.value.output_exhausted==(reason=='max_output_tokens')
+    assert recorded==[True]
+
+
 def test_responses_input_and_usage(tmp_path, monkeypatch):
     engine = make_engine(tmp_path / 'response.sqlite')
     SQLModel.metadata.create_all(engine)
@@ -45,6 +68,36 @@ def test_responses_input_and_usage(tmp_path, monkeypatch):
     with Session(engine) as session:
         usage = session.exec(select(TokenUsage)).one()
         assert usage.prompt_tokens == 17 and usage.completion_tokens == 23
+
+
+@pytest.mark.parametrize('finish,exhausted',[('length',True),('stop',False),(None,False)])
+def test_chat_partial_metadata_does_not_discard_text(monkeypatch,finish,exhausted):
+    client=ProviderClient(lambda:None,Crypto(Fernet.generate_key()))
+    monkeypatch.setattr(client,'_record_usage',lambda *a,**k:None)
+    monkeypatch.setattr('app.providers.client.litellm.completion',lambda **k:SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='已有正文'),finish_reason=finish)],usage=None))
+    result=client.complete(Provider(name='test',type='openai_compat',base_url='https://test.invalid/v1'),'fixture',
+                           [{'role':'user','content':'draft'}],'library_review')
+    assert result.content=='已有正文'
+    assert result.output_incomplete is exhausted and result.output_exhausted is exhausted
+
+
+@pytest.mark.parametrize('content',['','   '])
+def test_chat_empty_exhausted_response_reports_recoverable_budget(monkeypatch,content):
+    from app.providers.client import EmptyResponseError
+    client=ProviderClient(lambda:None,Crypto(Fernet.generate_key()))
+    recorded=[]
+    monkeypatch.setattr(client,'_record_usage',lambda *a,**k:recorded.append(True))
+    response=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content),finish_reason='length')],usage=None)
+    monkeypatch.setattr('app.providers.client.litellm.completion',lambda **k:response)
+    provider=Provider(name='test',type='openai_compat',base_url='https://test.invalid/v1')
+    with pytest.raises(EmptyResponseError) as caught:
+        client.complete(provider,'fixture',[{'role':'user','content':'draft'}],'library_review')
+    assert caught.value.output_exhausted and len(recorded)==1
+    # An empty response without exhaustion keeps its prior caller-handled path.
+    response.choices[0].finish_reason='stop'
+    result=client.complete(provider,'fixture',[{'role':'user','content':'draft'}],'library_review')
+    assert not result.content.strip() and not result.output_exhausted
 
 
 @respx.mock

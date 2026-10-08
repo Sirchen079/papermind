@@ -357,6 +357,9 @@ def create_note(session: Session, paper_id: int, payload: dict) -> dict:
         tags_json=_tags(payload.get("tags")),
     )
     session.add(row)
+    session.flush()
+    from app.reading.note_versions import snapshot
+    snapshot(session, row)
     session.commit()
     session.refresh(row)
     return _dump_note(row)
@@ -371,7 +374,14 @@ def _owned_note(session: Session, paper_id: int, note_id: int) -> PaperNote:
 
 
 def patch_note(session: Session, paper_id: int, note_id: int, payload: dict) -> dict:
+    from app.reading.note_versions import snapshot
+    from fastapi import HTTPException
+    session.connection().exec_driver_sql('BEGIN IMMEDIATE')
     row = _owned_note(session, paper_id, note_id)
+    if payload.get('expected_version', row.version) != row.version:
+        raise HTTPException(409, '笔记已在另一处修改，请刷新后再保存；当前草稿可复制保留。')
+    before = (row.kind, row.content, row.tags_json)
+    snapshot(session, row)
     if "kind" in payload:
         if payload["kind"] not in NOTE_KINDS:
             raise ValueError("invalid note kind")
@@ -383,7 +393,10 @@ def patch_note(session: Session, paper_id: int, note_id: int, payload: dict) -> 
         row.content = content
     if "tags" in payload:
         row.tags_json = _tags(payload["tags"])
-    row.updated_at = utcnow()
+    if before != (row.kind, row.content, row.tags_json):
+        row.version += 1
+        row.updated_at = utcnow()
+        snapshot(session, row)
     session.add(row)
     session.commit()
     session.refresh(row)

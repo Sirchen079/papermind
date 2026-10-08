@@ -50,10 +50,21 @@ def finish(client, pid):
         state = client.get(f'/api/papers/{pid}/document').json()
         with documents._lock:
             active = (get_engine(), pid) in documents._active
-        if state['status'] not in {'queued', 'running'} and not active:
+        # The worker may finish between the HTTP snapshot and the active-job
+        # check. Do not return an older snapshot with unfinished indexing.
+        if state['status'] not in {'queued', 'running'} and state['index_status'] != 'pending' and not active:
             return state
         time.sleep(.02)
     raise AssertionError('job did not finish')
+
+
+def test_finish_refreshes_pending_snapshot_after_worker_has_exited(env):
+    snapshots = iter([
+        {'status': 'ready', 'index_status': 'pending'},
+        {'status': 'ready', 'index_status': 'unconfigured'},
+    ])
+    client = SimpleNamespace(get=lambda _: SimpleNamespace(json=lambda: next(snapshots)))
+    assert finish(client, 1)['index_status'] == 'unconfigured'
 
 
 def test_native_conversion_cached_and_portable_bundle(client, monkeypatch):
@@ -186,7 +197,9 @@ def test_rerank_candidates_are_scoped_and_failure_falls_back(client, monkeypatch
         session.commit()
         monkeypatch.setattr(ProviderClient, 'embed', lambda *a, **kw: [[1, 0]])
         def rerank(self, provider, model, query, docs, top_n):
-            assert docs == ['Near', 'Better answer'] and model == 'ranker'
+            assert model == 'ranker' and query == 'question' and top_n == 1
+            assert docs == ['Paper: A\nPassage:\nNear', 'Paper: A\nPassage:\nBetter answer']
+            assert all('Private outside scope' not in doc for doc in docs)
             return [(1, .95)]
         monkeypatch.setattr(ProviderClient, 'rerank', rerank)
         assert retrieve(session, 'question', k=1, paper_ids=[a.id])[0][0].text == 'Better answer'
@@ -250,3 +263,63 @@ def test_document_jobs_and_model_settings_are_project_scoped(client):
     assert client.get(b + '/papers/1/document/markdown').status_code == 404
     with bind_workspace(contexts[1]), Session(get_engine()) as session:
         assert session.get(Paper, 1).full_text == 'Previous text'
+
+
+def test_conversion_publishes_near_windows_path_limit(client,monkeypatch,tmp_path):
+    # The final document and page fit under 260 characters; the former UUID
+    # temporary filename exceeded it and failed only in longer workspace paths.
+    folder=tmp_path.resolve()/('d'*(245-len(str(tmp_path.resolve()))-1))
+    assert len(str(folder))==245
+    assert len(str(folder/'document.md'))<260
+    assert len(str(folder/('x'*32+'.tmp')))>260
+    monkeypatch.setattr(documents,'artifact_dir',lambda *args:folder)
+    pid,_=make_paper(pages=1)
+    assert client.post(f'/api/papers/{pid}/document',json={}).status_code==200
+    state=finish(client,pid)
+    assert state['status']=='ready',state['error']
+    assert (folder/'document.md').is_file()
+    assert 'original scientific document' in (folder/'document.md').read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('stage, expected', [
+    ('render', '生成页面图像失败'),
+    ('extract', '提取页面文字失败'),
+    ('save', '保存转换页面失败'),
+])
+def test_local_conversion_failure_is_actionable_and_resumable(client, monkeypatch, caplog, stage, expected):
+    from pathlib import Path
+    pid, _ = make_paper(pages=2)
+    if stage == 'render':
+        owner, name = pymupdf.Page, 'get_pixmap'
+    elif stage == 'extract':
+        owner, name = documents, 'native_page'
+    else:
+        owner, name = Path, 'write_bytes'
+    original = getattr(owner, name)
+    calls = []
+
+    def fail_second(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 2:
+            raise OSError('private-key-and-paper-text')
+        return original(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(owner, name, fail_second)
+        client.post(f'/api/papers/{pid}/document', json={})
+        state = finish(client, pid)
+    assert state['status'] == 'error' and state['completed_pages'] == 1
+    assert expected in state['error'] and '第 2 页' in state['error']
+    assert 'private-key-and-paper-text' not in state['error'] + caplog.text
+    assert f'stage={stage}' in caplog.text and 'type=OSError' in caplog.text
+    assert 'fail_second' in caplog.text
+    with Session(get_engine()) as session:
+        assert session.get(Paper, pid).full_text == 'Previous text'
+
+    client.post(f'/api/papers/{pid}/document', json={})
+    resumed = finish(client, pid)
+    assert resumed['status'] == 'ready' and resumed['completed_pages'] == 2
+    assert resumed['ocr_pages'] == 0
+    with Session(get_engine()) as session:
+        text = session.get(Paper, pid).full_text
+        assert text.count('<!-- page:1 -->') == text.count('<!-- page:2 -->') == 1

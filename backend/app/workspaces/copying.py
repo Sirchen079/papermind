@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from app.db.engine import get_engine
 from app.ingestion.dedup import normalize_title
 from app.ingestion.pdf_storage import resolve_pdf
-from app.models import Paper, PaperNote, PaperExcerpt, PaperDocument, WorkspaceCopy
+from app.models import Paper, PaperNote, PaperNoteRevision, PaperExcerpt, PaperDocument, WorkspaceCopy
 from app.workspaces.context import bind_workspace
 
 
@@ -108,7 +108,14 @@ def copy_paper(registry, origin, target_id, paper_id, request_id, include_notes=
                     for model in (PaperNote, PaperExcerpt):
                         for row in source.exec(select(model).where(model.paper_id == paper_id)):
                             values = row.model_dump(exclude={'id', 'paper_id'})
-                            dest.add(model(paper_id=copied.id, **values))
+                            new_row=model(paper_id=copied.id, **values)
+                            dest.add(new_row)
+                            if model is PaperNote:
+                                dest.flush()
+                                for old in source.exec(select(PaperNoteRevision).where(PaperNoteRevision.note_id==row.id)):
+                                    dest.add(PaperNoteRevision(note_id=new_row.id,**old.model_dump(exclude={'id','note_id'})))
+                                from app.reading.note_versions import snapshot
+                                snapshot(dest,new_row)
                 receipt = WorkspaceCopy(request_id=request_id, source_workspace=origin.id,
                     source_name=origin.name, source_paper_id=paper_id, source_updated_at=paper.updated_at,
                     paper_id=copied.id, include_notes=include_notes, pdf_sha256=pdf_sha)

@@ -58,6 +58,12 @@ def test_whole_backup_restores_directory_shared_connections_and_custom_legacy_pa
     wid, shared_id = seed(client)
     assert client.app.state.workspaces.legacy.db_path.parent != client.app.state.workspaces.root
     assert client.patch('/api/workspaces/' + wid, json={'archived': True}).status_code == 200
+    run_id='c'*32
+    for project_id in ['legacy',wid]:
+        directory=client.app.state.workspaces.context(project_id).data_dir/'skill_runs'/run_id
+        directory.mkdir(parents=True)
+        (directory/'report.md').write_text('Persisted skill diagnostic',encoding='utf-8')
+        (directory/'receipt.json').write_text(json.dumps({'artifacts':[{'name':'report.md'}]}),encoding='utf-8')
     archive_path = backup(client)
     verified = application.verify(archive_path)
     assert verified['ok'], verified
@@ -75,6 +81,8 @@ def test_whole_backup_restores_directory_shared_connections_and_custom_legacy_pa
     assert next(row for row in rows if row['id'] == wid)['archived']
     for project_id, title in [('legacy', 'Legacy private'), (wid, 'B private')]:
         prefix = '/api/w/' + project_id
+        response=restarted.get(prefix+f'/builtin-skills/runs/{run_id}/files/report.md')
+        assert response.status_code==200 and response.text=='Persisted skill diagnostic'
         paper = restarted.get(prefix + '/papers').json()['items'][0]
         assert paper['title'] == title
         assert (restarted.app.state.workspaces.context(project_id).data_dir / 'pdfs' / 'same.pdf').read_bytes().endswith(title.encode())

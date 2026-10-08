@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 from app.api.deps import get_session
 from app.models import ResearchTask
 from app.research import service
+import json
 
 router=APIRouter(prefix='/research/tasks',tags=['research'])
 
@@ -98,3 +99,17 @@ def adopt(task_id:str,body:VersionBody,session:Session=Depends(get_session)):
 @router.post('/{task_id}/reuse')
 def reuse(task_id:str,body:ReuseBody,session:Session=Depends(get_session)):
     return invoke(service.reuse_artifact,session,task_id,body.expected_version,body.kind)
+
+
+@router.post('/{task_id}/conversation', status_code=201)
+def continue_in_conversation(task_id:str, body:VersionBody, session:Session=Depends(get_session)):
+    from app.agent.research_materials import artifact_for_version
+    from app.models import Conversation
+    task, artifact = invoke(artifact_for_version, session, task_id, body.expected_version)
+    # Keep the original selection even if a paper has since been removed. The
+    # existing conversation context reports unavailable papers without widening it.
+    conversation = Conversation(title=task.question[:120], paper_ids_json=task.paper_ids_json)
+    session.add(conversation); session.commit(); session.refresh(conversation)
+    return {'id': conversation.id, 'title': conversation.title,
+            'research_task': {'task_id': task.id, 'version': artifact.version},
+            'paper_ids': json.loads(task.paper_ids_json)}

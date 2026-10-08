@@ -1,12 +1,15 @@
 """P14.2 group-meeting report generation — mocked LLM, bundled template skill."""
 
 from unittest.mock import MagicMock
+from pathlib import Path
 
 from sqlmodel import Session
 
 from app.db.engine import get_engine
 from app.models import Report, Skill
 from app.reports.service import AGGREGATES_TOKEN, TEMPLATE_SKILL_NAME
+
+TEMPLATE_PATH = Path(__file__).resolve().parents[1] / 'user_skills' / 'group-meeting-report.md'
 
 REPORT_MD = """# 组会汇报（2026-06-04 至 2026-06-10）
 
@@ -31,7 +34,7 @@ def _seed_template_from_file(client) -> str:
     import re
     from pathlib import Path
 
-    text = Path("user_skills/group-meeting-report.md").read_text(encoding="utf-8")
+    text = TEMPLATE_PATH.read_text(encoding="utf-8")
     parts = text.split("---", 2)
     body = parts[2].strip() if text.lstrip().startswith("---") else text.strip()
     with Session(get_engine()) as session:
@@ -56,7 +59,7 @@ def test_bundled_template_skill_is_well_formed():
 
     from app.skills.loader import parse_skill_file
 
-    path = Path("user_skills/group-meeting-report.md")
+    path = TEMPLATE_PATH
     data = parse_skill_file(path)
     assert data["name"] == TEMPLATE_SKILL_NAME
     assert data["type"] == "template"

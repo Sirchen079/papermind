@@ -92,6 +92,7 @@ def split_references(section: str) -> list[str]:
         ln.strip()
         for ln in section.splitlines()
         if ln.strip() and not re.fullmatch(r"(references|bibliography)\s*", ln.strip(), re.IGNORECASE)
+        and not re.fullmatch(r'<!-- page:\d+ -->', ln.strip())
     ]
     entries: list[str] = []
     for ln in lines:
