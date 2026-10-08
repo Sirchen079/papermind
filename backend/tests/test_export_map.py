@@ -266,3 +266,13 @@ def test_export_endpoint_all_formats(client, monkeypatch):
         assert res.headers['content-type'].startswith(media), (fmt, res.headers['content-type'])
         assert res.headers['content-disposition'].startswith('attachment')
         assert res.content
+
+
+def test_render_marks_fuzzy_verified_fields_as_approximate():
+    import copy
+
+    payload = copy.deepcopy(PAYLOAD)
+    payload['papers'][0]['card']['card']['problem']['similarity'] = 0.95
+    out = render_html(payload)
+    assert '近似核对原文' in out
+    assert '已核对原文' in out  # similarity 为 1/未命中的字段不受影响

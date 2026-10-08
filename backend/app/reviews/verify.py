@@ -15,7 +15,8 @@ _DASHES = {'\u2013': '-', '\u2014': '-'}
 _PAGE_MARKER = re.compile(r'<!--\s*page:\s*\d+\s*-->')
 _PAGE_HEADING = re.compile(r'(?m)^[^\S\n]*##\s*第\s*\d+\s*页[^\S\n]*$\n?')
 _CITATION = re.compile(r'\[\d{1,3}(?:\s*[,，]\s*\d{1,3})*\]')
-_NUMBER = re.compile(r'(?<![\w.])(-?\d+(?:,\d{3})*(?:\.\d+)?)(?:\s*×\s*10\s*\^\s*([+-]?\d+)|e([+-]?\d+))?(?![a-z0-9])')
+_NUMBER = re.compile(r'(?<![\w.])(-?\d+(?:,\d{3})*(?:\.\d+)?)(?:\s*×\s*10\s*\^\s*([+-]?\d+)|e([+-]?\d+))?(?![0-9])')
+MIN_QUOTE_CHARS = 12
 
 
 def _is_ascii_lower(ch):
@@ -129,12 +130,17 @@ def _find_detail(haystack: str, quote: str, threshold: float = 0.9):
     q_norm = normalize(quote)
     if not q_norm:
         return None
-    pos = h_norm.find(q_norm)
-    if pos >= 0:
-        end = pos + len(q_norm)
-        return h_index[pos], h_index[end - 1] + 1, 1.0
-    if len(q_norm) < 12:
+    if len(q_norm) < MIN_QUOTE_CHARS:  # 短引文信息量不足，一律不算命中
         return None
+    pos = h_norm.find(q_norm)
+    while pos >= 0:  # 落在词中间（如 "52.7" 命中 "1952.7"）不算
+        before = h_norm[pos - 1] if pos > 0 else ''
+        after = h_norm[pos + len(q_norm)] if pos + len(q_norm) < len(h_norm) else ''
+        starts_mid_word = before.isalnum() and q_norm[0].isalnum()
+        ends_mid_word = after.isalnum() and q_norm[-1].isalnum()
+        if not (starts_mid_word or ends_mid_word):
+            return h_index[pos], h_index[pos + len(q_norm) - 1] + 1, 1.0
+        pos = h_norm.find(q_norm, pos + 1)
     if len(h_norm) <= LONG_TEXT:
         best = _slide(h_norm, q_norm, threshold, 0, len(h_norm))
     else:
@@ -199,9 +205,10 @@ def check_field(value: str, quote: str, sources: dict[str, str]) -> dict:
             continue
         start, end, similarity = detail
         result.update(found_in=name, similarity=similarity)
-        quote_numbers = set(numbers_in(quote))
-        missing = [n for n in numbers_in(value or '') if n not in quote_numbers]
-        result['missing_numbers'] = list(dict.fromkeys(missing))
+        source_numbers = set(numbers_in(text[start:end]))  # 数字对照原文命中区间
+        missing = [n for n in dict.fromkeys([*numbers_in(value or ''), *numbers_in(quote)])
+                   if n not in source_numbers]
+        result['missing_numbers'] = missing
         result['status'] = 'quote_verified' if not missing else 'number_mismatch'
         if name == 'full_text':
             from app.agent.source_passages import text_pages

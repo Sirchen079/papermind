@@ -11,6 +11,12 @@ import {
   statusLabel,
 } from "../.tmp_graph_test_dist/reviewMapModel.js";
 
+test("statusLabel 按相似度区分近似核对", () => {
+  assert.equal(statusLabel("quote_verified", 0.95), "近似核对原文");
+  assert.equal(statusLabel("quote_verified", 1), "已核对原文");
+  assert.equal(statusLabel("quote_verified"), "已核对原文");
+});
+
 test("statusLabel 覆盖全部核对状态", () => {
   assert.equal(statusLabel("quote_verified"), "已核对原文");
   assert.equal(statusLabel("number_mismatch"), "数字与原文不符");

@@ -23,6 +23,8 @@ CARD_PROMPT = '''你在为研究者制作一张论文精读卡片。只依据给
 
 SNIPPET_QUERIES = ('method approach proposed', 'data experiment field synthetic', 'limitation however future work')
 CARD_FIELDS = ('problem', 'mechanism', 'data_setting', 'boundary')
+# 核对规则版本：规则收紧后，存量 done 卡片按此版本免费重新核对（不调模型）
+VERIFY_VERSION = 2
 # build_card turns provider exceptions into fallback cards whose warning starts
 # with the exception type name; parse failures carry a Chinese message instead.
 _EXCEPTION_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$')
@@ -109,13 +111,13 @@ def parse_card(raw: str) -> dict | None:
 def _verified_field(field: dict | None, sources: dict, metadata_only: bool) -> dict:
     item = dict(field or {})
     if metadata_only:
-        item.update(status='unverifiable', found_in=None, pages=[], missing_numbers=[])
+        item.update(status='unverifiable', found_in=None, pages=[], missing_numbers=[], similarity=None)
         return item
     from app.reviews.verify import check_field
 
     result = check_field(item.get('value') or '', item.get('quote') or '', sources)
     item.update(status=result['status'], found_in=result['found_in'], pages=result['pages'],
-                missing_numbers=result['missing_numbers'])
+                missing_numbers=result['missing_numbers'], similarity=result['similarity'])
     return item
 
 
@@ -148,7 +150,7 @@ def build_card(session: Session, paper: Paper, complete) -> dict:
         return {'status': 'fallback', 'card': base, 'warning': _exception_warning(exc)}
     if parsed is None:
         return {'status': 'fallback', 'card': base, 'warning': '卡片格式解析失败，保留元数据'}
-    card = {**verify_card(parsed, inputs, paper.full_text), **base}
+    card = {**verify_card(parsed, inputs, paper.full_text), **base, 'verify_version': VERIFY_VERSION}
     return {'status': 'done', 'card': card, 'warning': ''}
 
 
@@ -194,6 +196,16 @@ def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, war
             fingerprint = card_fingerprint(inputs, model)
             row = s.exec(select(PaperCard).where(PaperCard.paper_id == pid)).first()
             if row and row.fingerprint == fingerprint and row.status in {'done', 'metadata_only'}:
+                # 核对规则升级：用已存的 value/quote 按新规则重核，不调用模型
+                if row.status == 'done' and row.card_json:
+                    stored = json.loads(row.card_json)
+                    if stored.get('verify_version') != VERIFY_VERSION:
+                        card = {**verify_card(stored, inputs, paper.full_text),
+                                'metadata': stored.get('metadata', inputs['metadata']),
+                                'evidence_level': stored.get('evidence_level', inputs['evidence_level']),
+                                'verify_version': VERIFY_VERSION}
+                        save_card(s, pid, fingerprint,
+                                  {'status': 'done', 'card': card, 'warning': ''}, model)
                 return None
             result = build_card(s, paper, complete)
             save_card(s, pid, fingerprint, result, model)
