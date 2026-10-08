@@ -1,6 +1,6 @@
 from app.models.chat import Conversation, Message
 from app.models.document import PaperDocument
-from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision
+from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision, ReviewMap
 from app.models.chunk import PaperChunk
 from app.models.citation import PaperCitation
 from app.models.claim import Claim, ClaimRelation
@@ -53,6 +53,7 @@ __all__ = [
     "AnalysisRun",
     "Summary",
     "PaperCard",
+    "ReviewMap",
     "Concept",
     "PaperConcept",
     "PaperCitation",
