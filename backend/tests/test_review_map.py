@@ -232,3 +232,102 @@ def test_map_migration_upgrade_and_downgrade(tmp_path):
     inspector = inspect(create_engine(f'sqlite:///{db}'))
     assert 'reviewmap' not in inspector.get_table_names()
     assert 'papercard' in inspector.get_table_names()
+
+
+def test_diff_themes_classifies_rename_remove_add_and_identity():
+    from app.reviews import themes as themes_mod
+
+    old = [{'id': 'T1', 'name': 'a', 'definition': 'd', 'include': 'i', 'exclude': 'e'},
+           {'id': 'T2', 'name': 'b', 'definition': 'd2', 'include': 'i', 'exclude': 'e'}]
+    renamed = [dict(old[0], name='a2'), dict(old[1])]
+    assert themes_mod.diff_themes(old, renamed) == {'changed': ['T1'], 'removed': [], 'added': []}
+    assert themes_mod.diff_themes(old, [dict(old[0])]) == {'changed': [], 'removed': ['T2'], 'added': []}
+    added = old + [dict(old[0], id='T3')]
+    assert themes_mod.diff_themes(old, added) == {'changed': [], 'removed': [], 'added': ['T3']}
+    assert themes_mod.diff_themes(old, [dict(t) for t in old]) == {'changed': [], 'removed': [], 'added': []}
+
+
+def _seed_syntheses_and_overview(review_id):
+    with Session(get_engine()) as s:
+        row = s.exec(select(ReviewMap).where(ReviewMap.review_id == review_id)).first()
+        row.syntheses_json = service.encode({f'T{i}': {'summary': f's{i}'} for i in range(1, 8)})
+        row.overview_json = service.encode({'text': '总览'})
+        s.add(row)
+        s.commit()
+
+
+def test_rename_theme_clears_only_affected_papers(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    t2_papers = [pid for pid in ids if result['assignments'][str(pid)]['themes'] == ['T2']]
+    _seed_syntheses_and_overview(prefix.rsplit('/', 1)[-1])
+    edited = [dict(t, name='机制改名') if t['id'] == 'T2' else t for t in result['themes']]
+    res = client.put(prefix + '/map/themes',
+                     json={'themes': edited, 'expected_version': result['version']})
+    assert res.status_code == 200, res.text
+    updated = client.get(prefix + '/map').json()
+    assert str(t2_papers[0]) not in updated['assignments']
+    assert str(t2_papers[1]) not in updated['assignments']
+    assert all(str(pid) in updated['assignments'] for pid in ids if pid not in t2_papers)
+    assert set(updated['syntheses']) == {f'T{i}' for i in range(1, 8)} - {'T2'}
+    assert updated['overview'] == {'text': '总览'}  # 未新增、归类未清空 → 保留
+    client.post(prefix + '/map/run')
+    assert sorted(int(m) for m in re.findall(r'^\[P(\d+)\]', fake.assign_users[-1], re.M)) == sorted(t2_papers)
+    final = client.get(prefix + '/map').json()
+    assert final['status'] == 'ready' and final['counts']['assigned'] == 8
+
+
+def test_delete_theme_clears_only_its_papers(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    t3_papers = [pid for pid in ids if 'T3' in result['assignments'][str(pid)]['themes']]
+    _seed_syntheses_and_overview(prefix.rsplit('/', 1)[-1])
+    edited = [t for t in result['themes'] if t['id'] != 'T3']
+    res = client.put(prefix + '/map/themes',
+                     json={'themes': edited, 'expected_version': result['version']})
+    assert res.status_code == 200
+    updated = client.get(prefix + '/map').json()
+    assert all(str(pid) not in updated['assignments'] for pid in t3_papers)
+    assert all(str(pid) in updated['assignments'] for pid in ids if pid not in t3_papers)
+    assert 'T3' not in updated['syntheses']
+    client.post(prefix + '/map/run')
+    assert sorted(int(m) for m in re.findall(r'^\[P(\d+)\]', fake.assign_users[-1], re.M)) == sorted(t3_papers)
+
+
+def test_add_theme_clears_all_assignments_and_overview(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=8)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    _seed_syntheses_and_overview(prefix.rsplit('/', 1)[-1])
+    edited = result['themes'] + [{'name': '新主题', 'definition': '新路线', 'include': '', 'exclude': ''}]
+    res = client.put(prefix + '/map/themes',
+                     json={'themes': edited, 'expected_version': result['version']})
+    assert res.status_code == 200
+    updated = client.get(prefix + '/map').json()
+    assert updated['assignments'] == {}
+    assert updated['overview'] == {}
+    new_ids = [t['id'] for t in updated['themes']]
+    assert new_ids[-1] == 'T8'  # 未给 id 时程序分配下一个 T 编号
+    assert updated['syntheses']  # 未删除的主题综合保留
+    client.post(prefix + '/map/run')
+    final = client.get(prefix + '/map').json()
+    assert final['counts']['assigned'] == 8  # 全部重新归类
+
+
+def test_update_themes_rejects_version_conflict_and_running(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=4)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    res = client.put(prefix + '/map/themes',
+                     json={'themes': result['themes'], 'expected_version': result['version'] - 1})
+    assert res.status_code == 409
+    from app.reviews import map as review_map
+
+    with Session(get_engine()) as s:
+        review_map.start_map(s, prefix.rsplit('/', 1)[-1])
+    res = client.put(prefix + '/map/themes',
+                     json={'themes': result['themes'], 'expected_version': result['version']})
+    assert res.status_code == 409
+    assert '请先暂停' in res.json()['detail']

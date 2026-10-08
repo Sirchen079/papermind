@@ -119,6 +119,21 @@ def renumber(themes):
     return [{**theme, 'id': f'T{i + 1}'} for i, theme in enumerate(themes)]
 
 
+def diff_themes(old, new):
+    """Compare theme lists by id; any content field differing counts as changed."""
+    old_by_id = {t.get('id'): t for t in old}
+    new_by_id = {t.get('id'): t for t in new}
+    changed, removed, added = [], [], []
+    for tid, theme in new_by_id.items():
+        if tid not in old_by_id:
+            added.append(tid)
+        elif any(theme.get(field) != old_by_id[tid].get(field)
+                 for field in ('name', 'definition', 'include', 'exclude')):
+            changed.append(tid)
+    removed.extend(tid for tid in old_by_id if tid not in new_by_id)
+    return {'changed': changed, 'removed': removed, 'added': added}
+
+
 def assign_batch(ask, themes, lines):
     """Assign one batch of <=20 papers; returns {paper_id: {themes, reason}}.
 

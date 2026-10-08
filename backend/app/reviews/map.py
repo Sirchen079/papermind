@@ -1,5 +1,6 @@
 """Literate-map pipeline: themes and assignments over a review's papers (A4a)."""
 import json
+import re
 from uuid import uuid4
 
 from sqlmodel import Session, select
@@ -41,6 +42,74 @@ def stop_map(session, review_id):
     row.run_token = ''
     row.status = 'paused'
     row.stage = '已暂停，继续时复用已完成步骤'
+    row.updated_at = utcnow()
+    session.add(row)
+    session.commit()
+    return detail_map(session, review_id)
+
+
+def update_themes(session, review_id, theme_list, expected_version):
+    """Apply researcher-edited themes, clearing only affected downstream state.
+
+    Kept assignments get their fingerprints recomputed against the new
+    themes_fingerprint so the next run skips them (partial rerun).
+    """
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+    service.get(session, review_id)
+    row = _map(session, review_id)
+    if row is None:
+        raise LookupError('文献地图尚未生成，先运行一次再编辑主题')
+    if row.status == 'running':
+        raise ValueError('文献地图正在生成，请先暂停')
+    if row.version != expected_version:
+        raise ValueError('已有更新版本，请刷新后保存')
+    if not 1 <= len(theme_list) <= 15:
+        raise ValueError('主题数量须在 1 到 15 之间')
+    stored = json.loads(row.themes_json or '[]')
+
+    def t_number(tid):
+        match = re.fullmatch(r'T(\d+)', str(tid or ''))
+        return int(match[1]) if match else 0
+
+    next_number = max((t_number(t.get('id')) for t in list(theme_list) + stored), default=0)
+    cleaned, seen = [], set()
+    for theme in theme_list:
+        if not isinstance(theme, dict) or not str(theme.get('name') or '').strip():
+            raise ValueError('每个主题都需要非空名称')
+        tid = str(theme.get('id') or '').strip()
+        if not tid:
+            next_number += 1
+            tid = f'T{next_number}'
+        if tid in seen:
+            raise ValueError(f'主题 id 重复：{tid}')
+        seen.add(tid)
+        cleaned.append({'id': tid, 'name': str(theme['name']).strip(),
+                        'definition': str(theme.get('definition') or ''),
+                        'include': str(theme.get('include') or ''),
+                        'exclude': str(theme.get('exclude') or '')})
+
+    delta = themes.diff_themes(stored, cleaned)
+    invalid = set(delta['changed']) | set(delta['removed'])
+    assignments = json.loads(row.assignments_json or '{}')
+    if delta['added']:  # every paper must be reconsidered against the new theme
+        assignments = {}
+    else:
+        assignments = {pid: entry for pid, entry in assignments.items()
+                       if not invalid.intersection(entry.get('themes') or [])}
+    fingerprint = service.digest(cleaned)
+    card_fps = {r.paper_id: r.fingerprint for r in session.exec(select(PaperCard))}
+    for pid, entry in assignments.items():
+        entry['fingerprint'] = service.digest([card_fps.get(int(pid), ''), fingerprint])
+    syntheses = json.loads(row.syntheses_json or '{}')
+    for tid in invalid:
+        syntheses.pop(tid, None)
+    row.assignments_json = service.encode(assignments)
+    row.syntheses_json = service.encode(syntheses)
+    if delta['added'] or not assignments:
+        row.overview_json = '{}'
+    row.themes_json = service.encode(cleaned)
+    row.themes_fingerprint = fingerprint
+    row.version += 1
     row.updated_at = utcnow()
     session.add(row)
     session.commit()
