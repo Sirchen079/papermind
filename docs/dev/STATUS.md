@@ -36,6 +36,13 @@ P0 止血 → 下一阶段 A（文献地图与综述）
 | 01 | 本提交 | tools/check_doc_links.py：移动前断链 0、移动后断链 0，新增断链 0 | 原有断链 0 条（基线即无断链）；未跑 pytest（本卡不改代码） |
 | 02 | 本提交 | 全量：1316 通过 / 6 失败 / 1 跳过，3058 秒；专题综述快速集：78 通过 | 6 个已知失败见上；backend/README.md 已写明 --basetemp 用法 |
 | 03 | 本提交 | 格式化前 104 通过 / 0 失败，格式化后 104 通过 / 0 失败（9 个测试文件） | autopep8+black 仅格式化三文件；剩余分号均在注释/正则字符串中；autopep8、black 只装入 venv 未写入 pyproject.toml |
+| 04 | 本提交 | tests/test_pdf_markdown_pipeline.py+test_documents.py+test_pdf_import_concurrency.py+test_ingestion.py：39 通过 / 0 失败 | 提示写入 row.error（前端只按 status 判定，error 仅作红色提示行，无需新字段或迁移）；修改的旧断言见下 |
+
+卡 04 修改的既有断言（均为卡允许的“断言了默认 ocr”类）：
+1. test_default_import_waits_and_model_selection_starts_all_pages 拆为 test_default_import_without_ocr_model_publishes_text_layer（默认 auto 直接发布文字层）与 test_explicit_ocr_import_with_model_ocrs_all_pages_and_finishes_analysis（显式 ocr+模型时逐页 OCR 与后续分析不变）。
+2. test_unfinished_import_resumes_without_charging_completed_page 开头显式设置 pdf_ingest_mode=ocr：默认改 auto 后该“OCR 中断恢复”场景需显式模式触发。
+3. test_documents.py::test_scan_without_model_and_restart_state_are_actionable：原断言 auto 无模型整篇报错（含“选择”）；按新行为改为 ready+“2 页文字层未验证”（该 fixture 扫描页带隐藏文字层，走 native_unverified 保留正文）。
+另：_ocr_model_missing 对“已配置但不可用”的 OCR 模型返回 False，沿用原 waiting_model 路径，不悄悄回退。
 
 ## 阻塞
 （无）

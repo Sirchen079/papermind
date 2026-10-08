@@ -21,35 +21,110 @@ def imported(client):
         return persist_fetched(s, FetchedPaper(source='pdf', source_ref='sample', title='New import', pdf_bytes=path.read_bytes()), path.parent).id
 
 
-def test_default_import_waits_and_model_selection_starts_all_pages(client, monkeypatch):
+def make_mixed():
+    """Page 1 carries a text layer; page 2 is a full-page scan that needs OCR."""
+    import pymupdf
+    from app.config import get_settings
+    root = Path(get_settings().data_dir) / 'pdfs'
+    root.mkdir(exist_ok=True, parents=True)
+    path = root / 'mixed-fixture.pdf'
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=400, height=500)
+        page.insert_text((30, 40), 'Page 1: original scientific document with table and formula.', fontsize=10)
+        scan = pdf.new_page(width=400, height=500)
+        image = scan.get_pixmap().tobytes('png')
+        scan.clean_contents()
+        scan.insert_image(scan.rect, stream=image)
+        pdf.save(path)
+    with Session(get_engine()) as s:
+        paper = Paper(title='Mixed fixture', source='pdf', pdf_path=path.name, full_text='Previous text')
+        s.add(paper); s.commit(); s.refresh(paper)
+        return paper.id, path
+
+
+def mixed_imported(client):
+    legacy, path = make_mixed()
+    with Session(get_engine()) as s:
+        s.delete(s.get(Paper, legacy)); s.commit()
+        return persist_fetched(s, FetchedPaper(source='pdf', source_ref='mixed', title='Mixed import', pdf_bytes=path.read_bytes()), path.parent).id
+
+
+def test_default_import_without_ocr_model_publishes_text_layer(client, monkeypatch):
+    monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: pytest.fail('text-layer import must not call OCR'))
+    pid = imported(client)
+    state = finish(client, pid)
+    assert state['status'] == 'ready' and state['mode'] == 'auto' and state['ocr_pages'] == 0
+    with Session(get_engine()) as s:
+        text = s.get(Paper, pid).full_text
+        assert 'Page 1' in text and 'Page 2' in text
+
+
+def test_explicit_ocr_without_model_falls_back_to_auto(client, monkeypatch):
+    assert client.put('/api/settings/pdf_ingest_mode', json={'value': 'ocr'}).status_code == 200
+    monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: pytest.fail('fallback import must not call OCR'))
+    pid = imported(client)
+    state = finish(client, pid)
+    assert state['status'] == 'ready' and state['mode'] == 'auto'
+    with Session(get_engine()) as s:
+        row = s.get(PaperDocument, pid)
+        assert json.loads(row.followup_json).get('mode_fallback') == 'ocr->auto'
+        assert 'Page 1' in s.get(Paper, pid).full_text
+
+
+def test_auto_without_model_keeps_text_and_marks_pending_ocr(client, monkeypatch):
+    monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: pytest.fail('missing OCR model must not call OCR'))
+    pid = mixed_imported(client)
+    state = finish(client, pid)
+    assert state['status'] == 'ready'
+    assert '1 页需要 OCR' in state['error'] and '配置 OCR 模型' in state['error']
+    with Session(get_engine()) as s:
+        row = s.get(PaperDocument, pid)
+        assert [p['method'] for p in json.loads(row.pages_json)] == ['native', 'pending_ocr']
+        text = s.get(Paper, pid).full_text
+        assert 'Page 1' in text and '[此页需要 OCR，尚未转换]' in text
+
+
+def test_auto_with_ocr_model_still_uses_ocr_for_unreliable_pages(client, monkeypatch):
+    models(client)
     calls = []
+
+    def complete(*a, **kw):
+        calls.append(kw['request_kind'])
+        return SimpleNamespace(content='Recognized scan page')
+
+    monkeypatch.setattr(ProviderClient, 'complete', complete)
+    monkeypatch.setattr(ProviderClient, 'embed', lambda *a, **kw: [[1., 0.]] * len(a[3]))
+    pid = mixed_imported(client)
+    state = finish(client, pid)
+    assert state['status'] == 'ready' and state['ocr_pages'] == 1 and state['completed_pages'] == 2
+    assert calls == ['pdf_ocr']
+
+
+def test_explicit_ocr_import_with_model_ocrs_all_pages_and_finishes_analysis(client, monkeypatch):
+    assert client.put('/api/settings/pdf_ingest_mode', json={'value': 'ocr'}).status_code == 200
+    calls = []
+
     def complete(*a, **kw):
         calls.append(kw['request_kind'])
         return SimpleNamespace(content='## Results\n\n| Method | Score |\n|---|---|\n| New method | 40.32 |')
+
     monkeypatch.setattr(ProviderClient, 'complete', complete)
-    monkeypatch.setattr(ProviderClient, 'embed', lambda *a, **kw: [[1.,0.]] * len(a[3]))
-    pid = imported(client)
-    state = client.get(f'/api/papers/{pid}/document').json()
-    assert state['status'] == 'waiting_model' and state['mode'] == 'ocr'
-    with Session(get_engine()) as s:
-        p = s.get(Paper, pid)
-        assert p.full_text is None
-        from app.rag.index import index_paper, index_local_paper
-        assert index_local_paper(s, p) == 0 and index_paper(s, p) == 0
-    assert not calls
+    monkeypatch.setattr(ProviderClient, 'embed', lambda *a, **kw: [[1., 0.]] * len(a[3]))
     models(client)
+    pid = imported(client)
     state = finish(client, pid)
-    assert state['status'] == 'ready' and state['ocr_pages'] == state['total_pages'] == 2
+    assert state['status'] == 'ready' and state['mode'] == 'ocr' and state['ocr_pages'] == state['total_pages'] == 2
     assert state['index_status'] == 'ready'
-    assert calls == ['pdf_ocr','pdf_ocr']
+    assert calls == ['pdf_ocr', 'pdf_ocr']
     with Session(get_engine()) as s:
-        row = s.get(PaperDocument,pid)
+        row = s.get(PaperDocument, pid)
         assert json.loads(row.followup_json)['finished']
-        assert s.get(Paper,pid).full_text == row.markdown
-        assert all(c.embedding for c in s.exec(select(PaperChunk).where(PaperChunk.paper_id==pid)))
+        assert s.get(Paper, pid).full_text == row.markdown
+        assert all(c.embedding for c in s.exec(select(PaperChunk).where(PaperChunk.paper_id == pid)))
 
 
 def test_unfinished_import_resumes_without_charging_completed_page(client, monkeypatch):
+    assert client.put('/api/settings/pdf_ingest_mode', json={'value': 'ocr'}).status_code == 200
     models(client)
     calls=[]
     def complete(*a,**kw):

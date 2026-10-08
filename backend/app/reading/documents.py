@@ -280,8 +280,15 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
                     text, reliable = native_page(page)
                     method = 'native' if mode == 'auto' and reliable else 'ocr'
                     if method == 'ocr':
-                        stage = 'ocr'
-                        text = transcribe(ctx, image, pid, raw_path=target / f'page-{number}.ocr.txt')
+                        if mode == 'auto' and ctx is None:
+                            # One page without OCR must not discard the whole text.
+                            if text.strip():
+                                method = 'native_unverified'
+                            else:
+                                method, text = 'pending_ocr', '[此页需要 OCR，尚未转换]'
+                        else:
+                            stage = 'ocr'
+                            text = transcribe(ctx, image, pid, raw_path=target / f'page-{number}.ocr.txt')
                 text = text.replace('<!-- page:', '&lt;!-- page:')
                 stage = 'save'
                 with _lock, Session(engine) as session:
@@ -351,6 +358,17 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
             row = _current(session, pid, run_id)
             if row:
                 row.status = 'ready'
+                # Pages kept without a working OCR model stay usable for search
+                # while telling the researcher what is still missing.
+                pending = sum(p['method'] == 'pending_ocr' for p in pages)
+                unverified = sum(p['method'] == 'native_unverified' for p in pages)
+                if pending or unverified:
+                    notices = []
+                    if pending:
+                        notices.append(f'{pending} 页需要 OCR，配置 OCR 模型后可重新转换')
+                    if unverified:
+                        notices.append(f'{unverified} 页文字层未验证，请对照原页核查')
+                    row.error = '；'.join(notices)
                 session.add(row)
                 session.commit()
     except Exception as exc:
