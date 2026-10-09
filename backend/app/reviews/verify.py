@@ -23,6 +23,11 @@ def _is_ascii_lower(ch):
     return 'a' <= ch <= 'z'
 
 
+def _is_ascii_alnum(ch):
+    # 词边界只对 ASCII 字母数字判断；中文没有空格，isalnum 会把中文也算进去
+    return 'a' <= ch <= 'z' or '0' <= ch <= '9'  # 输入文本均已小写
+
+
 def _normalize_with_map(text: str) -> tuple[str, list[int]]:
     """Normalize text while recording which original index made each output char."""
     pairs = []
@@ -133,11 +138,11 @@ def _find_detail(haystack: str, quote: str, threshold: float = 0.9):
     if len(q_norm) < MIN_QUOTE_CHARS:  # 短引文信息量不足，一律不算命中
         return None
     pos = h_norm.find(q_norm)
-    while pos >= 0:  # 落在词中间（如 "52.7" 命中 "1952.7"）不算
+    while pos >= 0:  # 落在 ASCII 词中间（如 "52.7" 命中 "1952.7"）不算；中文无空格不适用
         before = h_norm[pos - 1] if pos > 0 else ''
         after = h_norm[pos + len(q_norm)] if pos + len(q_norm) < len(h_norm) else ''
-        starts_mid_word = before.isalnum() and q_norm[0].isalnum()
-        ends_mid_word = after.isalnum() and q_norm[-1].isalnum()
+        starts_mid_word = _is_ascii_alnum(before) and _is_ascii_alnum(q_norm[0])
+        ends_mid_word = _is_ascii_alnum(after) and _is_ascii_alnum(q_norm[-1])
         if not (starts_mid_word or ends_mid_word):
             return h_index[pos], h_index[pos + len(q_norm) - 1] + 1, 1.0
         pos = h_norm.find(q_norm, pos + 1)

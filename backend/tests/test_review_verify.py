@@ -242,5 +242,13 @@ def test_word_boundary_prevents_matching_inside_numbers():
     assert _find_detail('in 1952.7 we', '52.7 we') is None
 
 
+def test_chinese_quote_exact_hit_is_verified():
+    # 中文没有空格，词边界判断只对 ASCII 字母数字生效（裁决 2026-10-09 第 5 项）
+    source = '本文提出了一种基于扩散模型先验的全波形反演方法，并在实测数据上验证'
+    result = check_field('扩散模型先验', '一种基于扩散模型先验的全波形反演方法', {'abstract': source})
+    assert result['status'] == 'quote_verified'
+    assert result['similarity'] == 1.0
+
+
 def test_numbers_in_handles_trailing_letters_and_units():
     assert numbers_in('52.7ms and 12dB in 3D') == ['52.7', '12', '3']

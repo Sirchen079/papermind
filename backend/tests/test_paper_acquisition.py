@@ -15,8 +15,9 @@ from app.config import get_settings
 from app.db.engine import get_engine
 from app.ingestion.pdf_download import download_pdf
 from app.models import Paper, PaperChunk
-from app.providers.client import ToolCall
+from app.providers.client import ProviderClient, ToolCall
 from test_chat_api import _seed_chat_provider, _turn
+from test_documents import finish, models
 
 
 def pdf(text='GSOT evidence from the experiment.', large=False):
@@ -252,15 +253,40 @@ def test_arxiv_url_matches_curated_record_before_metadata_lookup(client, monkeyp
 
 
 def test_default_pdf_import_waits_for_ocr_before_exposing_read_evidence(client, monkeypatch):
+    assert client.put('/api/settings/pdf_ingest_mode', json={'value': 'ocr'}).status_code == 200
+    models(client)
+    hold = Event()
+
+    def held_ocr(*a, **kw):  # OCR 模型一直不返回，验证完成前不暴露阅读证据
+        hold.wait(30)
+        raise RuntimeError('ocr held for assertion')
+
+    monkeypatch.setattr(ProviderClient, 'complete', held_ocr)
     network(monkeypatch, lambda request: httpx.Response(200, content=pdf()))
     with Session(get_engine()) as session:
         result = json.loads(import_paper_pdf(session, 'https://archive.example/paper.pdf', title='Waiting for OCR'))
         pid = result['paper_id']
-        assert result['ok'] and result['document']['status'] == 'waiting_model'
+        # 配置了 OCR 模型时，等待中的表示是 queued/running（裁决 2026-10-09 授权的断言调整）
+        assert result['ok'] and result['document']['status'] in {'queued', 'running'}
         assert result['indexing']['status'] == 'waiting_markdown'
         assert result['full_text_chars'] == 0
         assert session.get(Paper, pid).full_text is None
         assert session.exec(select(PaperChunk).where(PaperChunk.paper_id == pid)).all() == []
         read = get_tool('get_paper_full_text').run(session, paper_id=pid, page=1)
-        assert 'waiting_model' in read and 'GSOT' not in read
+        assert ('queued' in read or 'running' in read) and 'GSOT' not in read
         assert tool_sources(session, 'get_paper_full_text', read) == []
+    hold.set()
+
+
+def test_default_pdf_import_without_ocr_model_keeps_text_layer(client, monkeypatch):
+    monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: pytest.fail('no-model import must not call OCR'))
+    network(monkeypatch, lambda request: httpx.Response(200, content=pdf()))
+    with Session(get_engine()) as session:
+        result = json.loads(import_paper_pdf(session, 'https://archive.example/paper.pdf', title='Auto text layer'))
+        pid = result['paper_id']
+        assert result['ok']
+    state = finish(client, pid)  # auto 模式下 worker 异步发布文字层，等待完成
+    assert state['status'] == 'ready' and state['mode'] == 'auto' and state['ocr_pages'] == 0
+    with Session(get_engine()) as session:
+        text = session.get(Paper, pid).full_text
+        assert 'GSOT' in text and 'Amplitude normalization' in text

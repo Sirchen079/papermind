@@ -114,7 +114,10 @@ foreach ($doc in @("release-$Version.md", 'original-page-companion.md', 'release
                   'paper-section-reading.md', 'research-assistance-evaluation.md', 'saved-document-continuation.md', 'paper-reading-navigation.md',
                   'research-resource-reading.md', 'web-source-snapshots.md', 'fwi-research-workflow.md', 'research-continuation-home.md',
                   'document-version-continuation.md', 'research-entry-continuation.md')) {
-  Copy-Item -LiteralPath (Join-Path $Root "docs/$doc") -Destination $releaseDocs -Force
+  # release-*.md 已移入 docs/releases/；其余仍在 docs/。两处都找不到才报错。
+  $source = Join-Path $Root "docs/releases/$doc"
+  if (-not (Test-Path -LiteralPath $source)) { $source = Join-Path $Root "docs/$doc" }
+  Copy-Item -LiteralPath $source -Destination $releaseDocs -Force
 }
 # 外部工具技能文件：随包分发，便于用户装进 Claude Code / Codex / ZCode 等工具的技能目录。
 $releaseSkills = Join-Path (Split-Path -Parent $exe) 'skills\papermind-library'
