@@ -179,7 +179,7 @@ def _create_app() -> FastAPI:
             try:manager(registry.root).close()
             finally:app.state.release_runtime_lease()
 
-    app = FastAPI(title="PaperMind", version="0.6.29", lifespan=lifespan)
+    app = FastAPI(title="PaperMind", version="0.6.30", lifespan=lifespan)
     from app.security.crypto import MissingKeyError
     from fastapi.responses import JSONResponse
 
