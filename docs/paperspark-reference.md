@@ -47,7 +47,7 @@
 
 PaperSpark 把浏览器工作区数据经本地服务暴露给 Claude Code、Codex 等外部 CLI 工具：写入点发事件、防抖后全量快照 POST 到 `/api/workspace-cli/snapshot` 落地 JSON（`lib/workspaceSnapshotClient.ts`、`lib/server/workspaceBridge.ts`）；CLI（`scripts/paperspark-data-cli.mjs`）经 `POST /api/workspace-cli/query` 执行 `summary/list/get/dump/search` 五个命令；`skills/paperspark-workspace-data/SKILL.md` 是给外部 agent 的操作手册（先 summary 探活、list 发现 id、get 取全文、search 兜底，含服务未启动时的恢复话术），另有 `agents/openai.yaml` 供不同工具发现。响应自带 `exportedAt` 新鲜度，设置脱敏只导出 `hasApiKey` 布尔。
 
-这个方向与本项目用户的真实工作方式直接吻合：用户同时使用 GPT、ZCode、Codex 处理同一研究项目（0.6.22 交付即由多工具接续完成），目前外部工具查 PaperMind 资料库没有稳定入口，只能靠人工导出复制。PaperMind 具备比 PaperSpark 更好的实现条件：数据本就在后端 SQLite，有 `X-Local-Token` 鉴权和混合检索，不需要"浏览器→快照文件→HTTP"中继，也不必接受它无鉴权、子串搜索、每次变更 O(全库) 重建快照的缺陷。落地方式应是：挑选只读查询子集（检索论文、取全文片段、列文档与笔记，复用现有 API 与混合检索），配一份可放入外部工具技能目录的 SKILL 文档；验收用外部 CLI 工具实际完成一次"库内找论文并取方法段"的任务，同时核对密钥不外泄、写操作不可达。
+这个方向与本项目用户的真实工作方式直接吻合：用户同时使用多个 AI CLI 工具处理同一研究项目，目前外部工具查 PaperMind 资料库没有稳定入口，只能靠人工导出复制。PaperMind 具备比 PaperSpark 更好的实现条件：数据本就在后端 SQLite，有 `X-Local-Token` 鉴权和混合检索，不需要"浏览器→快照文件→HTTP"中继，也不必接受它无鉴权、子串搜索、每次变更 O(全库) 重建快照的缺陷。落地方式应是：挑选只读查询子集（检索论文、取全文片段、列文档与笔记，复用现有 API 与混合检索），配一份可放入外部工具技能目录的 SKILL 文档；验收用外部 CLI 工具实际完成一次"库内找论文并取方法段"的任务，同时核对密钥不外泄、写操作不可达。
 
 ### 值得吸收：模块化解析引擎的接入设计
 
