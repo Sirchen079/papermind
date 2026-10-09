@@ -24,7 +24,8 @@ CARD_PROMPT = '''你在为研究者制作一张论文精读卡片。只依据给
 SNIPPET_QUERIES = ('method approach proposed', 'data experiment field synthetic', 'limitation however future work')
 CARD_FIELDS = ('problem', 'mechanism', 'data_setting', 'boundary')
 # 核对规则版本：规则收紧后，存量 done 卡片按此版本免费重新核对（不调模型）
-VERIFY_VERSION = 2
+# v2：数字对照原文+词边界+最短引文（卡 21）；v3：词边界改 ASCII 判断，中文引文可精确命中（卡 22 裁决第 5 项）
+VERIFY_VERSION = 3
 # build_card turns provider exceptions into fallback cards whose warning starts
 # with the exception type name; parse failures carry a Chinese message instead.
 _EXCEPTION_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_.]*$')

@@ -370,7 +370,7 @@ def test_ensure_cards_reverifies_stored_cards_without_model_calls(client):
     with Session(get_engine()) as s:
         row = s.exec(select(PaperCard).where(PaperCard.paper_id == pid)).first()
         card = json.loads(row.card_json)
-        assert card['verify_version'] == VERIFY_VERSION == 2
+        assert card['verify_version'] == VERIFY_VERSION == 3  # v3：中文词边界修复后再次免费重核
         assert row.status == 'done'
         assert card['problem']['status'] == 'number_mismatch'  # 引文数字被改过，按新规则暴露
         assert card['mechanism']['status'] == 'quote_verified'
