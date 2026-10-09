@@ -179,7 +179,9 @@ def test_partial_revision_recovers_or_keeps_complete_chapters(client,monkeypatch
     prefix,fake,_=setup(client,monkeypatch)
     with Session(get_engine()) as s:
         s.add(Provider(id=123,name='fixture',type='openai_compat',base_url='https://test.invalid'));s.flush()
-        s.add(Model(provider_id=123,model_id='fake',context_window=window));s.commit()
+        # 显式 low：本用例测“截断→学习更大额度→重试恢复”路径，卡 24 的 high 默认
+        # 会把推理预留一次给足（cap 触及 window/2 上限），该学习路径不可达。
+        s.add(Model(provider_id=123,model_id='fake',context_window=window,reasoning_effort='low'));s.commit()
     original=fake.complete;edits=[]
     def complete(provider,model,messages,**kwargs):
         text=messages[-1]['content']

@@ -4,13 +4,14 @@ import json
 from sqlmodel import Session, select
 from sqlalchemy.exc import SQLAlchemyError
 from app.models.review import LibraryReview, ReviewSection
+from app.providers.client import DEFAULT_REASONING_EFFORT
 
 ORDINAL = -99995
 FINGERPRINT = 'review-output-reserves-v1'
 
 
 def model_key(provider, model, window, effort):
-    value=[provider.id,getattr(provider,'base_url',''),model,window,effort or 'low']
+    value=[provider.id,getattr(provider,'base_url',''),model,window,effort or DEFAULT_REASONING_EFFORT]
     return hashlib.sha256(json.dumps(value,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
 
 

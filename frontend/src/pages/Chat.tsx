@@ -980,7 +980,7 @@ export default function Chat({
                 {models.map(m => <option key={m.id} value={m.id}>{m.provider} · {m.name}</option>)}
               </select></label>
               {selectedModel && <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => { setContextDraft(selectedModel.context_window?.toString() || ''); setEffortDraft(selectedModel.reasoning_effort || ''); setImageDraft(selectedModel.supports_images == null ? 'auto' : String(selectedModel.supports_images)); setConfigOpen(!configOpen); }}>配置模型</button>}
-              {selectedModel && <span>上下文 {selectedModel.context_window ? `${Math.round(selectedModel.context_window / 1000)}k` : "自动"} · 思考 {selectedModel.reasoning_effort || "自动"} · {selectedModel.supports_images === true ? "支持图片" : selectedModel.supports_images === false ? "仅文本" : "图片能力未声明"}</span>}
+              {selectedModel && <span>上下文 {selectedModel.context_window ? `${Math.round(selectedModel.context_window / 1000)}k` : "自动"} · 思考 {selectedModel.reasoning_effort || "默认（high）"} · {selectedModel.supports_images === true ? "支持图片" : selectedModel.supports_images === false ? "仅文本" : "图片能力未声明"}</span>}
               <label className="flex items-center gap-1" title="开启后额外调用模型核对材料，耗时更长；可随时关闭，普通讨论无需开启">
                 <input type="checkbox" checked={reviewEvidence} onChange={e => setReviewEvidence(e.target.checked)} aria-label="额外证据复核" />额外证据复核
               </label>
@@ -988,7 +988,7 @@ export default function Chat({
             </div>
             {configOpen && selectedModel && <div className="mx-3 rounded-lg border border-[var(--border)] p-3 flex flex-wrap items-end gap-3 text-xs">
               <label>上下文 tokens<input aria-label="上下文 tokens" type="number" min="1" className="input" value={contextDraft} onChange={e => setContextDraft(e.target.value)} placeholder="自动" /></label>
-              <label>思考等级<select aria-label="思考等级" className="input" value={effortDraft} onChange={e => setEffortDraft(e.target.value)}><option value="">自动</option>{['low','medium','high','xhigh','max'].map(v => <option key={v}>{v}</option>)}</select></label>
+              <label>思考等级<select aria-label="思考等级" className="input" value={effortDraft} onChange={e => setEffortDraft(e.target.value)}><option value="">默认（high）</option>{['low','medium','high','xhigh','max'].map(v => <option key={v}>{v}</option>)}</select></label>
               <label>图片输入<select aria-label="图片输入" className="input" value={imageDraft} onChange={e => setImageDraft(e.target.value)}><option value="auto">未声明</option><option value="true">支持</option><option value="false">不支持</option></select></label>
               <button className="btn-primary" disabled={configBusy || busy} onClick={() => void saveConfig()}>保存模型配置</button>
               <button className="btn-ghost" onClick={() => setConfigOpen(false)}>取消</button>

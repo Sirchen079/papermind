@@ -256,9 +256,13 @@ def test_hybrid_balances_library_discovery_without_starving_selected_papers(clie
 
 
 def test_single_selected_paper_exposes_later_evidence_to_reranker_within_budget(client,monkeypatch):
+    from app.models import Model
     from app.rag.scalable import hybrid
     provider,_=setup(client)
     client.post(f'/api/providers/{provider}/models',json={'model_id':'vector','role_default':'embedding'})
+    with Session(get_engine()) as session:  # 卡 24：默认 high 的推理预留需要更大窗口才装得下 30 个候选
+        row=session.exec(select(Model).where(Model.model_id=='multimodal')).first()
+        row.context_window=131072;session.add(row);session.commit()
     monkeypatch.setattr(ProviderClient,'embed',lambda *a,**kw:[[1,0]])
     seen=[]
     def complete(self,provider,model,messages,**kwargs):

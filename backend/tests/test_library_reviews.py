@@ -103,18 +103,19 @@ def test_review_cache_tracks_changed_thinking_level_and_preserves_default_checkp
     with Session(get_engine()) as s:
         s.add(Provider(id=123,name='Configured fake',type='openai_chat',base_url='https://test.invalid'))
         s.commit()
-        model=Model(provider_id=123,model_id='fake',reasoning_effort='low')
+        # 卡 24：未设置默认 high，因此 default 与 high 同一 checkpoint；换成 low 才触发重算
+        model=Model(provider_id=123,model_id='fake',reasoning_effort='high')
         s.add(model);s.commit();mid=model.id
     client.post(prefix+'/run')
     assert len(fake.calls)==first_calls
     assert client.get(prefix).json()['counts']['reused']==len(ids)
     with Session(get_engine()) as s:
-        model=s.get(Model,mid);model.reasoning_effort='high';s.add(model);s.commit()
+        model=s.get(Model,mid);model.reasoning_effort='low';s.add(model);s.commit()
     client.post(prefix+'/run')
     assert sum('逐篇分析。' in text for text in fake.calls[first_calls:])==len(ids)
-    high_calls=len(fake.calls)
+    low_calls=len(fake.calls)
     client.post(prefix+'/run')
-    assert len(fake.calls)==high_calls
+    assert len(fake.calls)==low_calls
     assert client.get(prefix).json()['counts']['reused']==len(ids)
 
 

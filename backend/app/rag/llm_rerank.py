@@ -35,7 +35,7 @@ def rank(ctx, query, documents, k, context_window=None, reasoning_effort=None):
          'Return only JSON {"ranking":[candidate_id,...]} with exactly top_k distinct IDs, most relevant first. '
          'Use only supplied IDs. Do not answer the query, invent passages, or return explanations.'},
         {'role': 'user', 'content': json.dumps(prompt, ensure_ascii=False)},
-    ], request_kind='rerank_llm', max_tokens=output, reasoning_effort=reasoning_effort or 'low')
+    ], request_kind='rerank_llm', max_tokens=output, reasoning_effort=reasoning_effort)
     content = result.content.strip()
     if content.startswith('```') and content.endswith('```'):
         content = content.split('\n', 1)[-1].rsplit('```', 1)[0].strip()

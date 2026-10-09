@@ -16,7 +16,7 @@ def official_glm53(provider,model_id):
 def reasoning_options(provider,model_id,effort=None):
     if not official_glm53(provider,model_id):
         return {}
-    effort=effort or 'low'
+    effort=effort or 'high'
     if effort in ('medium','xhigh'):
         # GLM-5.3 documents low/high/max only; map the in-between tiers to the
         # nearest documented level instead of failing with a vendor 400.
