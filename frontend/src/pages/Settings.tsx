@@ -36,7 +36,7 @@ const ROLE_LABELS: Record<string, string> = {
   chat: "文本 AI（对话 / 总结 / 抽取）",
   embedding: "全文检索（向量模型）",
 };
-// thinking 模型的思考等级（Model.reasoning_effort）；空 = 自动（各调用场景的默认值）。
+// thinking 模型的思考等级（Model.reasoning_effort）；空 = 默认 high。
 // xhigh：OpenAI 部分模型（o3-pro / GPT-5.x）支持的档位；官方 GLM 端点会映射为 max。
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const EFFORT_LABELS: Record<string, string> = {
@@ -756,7 +756,7 @@ export default function Settings() {
                               patchModelField(p.id, m.id, { reasoning_effort: e.target.value || null })
                             }
                           >
-                            <option value="">自动</option>
+                            <option value="">默认（high）</option>
                             {EFFORTS.map((v) => (
                               <option key={v} value={v}>{EFFORT_LABELS[v] ?? v}</option>
                             ))}

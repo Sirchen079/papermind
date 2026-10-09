@@ -306,7 +306,7 @@ def test_other_request_kinds_keep_their_generation_timeouts(tmp_path,monkeypatch
     assert seen[1]['timeout']==300
 
 
-@pytest.mark.parametrize('effort,seconds', [('medium',300),('high',600),('xhigh',600),('max',600)])
+@pytest.mark.parametrize('effort,seconds', [('medium',300),('high',600),('xhigh',1200),('max',1200)])
 @pytest.mark.parametrize('ptype', ['openai_compat','openai_responses'])
 def test_review_and_rerank_wait_for_configured_reasoning_without_extending_other_tasks(tmp_path,monkeypatch,effort,seconds,ptype):
     from app.models import Model
@@ -322,15 +322,16 @@ def test_review_and_rerank_wait_for_configured_reasoning_without_extending_other
     monkeypatch.setattr('app.providers.client.litellm.responses',complete)
     client.complete(provider,'writer',[{'role':'user','content':'draft'}],request_kind='library_review',reasoning_effort='low')
     timeout=seen[-1]['timeout']
-    # 综述分章写作放宽到 900 秒（实测 glm-5.3 六章有五章在 180 秒超时）
-    assert isinstance(timeout,httpx.Timeout) and timeout.read==900 and timeout.connect==10
+    # 综述分章写作按档位等待：900 秒；卡 24 后 xhigh/max 放宽到 1800 秒
+    assert isinstance(timeout,httpx.Timeout) and timeout.read==(1800 if effort in ('xhigh','max') else 900) and timeout.connect==10
     assert seen[-1]['num_retries']==0
     # 配置了推理档位的共用模型做重排同样按档位等待（docs/rerank-reasoning-budget.md：真实回放48.12秒，固定45秒会截断）
+    # 卡 24：xhigh/max 的读超时为 1200 秒（原 600）
     client.complete(provider,'writer',[{'role':'user','content':'rank'}],request_kind='rerank_llm')
     assert isinstance(seen[-1]['timeout'],httpx.Timeout) and seen[-1]['timeout'].read==seconds
-    # 其余任务不继承加长等待
+    # 检索改写同样按生效等级放宽（卡 24：原固定 45 秒只覆盖 low/未传思考参数）
     client.complete(provider,'writer',[{'role':'user','content':'q'}],request_kind='retrieval_query')
-    assert seen[-1]['timeout']==45
+    assert isinstance(seen[-1]['timeout'],httpx.Timeout) and seen[-1]['timeout'].read==seconds
 
 
 @pytest.mark.parametrize('ptype', ['openai_compat', 'openai_responses'])

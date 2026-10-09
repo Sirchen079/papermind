@@ -17,6 +17,9 @@ from app.security.crypto import Crypto
 from app.security.url_guard import ensure_http_url, validated_get
 
 
+DEFAULT_REASONING_EFFORT = 'high'  # 卡 24：未设置时的思考等级；基准为 glm-5.3（max）
+
+
 def _generation_timeout(api_base, effort):
     """Use the same generation allowance for document writing and tool agents."""
     import httpx
@@ -24,20 +27,23 @@ def _generation_timeout(api_base, effort):
     if is_loopback_url(api_base):
         return httpx.Timeout(None, connect=10, write=60, pool=60)
     if effort in {'medium', 'high', 'xhigh', 'max'}:
-        return httpx.Timeout(300 if effort == 'medium' else 600, connect=10, write=60, pool=60)
+        # max 推理一次可能产出几万 token，读超时按基准档位 glm-5.3(max) 留足。
+        read = {'medium': 300, 'high': 600, 'xhigh': 1200, 'max': 1200}[effort]
+        return httpx.Timeout(read, connect=10, write=60, pool=60)
     return 180
 
 
 def _review_generation_timeout(api_base, effort):
     """Review chapters emit ~3500 tokens over long inputs; slow remote models
-    missed the old 180s cap, so only library_review waits up to 900s. Loopback
-    keeps the unlimited read timeout; all remote effort levels are uniformly
-    900s (the previous 300/600 values are all below it)."""
+    missed the old 180s cap, so only library_review waits up to 900s (1800s
+    when the effective effort is xhigh/max). Loopback keeps the unlimited
+    read timeout."""
     import httpx
     from app.providers.local import is_loopback_url
     if is_loopback_url(api_base):
         return _generation_timeout(api_base, effort)
-    return httpx.Timeout(900, connect=10, write=60, pool=60)
+    return httpx.Timeout(1800 if effort in {'xhigh', 'max'} else 900,
+                         connect=10, write=60, pool=60)
 
 
 class EmptyResponseError(ValueError):
@@ -194,6 +200,35 @@ class ProviderClient:
         except Exception:
             return None
 
+    def effective_effort(self, provider: Provider, model_id: str) -> str:
+        """The effort callers should budget and plan around: the user's setting, else the default."""
+        return self._configured_effort(provider, model_id) or DEFAULT_REASONING_EFFORT
+
+    def _resolve_effort(self, provider: Provider, model_id: str, route, requested: str | None):
+        """One choke point shared by every completion entry point (卡 24).
+
+        Precedence: the user-configured level, then the caller's value, then
+        DEFAULT_REASONING_EFFORT. Documented vendors (official GLM) get their
+        translated request params; undocumented models only receive a thinking
+        knob when the SDK knows they support reasoning or the user set one.
+        Returns ``(request kwargs, effective effort)``; the effective effort
+        (None when no thinking params are sent) drives timeout selection.
+        """
+        configured = self._configured_effort(provider, model_id)
+        effort = configured or requested or DEFAULT_REASONING_EFFORT
+        documented = reasoning_options(provider, model_id, effort)
+        if documented:
+            return dict(documented), effort
+        if not configured:
+            try:
+                if not litellm.supports_reasoning(model=route.litellm_model):
+                    return {}, None
+            except Exception:
+                return {}, None
+        if route.call == 'responses':
+            return {'reasoning': {'effort': effort}}, effort
+        return {'reasoning_effort': effort}, effort
+
     def complete(
         self,
         provider: Provider,
@@ -206,29 +241,14 @@ class ProviderClient:
     ) -> CompletionResult:
         provider = self._ready_provider(provider)
         route = route_completion(provider.type, model_id, provider.base_url)
-        # A user-configured thinking level on the model row wins over the
-        # caller's purpose default (evidence review 'high', research 'low').
-        configured_effort = self._configured_effort(provider, model_id)
-        reasoning_effort = configured_effort or reasoning_effort
-        review_effort = reasoning_effort
-        documented=reasoning_options(provider,model_id,reasoning_effort)
-        # Unknown/custom models use provider defaults. Never send a reasoning
-        # knob solely because the caller happens to be a research workflow.
-        if reasoning_effort and not documented and not configured_effort:
-            try:
-                if not litellm.supports_reasoning(model=route.litellm_model):
-                    reasoning_effort = None
-            except Exception:
-                reasoning_effort = None
+        thinking, effective_effort = self._resolve_effort(provider, model_id, route, reasoning_effort)
         kwargs: dict[str, Any] = {
             "model": route.litellm_model,
             "messages": prepare_messages(messages, provider.type, request_kind, marker_budget=4),
             "api_key": self._api_key(provider),
         }
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
-        kwargs.update(documented)
-        if documented:
-            reasoning_effort=None
+        kwargs.update(thinking)
         if route.api_base:
             kwargs["api_base"] = ensure_http_url(route.api_base)  # SSRF guard
 
@@ -236,29 +256,31 @@ class ProviderClient:
         if request_kind in {"research", "rerank_llm", "retrieval_query"}:
             kwargs["timeout"] = 90 if request_kind == 'research' else 45
             kwargs["num_retries"] = 0
-            if request_kind == 'rerank_llm' and configured_effort in {'medium','high','xhigh','max'}:
-                kwargs['timeout'] = _generation_timeout(route.api_base, configured_effort)
+            if effective_effort in {'medium', 'high', 'xhigh', 'max'}:
+                scaled = _generation_timeout(route.api_base, effective_effort)
+                if scaled.read is not None:  # loopback keeps the original fixed bound
+                    kwargs['timeout'] = scaled
         elif request_kind in {"evidence_review", "wiki_update", "pdf_ocr", "library_review"}:
             # LiteLLM's inherited default can be 6000 seconds. Bound a
             # foreground step and let the application expose a retryable error.
             kwargs["timeout"] = 300 if request_kind == "evidence_review" else 180
             kwargs["num_retries"] = 0
+            if request_kind == 'evidence_review' and effective_effort in {'medium', 'high', 'xhigh', 'max'}:
+                read = _generation_timeout(route.api_base, effective_effort).read
+                if read is not None:  # loopback stays at the fixed 300s
+                    kwargs['timeout'] = max(300, read)
             if request_kind == 'library_review':
-                kwargs['timeout'] = _review_generation_timeout(route.api_base, review_effort)
+                kwargs['timeout'] = _review_generation_timeout(route.api_base, effective_effort)
         if route.call == "responses":
             kwargs["input"] = [{**m, "content": responses_content(m.get("content"))} for m in kwargs.pop("messages")]
             if max_tokens is not None:
                 kwargs["max_output_tokens"] = max_tokens
-            if reasoning_effort:
-                kwargs["reasoning"] = {"effort": reasoning_effort}
             resp = litellm.responses(**kwargs)
             content = _responses_text(resp)
             usage = getattr(resp, "usage", None)
         else:
             if max_tokens is not None:
                 kwargs["max_tokens"] = max_tokens
-            if reasoning_effort:
-                kwargs["reasoning_effort"] = reasoning_effort
             resp = litellm.completion(**kwargs)
             content = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
@@ -345,12 +367,9 @@ class ProviderClient:
             kwargs["tool_choice"] = "auto"
 
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
-        effort = self._configured_effort(provider, model_id)
-        kwargs['timeout'] = _generation_timeout(route.api_base, effort)
-        documented = reasoning_options(provider, model_id, effort)
-        kwargs.update(documented)
-        if documented:
-            effort = None
+        thinking, effective_effort = self._resolve_effort(provider, model_id, route, None)
+        kwargs['timeout'] = _generation_timeout(route.api_base, effective_effort)
+        kwargs.update(thinking)
         if route.call == "responses":
             converted = []
             for message in kwargs['messages']:
@@ -365,8 +384,6 @@ class ProviderClient:
             kwargs["input"] = converted
             if tools:
                 kwargs["tools"] = [{"type":"function",**tool["function"]} for tool in tools]
-            if effort:
-                kwargs["reasoning"] = {"effort": effort}
             resp = litellm.responses(**kwargs)
             output = getattr(resp,"output",[]) or []
             tool_calls = []
@@ -387,12 +404,9 @@ class ProviderClient:
                 raise ValueError("Responses 未返回最终文本或工具请求")
             return ToolTurn(content,tool_calls,prompt_t,completion_t,total_t)
 
-        if effort:
-            kwargs["reasoning_effort"] = effort
         resp = litellm.completion(**kwargs)
         msg = resp.choices[0].message
         content = getattr(msg, "content", None) or ""
-
         tool_calls: list[ToolCall] = []
         for tc in getattr(msg, "tool_calls", None) or []:
             raw_args = getattr(tc.function, "arguments", "{}") or "{}"
@@ -446,6 +460,10 @@ class ProviderClient:
             return
 
         kwargs.update(cache_options(provider.type, route.api_base, request_kind, kwargs['messages']))
+        # 卡 24：流式对话同样走用户设置/默认等级，并按生效等级选超时。
+        thinking, effective_effort = self._resolve_effort(provider, model_id, route, None)
+        kwargs.update(thinking)
+        kwargs['timeout'] = _generation_timeout(route.api_base, effective_effort)
         kwargs["stream"] = True
         # stream_usage is an OpenAI chat-completions extension. Conservative
         # openai_compat gateways (DeepSeek/智谱/Moonshot self-host, etc.) and

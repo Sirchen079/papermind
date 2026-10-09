@@ -17,7 +17,7 @@ def test_reserve_updates_merge_concurrent_models_and_never_decrease(client):
         assert reserves.load(s,'r')=={'a':18000,'b':14000}
         assert len(s.exec(select(ReviewSection)).all())==1
     provider=SimpleNamespace(id=1,base_url='https://test.invalid')
-    assert reserves.model_key(provider,'m',32768,None)==service.digest([1,provider.base_url,'m',32768,'low'])
+    assert reserves.model_key(provider,'m',32768,None)==service.digest([1,provider.base_url,'m',32768,'high'])  # 卡 24：默认 low→high
 
 
 def test_reserve_hint_handles_legacy_bad_data_and_late_results(client):

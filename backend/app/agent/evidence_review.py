@@ -130,7 +130,7 @@ def review_answer(client,provider,model_id,question,draft,records,context_window
         raise ValueError('证据复核上下文预算不足')
     tokens=0
     for attempt in range(2):
-        result=client.complete(provider,model_id,messages,request_kind='evidence_review',max_tokens=output,reasoning_effort='high')
+        result=client.complete(provider,model_id,messages,request_kind='evidence_review',max_tokens=output)
         tokens+=result.total_tokens
         raw=(result.content or '').strip()
         try:

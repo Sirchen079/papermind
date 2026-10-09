@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import httpx
 import pytest
 from app.models import Provider
 from app.providers.client import ProviderClient
@@ -54,7 +55,7 @@ def test_configured_effort_flows_to_tool_calls(monkeypatch):
     monkeypatch.setattr(c,'_record_usage',lambda *a,**k:None)
     monkeypatch.setattr(c,'_configured_effort',lambda p,m:None)
     c.complete_with_tools(provider(),'glm-5.3',[{'role':'user','content':'q'}],'chat')
-    assert sent[0]['extra_body']['reasoning_effort']=='low'
+    assert sent[0]['extra_body']['reasoning_effort']=='high'  # 卡 24：未设置默认 high（原为 low）
     monkeypatch.setattr(c,'_configured_effort',lambda p,m:'max')
     c.complete_with_tools(provider(),'glm-5.3',[{'role':'user','content':'q'}],'chat')
     assert sent[-1]['extra_body']['reasoning_effort']=='max'
@@ -110,7 +111,8 @@ def test_configured_effort_reads_model_row(client):
     assert c._configured_effort(p,'missing') is None
 
 
-@pytest.mark.parametrize('kind,timeout',[('evidence_review',300),('wiki_update',180),('research',90)])
+@pytest.mark.parametrize('kind,timeout',[('evidence_review',600),('wiki_update',180),
+                                         ('research',httpx.Timeout(600,connect=10,write=60,pool=60))])
 def test_background_generation_has_bounded_network_wait(monkeypatch,kind,timeout):
     sent=[]
     def completion(**kwargs):
@@ -121,6 +123,8 @@ def test_background_generation_has_bounded_network_wait(monkeypatch,kind,timeout
     with pytest.raises(TimeoutError):
         c.complete(provider(),'glm-5.3',[{'role':'user','content':'q'}],kind)
     assert len(sent)==1 and sent[0]['timeout']==timeout and sent[0]['num_retries']==0
+    # 卡 24：未设置等级默认 high——evidence_review 放宽到 max(300,600)=600，
+    # research 按 _generation_timeout(远程,'high') 缩放（原为固定 90/300）。
 
 
 def test_agent_tool_step_has_bounded_network_wait(monkeypatch):
@@ -131,4 +135,5 @@ def test_agent_tool_step_has_bounded_network_wait(monkeypatch):
     monkeypatch.setattr('litellm.completion',completion)
     with pytest.raises(TimeoutError):
         ProviderClient(None,None).complete_with_tools(provider(),'glm-5.3',[{'role':'user','content':'q'}],'chat')
-    assert len(sent)==1 and sent[0]['timeout']==180 and sent[0]['num_retries']==0
+    # 卡 24：未设置默认 high，工具步超时按 _generation_timeout(远程,'high') 缩放（原为 180）
+    assert len(sent)==1 and sent[0]['timeout']==httpx.Timeout(600,connect=10,write=60,pool=60) and sent[0]['num_retries']==0

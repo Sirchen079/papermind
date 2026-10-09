@@ -8,7 +8,7 @@ from app.providers.selection import pick_llm
 from app.providers.purposes import purpose_model
 from app.reviews import service, reserves
 from app.reviews.context import clip, prepare, segments, text_budget, response_budget
-from app.providers.client import EmptyResponseError
+from app.providers.client import DEFAULT_REASONING_EFFORT, EmptyResponseError
 from app.reviews.writing import guides, stage_guide
 from app.agent.context import estimate_tokens
 
@@ -92,7 +92,7 @@ def propose(session,review_id,version,block_id,instruction):
     client,provider,model=choice
     config=session.exec(select(Model).where(Model.provider_id==provider.id,Model.model_id==model)).first()
     window=(config.context_window if config else None) or 32768
-    effort=config.reasoning_effort if config else None
+    effort=(config.reasoning_effort if config else None) or DEFAULT_REASONING_EFFORT
     original=block['text'];question=row.question
     nearby=row.content[max(0,block['start']-700):block['start']]+row.content[block['end']:block['end']+700]
     entries=service.papers(session,review_id);allowed={p.paper_id for p in entries}
@@ -134,7 +134,7 @@ def propose(session,review_id,version,block_id,instruction):
                 if partial is not None:result=partial;break
                 raise ValueError('当前上下文无法同时容纳修改要求和选中正文，请缩短修改要求或增大模型上下文；原文保留。')
             try:
-                result=client.complete(provider,model,messages,request_kind='library_review',ref_id=review_id,max_tokens=output,reasoning_effort='low')
+                result=client.complete(provider,model,messages,request_kind='library_review',ref_id=review_id,max_tokens=output,reasoning_effort=None)
                 if not service.tolerant_text(result.content):
                     raise EmptyResponseError('模型未返回修改正文',output_exhausted=getattr(result,'output_exhausted',False) is True)
                 if getattr(result,'output_incomplete',False) is True:

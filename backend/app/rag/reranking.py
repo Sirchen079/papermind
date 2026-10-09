@@ -33,9 +33,10 @@ def apply(session, query, candidates, k, config):
             documents=[f'Paper: {titles.get(row.paper_id, "")[:500]}\nPassage:\n{row.text}' for row,_ in candidates]
             if mode=='llm':
                 from app.rag.llm_rerank import rank
+                from app.providers.client import DEFAULT_REASONING_EFFORT
                 row=session.exec(select(Model).where(Model.provider_id==provider.id,Model.model_id==model)).first()
                 ranks=rank(ctx,query,documents,k,row.context_window if row else None,
-                           reasoning_effort=row.reasoning_effort if row else None)
+                           reasoning_effort=(row.reasoning_effort if row else None) or DEFAULT_REASONING_EFFORT)
             else:
                 ranks=client.rerank(provider,model,query,documents,k)
             return [(candidates[index][0],score) for index,score in ranks]

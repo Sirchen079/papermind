@@ -419,6 +419,14 @@ def run_task(engine: Engine, task_id: str, run_token: str):
             finish("needs_input", "missing_model", "模型配置不可用；已保留成果。")
             return
         client, provider, model = chosen
+        from sqlmodel import select as _select
+        from app.models import Model as _Model
+        from app.providers.output_budget import response_budget
+        with Session(engine) as s:
+            _row = s.exec(_select(_Model).where(_Model.provider_id == provider.id,
+                                                _Model.model_id == model)).first()
+            _window = (_row.context_window if _row else None) or 32768
+        _effort = client.effective_effort(provider, model)
 
         def request_step(prompt, refs, synthesis=False):
             nonlocal calls
@@ -441,8 +449,7 @@ def run_task(engine: Engine, task_id: str, run_token: str):
                         + ([{"role": "user", "content": errors}] if errors else []),
                         request_kind="research",
                         ref_id=task_id,
-                        max_tokens=2400,
-                        reasoning_effort="low",
+                        max_tokens=response_budget(_window, 2400, _effort),
                     )
                 except EmptyResponseError:
                     errors = "\n上一调用没有最终文本。请缩短回答，直接返回规定 JSON。"

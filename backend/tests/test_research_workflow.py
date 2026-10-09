@@ -98,6 +98,7 @@ def test_reuse_preserves_evidence_after_original_paper_removed(client, research)
 
 class FakeClient:
     def __init__(self,callback=None): self.calls=0;self.callback=callback
+    def effective_effort(self,provider,model): return 'high'  # 卡 24：研究步骤按生效等级预算额度
     def complete(self,*args,**kwargs):
         self.calls+=1
         if self.callback:self.callback(self.calls)
@@ -108,7 +109,8 @@ class FakeClient:
 
 
 def fake_model(monkeypatch,client):
-    monkeypatch.setattr(service,'pick_llm',lambda *args:(client,object(),'synthetic-model'))
+    # 卡 24：研究步骤会查模型行的 context_window，假 provider 需要有 id
+    monkeypatch.setattr(service,'pick_llm',lambda *args:(client,SimpleNamespace(id=1),'synthetic-model'))
 
 
 def test_fixed_flow_and_resume_do_not_repeat_finished_steps(client,research,monkeypatch):

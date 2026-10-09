@@ -14,6 +14,7 @@ from app.models import Paper, Model
 from app.models.review import LibraryReview, ReviewPaper, ReviewSection, ReviewRevision, ReviewMap
 from app.models.base import utcnow
 from app.providers.selection import pick_llm
+from app.providers.client import DEFAULT_REASONING_EFFORT
 from app.research.materials import collect_materials, terms
 from app.reviews import reserves
 
@@ -407,7 +408,7 @@ def run(engine, review_id, token):
             # cache must follow that setting too; otherwise a higher-effort
             # rerun silently reuses the earlier analysis. Preserve existing
             # default/low checkpoints, which have the same effective effort.
-            effort = config.reasoning_effort if config else None
+            effort = (config.reasoning_effort if config else None) or DEFAULT_REASONING_EFFORT
             if effort in {"medium", "high", "xhigh", "max"}:
                 signature_options.append({"reasoning_effort": effort, "output_budget": "reasoning-v1"})
             signature = digest(signature_options)
@@ -417,9 +418,9 @@ def run(engine, review_id, token):
             _, wp, wm = writer
             wc = s.exec(select(Model).where(Model.provider_id == wp.id, Model.model_id == wm)).first()
             writer_window = (wc.context_window if wc else None) or 32768
-            writer_effort = wc.reasoning_effort if wc else None
-            writer_spec = [wm, wp.id, wp.base_url, writer_window, writer_effort or "low"]
-            analysis_spec = [model, provider.id, provider.base_url, window, effort or "low"]
+            writer_effort = (wc.reasoning_effort if wc else None) or DEFAULT_REASONING_EFFORT
+            writer_spec = [wm, wp.id, wp.base_url, writer_window, writer_effort]
+            analysis_spec = [model, provider.id, provider.base_url, window, effort]
             routed_fingerprints = [
                 stage_guide(g, phase, writer_window // 5)["fingerprint"]
                 for g, phase in [(nature, p) for p in ("plan", "intro", "related-work", "discussion", "edit")]
@@ -523,7 +524,7 @@ def run(engine, review_id, token):
                         request_kind="library_review",
                         ref_id=review_id,
                         max_tokens=max_output,
-                        reasoning_effort="low",
+                        reasoning_effort=None,
                     )
                     text = (result.content or "").strip() if structured else tolerant_text(result.content)
                     if text:
