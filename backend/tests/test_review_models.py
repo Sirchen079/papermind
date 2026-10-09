@@ -4,6 +4,7 @@ from app.db.engine import get_engine
 from app.models import Provider,Model
 from app.providers.client import ProviderClient
 from app.agent.context import total_tokens
+from app.reviews.cards import CARD_PROMPT
 
 
 def test_writer_switch_reuses_analysis_and_has_its_own_context(client,monkeypatch):
@@ -100,10 +101,13 @@ def test_output_recovery_is_reused_across_phases_but_not_models_or_new_reviews(c
         s.add(writer);s.commit();writer_id=writer.id
     client.put('/api/settings/review_writing_model_config_id',json={'value':str(writer_id)})
     original=analysis.complete;analysis_caps=[];writer_calls=[];writing=FakeWriter()
-    def analyze(*args,**kwargs):
+    def analyze(provider,model,messages,**kwargs):
+        # 精读卡片调用（卡 10 加入，经 pick_llm 的 fake 到这里）：解析失败只会降级，不参与额度学习计数
+        if messages[0]['content']==CARD_PROMPT:
+            return original(provider,model,messages,**kwargs)
         analysis_caps.append(kwargs['max_tokens'])
         if len(analysis_caps)==1:raise EmptyResponseError('fixture',output_exhausted=True)
-        return original(*args,**kwargs)
+        return original(provider,model,messages,**kwargs)
     analysis.complete=analyze
     def write(self,provider,model,messages,**kwargs):
         assert model=='writer'
