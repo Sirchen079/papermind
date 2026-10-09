@@ -5,6 +5,7 @@ Rendering is a pure function over a plain payload dict so later exporters
 """
 import html
 import json
+import re
 from collections import Counter
 from datetime import datetime
 
@@ -57,6 +58,38 @@ def map_payload(session: Session, review_id) -> dict:
 
 def _e(value) -> str:
     return html.escape(str(value if value is not None else ''), quote=True)
+
+
+_ILLEGAL_XML = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]')
+
+
+def _clean_text(value):
+    """Replace XML-1.0-illegal characters with spaces; keep \t \n \r; pass non-strings through."""
+    if not isinstance(value, str):
+        return value
+    return _ILLEGAL_XML.sub(' ', value)
+
+
+def _safe_cell(value):
+    """Spreadsheet cell: cleaned, and prefixed with ' when it could be parsed as a formula."""
+    value = _clean_text(value)
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if (stripped[:1] in {'=', '+', '-', '@'}) or value[:1] in {'\t', '\r'}:
+        return "'" + value
+    return value
+
+
+def _clean_payload(value):
+    """Recursively clean every string in an export payload (docx writes them verbatim)."""
+    if isinstance(value, str):
+        return _clean_text(value)
+    if isinstance(value, dict):
+        return {key: _clean_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clean_payload(item) for item in value]
+    return value
 
 
 def _field_label(field: dict) -> str:
@@ -324,9 +357,9 @@ def render_xlsx(payload: dict) -> bytes:
     wb = openpyxl.Workbook()
     main = wb.active
     main.title = '主表'
-    main.append(list(TABLE_HEADERS))
+    main.append([_safe_cell(h) for h in TABLE_HEADERS])
     for row in _table_rows(payload):
-        main.append(row)
+        main.append([_safe_cell(cell) for cell in row])
     main.freeze_panes = 'A2'
     main.auto_filter.ref = main.dimensions
 
@@ -341,7 +374,7 @@ def render_xlsx(payload: dict) -> bytes:
         def labels(items):
             return '；'.join(_field_label(item) for item in items)
 
-        cards.append([
+        cards.append([_safe_cell(cell) for cell in [
             f"P{paper.get('paper_id')}", paper.get('title') or '',
             (card.get('problem') or {}).get('value') or '',
             (card.get('mechanism') or {}).get('value') or '',
@@ -351,19 +384,19 @@ def render_xlsx(payload: dict) -> bytes:
             labels([card.get('problem') or {}]), labels([card.get('mechanism') or {}]),
             labels([card.get('data_setting') or {}]), labels(contributions),
             labels([card.get('boundary') or {}]),
-        ])
+        ]])
 
     themes_sheet = wb.create_sheet('主题与问题')
     themes_sheet.append(['主题', '定义', '趋势', '值得研究的问题', '方法组合机会', '代表论文编号'])
     syntheses = payload.get('syntheses') or {}
     for theme in payload.get('themes') or []:
         entry = syntheses.get(theme.get('id')) or {}
-        themes_sheet.append([
+        themes_sheet.append([_safe_cell(cell) for cell in [
             theme.get('name') or '', theme.get('definition') or '', entry.get('trend') or '',
             '\n'.join(item.get('question') or '' for item in entry.get('open_questions') or []),
             '\n'.join(item.get('idea') or '' for item in entry.get('combination_opportunities') or []),
             ' '.join(f"[P{rep.get('paper_id')}]" for rep in entry.get('representative') or []),
-        ])
+        ]])
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -374,6 +407,7 @@ def render_docx(payload: dict) -> bytes:
 
     from docx import Document
 
+    payload = _clean_payload(payload)  # PDF 提取的文本可能含 XML 不允许的控制字符
     papers = payload.get('papers') or []
     papers_by_id = {p['paper_id']: p for p in papers}
     counts = payload.get('counts') or {}
@@ -451,9 +485,9 @@ def render_csv(payload: dict) -> str:
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(TABLE_HEADERS)
+    writer.writerow([_safe_cell(h) for h in TABLE_HEADERS])
     for row in _table_rows(payload):
-        writer.writerow(row)
+        writer.writerow([_safe_cell(cell) for cell in row])
     return '\ufeff' + buf.getvalue()  # BOM so Excel opens it cleanly
 
 
