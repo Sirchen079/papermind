@@ -276,3 +276,57 @@ def test_render_marks_fuzzy_verified_fields_as_approximate():
     out = render_html(payload)
     assert '近似核对原文' in out
     assert '已核对原文' in out  # similarity 为 1/未命中的字段不受影响
+
+
+def test_export_neutralizes_formula_injection_in_xlsx_and_csv():
+    import copy
+    import csv
+    import io
+    from io import BytesIO
+
+    import openpyxl
+
+    payload = copy.deepcopy(PAYLOAD)
+    payload['papers'][0]['title'] = '=HYPERLINK("http://x","y")'
+    payload['themes'][0]['name'] = '+1+1'
+    wb = openpyxl.load_workbook(BytesIO(render_xlsx(payload)))
+    title_cell = wb['主表'].cell(row=2, column=3)
+    assert title_cell.data_type != 'f'
+    assert str(title_cell.value).startswith("'=")
+    theme_cell = wb['主题与问题'].cell(row=2, column=1)
+    assert theme_cell.data_type != 'f' and str(theme_cell.value).startswith("'+")
+    text = render_csv(payload)
+    title_row = next(r for r in csv.reader(io.StringIO(text)) if 'HYPERLINK' in r[2])
+    assert title_row[2].startswith("'=")
+    theme_col = next(r for r in csv.reader(io.StringIO(text)) if '+1+1' in r[6])
+    assert theme_col[6].startswith("'+")
+
+
+def test_export_survives_control_characters():
+    import copy
+    from io import BytesIO
+
+    import openpyxl
+    from docx import Document
+
+    payload = copy.deepcopy(PAYLOAD)
+    payload['papers'][2]['title'] = 'Bad\x0cTitle\x00Here'
+    xlsx_bytes = render_xlsx(payload)  # openpyxl IllegalCharacterError 之前会在这里抛出
+    docx_bytes = render_docx(payload)  # python-docx ValueError 之前会在这里抛出
+    wb = openpyxl.load_workbook(BytesIO(xlsx_bytes))
+    values = [str(c.value) for row in wb['主表'].iter_rows() for c in row]
+    assert not any('\x0c' in v or '\x00' in v for v in values)
+    text = '\n'.join(p.text for p in Document(BytesIO(docx_bytes)).paragraphs)
+    assert '\x0c' not in text and '\x00' not in text
+
+
+def test_export_keeps_plain_titles_and_numbers_untouched():
+    from io import BytesIO
+
+    import openpyxl
+
+    wb = openpyxl.load_workbook(BytesIO(render_xlsx(PAYLOAD)))
+    row2 = [c.value for c in wb['主表'][2]]
+    assert row2[2] == 'Paper One'  # 普通题名不加引号
+    assert row2[1] == 2019 and wb['主表'].cell(row=2, column=2).data_type == 'n'  # 年份数字原样
+    assert wb['主表'].cell(row=2, column=3).data_type != 'f'
