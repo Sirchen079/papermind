@@ -3,73 +3,156 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6.svg)]()
 
-PaperMind 是本地运行的论文阅读与研究资料管理应用，支持多个研究项目、论文问答、专题知识、笔记和研究成果导出。数据保存在本机，兼容多家模型服务。当前源码版本 0.6.29 为 Windows 本地候选，具体交付与验证范围见随包说明。
+PaperMind 是在 Windows 本机运行的科研辅助工具，可以用来：
 
-产品目标是安装后直接使用，无需用户另行部署或维护服务器。论文库、索引和研究记录由桌面应用在本机管理；联网检索、全文获取和云端模型 API 均可正常使用。本地模型是可选能力，复杂综述可以使用用户配置的云端模型，不要求下载或运行本地模型。
+- 管理论文；
+- 为一批论文生成精读卡片和文献地图；
+- 带着问题与 AI 一起读论文、比较方法；
+- 把研究判断、笔记和文稿保存下来，继续使用。
 
-新增 [专题综述](docs/library-review.md)：支持选择最多 1000 篇论文，逐篇整理、分层写作、来源回查与增量更新。
+资料保存在本机。模型由使用者自行配置，可以是云端 API，也可以是本机模型。
 
-## 功能特性
+当前源码版本为 0.6.30（Windows 本地候选）。各版本的变化、验证范围和已知限制见[版本变化](CHANGELOG.md)和[发布说明](docs/releases/)。
 
-- **研究项目**：按项目组织论文、会话、专题知识和研究任务；跨项目复用资料需显式复制，并保留来源。
-- **资料管理**：导入 PDF、BibTeX、RIS、arXiv 或手工记录；内置阅读器，可保存摘录、笔记和审阅矩阵。当前 PDF 原页可直接带入伴读草稿，保留已有问题与材料；发送图片需要支持图片的模型，原页快照不能代替科学结论核查。
-- **文档转换**：PDF 按需 OCR 或全文 OCR 转为 Markdown，支持断点续跑、原页对照、图文导出，并供 AI 阅读和索引。
-- **独立翻译与重排序**：划词翻译在独立浮窗中展示；翻译、OCR 与重排序按项目选模型，重排序可选专用接口或通用大模型。
-- **论文问答**：围绕问题阅读和比较资料，保存研究判断与来源。所选论文的完整正文在预算允许时直接进入对话，放不下时可按章节或原页继续读；更多材料可能增加用量。可选择“文献综合”或“修订综述”应用 Nature 写作指导；局部修改建议可编辑、采用为新版本并继续研究。额外证据复核按需开启；提供出处与加载技能不等于结论正确。失败保留已有进度，工具调用步数可在设置中调整。
-- **专题知识**：将资料与判断积累为专题知识，保留候选版本、采用版本和引用来源。
-- **模型接入**：支持 OpenAI、Anthropic 及 OpenAI 兼容接口；连接配置可共享，各项目独立选择模型，并可按模型配置上下文窗口、思考等级与图片输入能力标记。远程生成等待随思考等级调整，用量计入应用统计；具体服务的协议与模型能力需匹配。
-- **研究产出**：管理研究想法、实验记录和写作材料，导出 Markdown、BibTeX 或研究汇报 PPTX。
-- **数据安全**：数据存储在本机，API 密钥加密保存；支持项目备份和整应用备份，校验后离线恢复。
+> PaperMind 用来减少研究中的重复劳动，不替代研究者的判断。AI 生成的内容可能有错误或遗漏，引用、数值和结论在使用前请对照原文核实。详见下文“使用须知”。
 
-论文整理、阅读与人工编辑可完全离线使用。内置 CPU 推理引擎，可在“本地模型库”导入单文件 GGUF 并按项目启用；设置页同时提供“连接本机 AI”，支持发现 Ollama、LM Studio、llama.cpp 的模型并选择文本与向量用途，本机服务未设置密钥时可留空。向量模型负责语义召回；通用多模态模型可兼任对话、翻译、OCR 与大模型重排序。完整本地使用需要选择已下载的本机模型，并检查各独立用途的模型配置。详见 [本地 AI 验证与后续工作](docs/local-ai.md)。
+## 能省掉哪些工作
 
-## Windows 安装与使用
+| 研究工作 | PaperMind 做什么 | 留给研究者的部分 |
+|---|---|---|
+| 逐篇精读、写笔记 | 为每篇论文生成精读卡片，字段包括：研究问题、方法机制、数据条件、主要贡献、判断边界。每个字段附原文引文，由程序核对引文是否出自原文、数字是否一致，并标出页码 | 抽查标为“需核对”的字段 |
+| 梳理研究路线 | 生成文献地图：提出研究主题并归类论文。每个主题给出趋势、值得研究的问题、方法组合机会和代表论文，最后汇总总体判断和阅读路线。年份分布等统计数字由程序计算 | 按自己的口径改名、合并、拆分或删除主题；只重跑受影响的部分 |
+| 从文献走向选题 | 地图中的每个“值得研究的问题”和“方法组合机会”，都可以一键带上相关论文进入研究对话，继续核对原文，设计最小验证方案 | 判断方向是否值得投入 |
+| 带着问题读论文、比较方法 | 研究对话可以：检索本地论文库；按章节或页码读全文；查询 OpenAlex、Crossref、arXiv 和网页；保存笔记与文稿。回答附来源，可回到 PDF 原页 | 提出问题，修订文稿 |
+| 写综述正文 | 专题综述按“逐篇分析 → 分批综合 → 提纲 → 分章写作 → 整篇修订”进行。可以暂停续跑，可以加入新论文增量更新，历史版本都会保留 | 审阅和修改正文 |
+| 交付与汇报 | 文献地图可导出为单文件 HTML、Excel、Word、CSV、BibTeX；研究汇报可导出 PPTX | — |
 
-- **安装版**：首次默认安装给当前用户，无需管理员权限；既有安装升级沿用原安装模式。数据保存在 `%LOCALAPPDATA%\PaperMind\data`，静默卸载保留资料。升级前建议创建整应用备份，详见[安装与资料延续](docs/installation-continuity.md)。
-- **便携版**：解压后运行 `start-portable.cmd` 启动，数据保存在解压目录下。
-- **首次配置**：在设置中添加模型连接，为文本模型指定 `chat` 角色，同时为向量模型指定 `embedding` 角色。OCR、翻译与重排序的独立选择位于设置页。
+专题综述最多支持 1000 篇论文。文献地图目前在约 100 篇的真实文献集上做过完整运行。逐篇结果会缓存，新增论文或修改主题时只处理变化的部分。
+
+## 其他功能
+
+- **研究项目**：按项目分开保存论文、对话、专题知识和研究任务。跨项目复用资料需要显式复制，并保留来源。
+- **资料管理**：
+  - 可导入 PDF、BibTeX、RIS、arXiv，或手工录入；
+  - 按 DOI 补全书目信息和摘要，获取开放获取全文；
+  - 内置阅读器，支持摘录、笔记和审阅矩阵。
+- **文档转换**：PDF 通过文字层或 OCR 转为 Markdown，可对照原页，供检索和阅读使用。
+- **翻译与重排序**：支持划词翻译。翻译、OCR 和重排序可以在项目内各自选用模型。
+- **本机模型**：
+  - 可导入单文件 GGUF，由内置 llama.cpp 在 CPU 上推理；
+  - 也可以连接 Ollama、LM Studio 或 llama.cpp 服务。
+- **内置技能**：
+  - 完整内置 Nature Skills 和 Oh My Paper 两个技能库，可在技能页浏览原文，在对话中按任务加载；专题综述按写作阶段调用这些技能。
+  - 也可以导入单个 Markdown 文件作为自定义技能。
+- **外部 agent 接口**：本机有一个只读 HTTP 接口，需要本机令牌才能访问。配合 [skills/papermind-library/SKILL.md](skills/papermind-library/SKILL.md)，可以让 Claude Code、Codex 等工具查询论文库。
+- **数据安全**：API 密钥加密保存；支持项目备份和整应用备份。
+
+## 安装与首次配置
+
+- **安装版**：
+  - 首次安装默认装给当前用户，不需要管理员权限；
+  - 数据保存在 `%LOCALAPPDATA%\PaperMind\data`；
+  - 静默卸载会保留资料；
+  - 升级前建议先创建整应用备份。
+- **便携版**：解压后运行 `start-portable.cmd`，数据保存在解压目录下。
+- **模型配置**：
+  - 在设置中添加模型连接，把文本模型指定为 `chat`、向量模型指定为 `embedding`；
+  - 思考等级在模型设置中选择，未设置时默认 high；
+  - 效果基准是 glm-5.3（max 思考等级），能力更弱的模型或更低的思考等级也能用，但效果不作保证；
+  - 文献地图和专题综述建议使用上下文不少于 64K 的模型，并在模型设置中填写实际上下文长度。
 
 ## 从源码运行
 
 需要 Python 3.11+ 和 Node.js。
 
 ```powershell
-.\start.ps1
-```
-
-脚本会准备依赖、构建前端并启动应用，默认地址为 `http://127.0.0.1:4278`。
-
-```powershell
+.\start.ps1           # 准备依赖、构建前端并启动，默认地址 http://127.0.0.1:4278
 .\start.ps1 -Rebuild  # 重新构建前端后启动
 .\dev.ps1             # 开发模式
 ```
 
-可通过 `PAPERMIND_DATA_DIR` 设置数据目录，通过 `PAPERMIND_PORT` 设置端口。完整后端配置见 [后端说明](backend/README.md)。
+可以用 `PAPERMIND_DATA_DIR` 设置数据目录，用 `PAPERMIND_PORT` 设置端口。完整配置见[后端说明](backend/README.md)。
 
 ## 测试与构建
 
 ```powershell
 cd backend
 python -m pip install -e ".[dev]"
-python -m pytest
+python -m pytest --basetemp=C:\pmt   # 仓库在较深的路径下时，指定短的临时目录可避免 Windows 路径过长
 cd ../frontend
 npm ci
 npm test
 npm run build
 ```
 
-Windows 桌面程序使用 PyInstaller 打包，安装程序使用 Inno Setup 构建，依赖与命令见 [打包说明](build/README.md)。
+Windows 桌面程序用 PyInstaller 打包，安装程序用 Inno Setup 构建。依赖与命令见[打包说明](build/README.md)。
 
-## 内置研究技能与第三方组件
+## 数据、网络与费用
 
-论文问答、研究任务和专题知识更新内置两项改编自上游开源项目的研究技能，随应用自动加载，无需额外安装或配置：
+- **本机数据**：论文、笔记、索引和研究记录都保存在本机数据目录。应用没有账号体系；PaperMind 自身不收集使用数据，也不向开发者上传任何数据。
+- **发送给模型服务的内容**：调用模型时，相关的论文片段、问题和材料会发送到你配置的模型服务，适用该服务的隐私条款和计费规则。不希望外发的资料，请改用本机模型，或者不要发送。
+- **联网访问**：文献调研、DOI 补全、公开全文获取、网页搜索与读取会访问 OpenAlex、Crossref、arXiv、Bing 搜索结果，以及你指定的网页。只有使用这些功能时才会联网，arXiv 订阅除外：设置了订阅后，每次启动会自动拉取超过 24 小时未更新的订阅。
+- **费用**：
+  - 模型调用费用由使用者承担；
+  - 应用内的用量统计按服务返回的 token 数计算，仅供参考，以服务商账单为准；
+  - 文献地图和专题综述会批量调用模型，用量较大；
+  - arXiv 订阅自动拉取时，会用对话模型为新论文评估相关度，也会产生少量调用。
 
-| 技能 | 上游项目 | 上游协议 | 用途 |
+## 使用须知
+
+- **AI 内容需要核实。** AI 生成的卡片、地图、回答和综述可能存在事实、归因或数值错误。
+  - “已核对原文”标签只表示两件事：该字段的引文能在原文或摘要中找到；引文中的数字出现在原文对应位置。它不表示模型的概括、比较或科学结论正确。
+  - 拿不到全文的论文，只能依据摘要或元数据处理，界面会标出证据级别。
+- **学术规范由研究者负责。** 研究者对引用、投稿和发表的内容负责，请遵守所在机构、期刊和会议关于 AI 辅助写作与披露的规定。本工具用于提升研究效率，不得用于捏造数据、伪造引用或其他学术不端行为。
+- **文献获取与版权。** 全文获取只使用公开的开放获取链接，不绕过登录或付费访问控制。导入和使用文献的权利，由使用者自行确认。
+- **无隶属或背书关系。** 本项目与 Springer Nature、Nature 期刊、K-Dense、Oh My Paper、OpenAlex、Crossref、arXiv、Microsoft 及各模型服务商均无隶属、合作或背书关系。“Nature Skills”是一个社区开源项目的名称，与 Nature 期刊及其出版商无关。文中出现的相关名称只用于说明来源。
+- **无担保。** 软件按“现状”提供，不附带任何明示或默示的担保；责任限制见 GPL-3.0 第 15、16 条。
+
+## 复用的开源技能与组件
+
+PaperMind 优先复用成熟的开源技能和组件，只为实际缺口编写新代码。下列内容按各自的许可证使用。完整出处、固定版本、修改说明和许可证原文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)、`third_party/` 和 `backend/builtin_skills/`。
+
+### 科研技能
+
+| 名称 | 上游 | 许可证 | 在 PaperMind 中的用法 |
 |---|---|---|---|
-| `paper-evidence` | [Nature Skills](https://github.com/Yuan1z0825/nature-skills) | Apache-2.0 | 逐篇证据记录，区分原文、分析、假设、用户判断和材料覆盖范围 |
-| `critical-comparison` | [K-Dense Scientific Agent Skills](https://github.com/K-Dense-AI/scientific-agent-skills) | MIT | 比较实验条件、混杂因素、统计不确定性与结论强度 |
+| Nature Skills | [Yuan1z0825/nature-skills](https://github.com/Yuan1z0825/nature-skills) | Apache-2.0 | 20 个技能及全部资源原样内置在 `backend/builtin_skills/nature/`，对话和专题综述按任务加载。`backend/research_skills/paper-evidence/` 是 nature-paper-card 证据规则的翻译缩编版，用于研究任务和专题知识更新 |
+| Oh My Paper | [LigphiDonk/Oh-my--paper](https://github.com/LigphiDonk/Oh-my--paper) | MIT | 35 个技能及资源原样内置在 `backend/builtin_skills/oh-my-paper/`，专题综述写作使用 academic-researcher 和 research-paper-handoff。PaperMind 不安装、也不运行它的 Claude Code 插件、会话钩子或远程实验组件 |
+| K-Dense Scientific Agent Skills | [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) | MIT | `backend/research_skills/critical-comparison/` 改编自 scientific-critical-thinking，在比较方法时检查实验条件差异 |
 
-上述技能由本项目翻译、缩编并适配 PaperMind 的工具与输出格式，不是上游完整实现的运行，也不代表上游背书。技能用于组织证据检查过程，不能保证模型结论正确，研究结论仍应按原文核对。上游版本、原始文件、改动说明与协议全文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，运行内容可在 `backend/research_skills/` 查看。用户自定义技能独立生效。
+改编版是为 PaperMind 的工具和输出格式所做的翻译、选取和修改，不是上游的完整实现。它不代表上游作者认可本项目的使用方式或输出结果。内置技能中的脚本和外部服务说明原样保留，但它们的存在不代表相应的外部依赖或账户已经配置。
+
+### 设计参考（未复制代码或资源）
+
+- [PaperSpark](https://github.com/zongxi1115/PaperSpark)（CC BY-NC 4.0）：只参考了功能与交互思路，没有复制其源码、提示词、图片或其他资源。
+- [PaperQA2](https://github.com/Future-House/paper-qa)（Apache-2.0）：参考了它把模型分为对话模型和向量模型两种角色的配置思路，没有复制代码。
+
+### 随程序分发的主要运行组件
+
+| 组件 | 许可证 | 用途 |
+|---|---|---|
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) b11146（未修改的 Windows CPU 服务与 DLL） | MIT | 本机 GGUF 模型推理。不附带模型权重，各模型遵守各自的许可证 |
+| [PyMuPDF](https://github.com/pymupdf/PyMuPDF) | AGPL-3.0（或 Artifex 商业许可） | PDF 解析、渲染和链接提取 |
+| [LiteLLM](https://github.com/BerriAI/litellm) | MIT | 接入多家模型服务 |
+| FastAPI、Uvicorn、SQLModel、Alembic | MIT / BSD-3-Clause | 本机服务与数据库 |
+| [sqlite-vec](https://github.com/asg017/sqlite-vec) | MIT / Apache-2.0 | 向量检索 |
+| python-markdownify、Beautiful Soup、Soup Sieve | MIT | 把 OCR 得到的表格转成 Markdown |
+| openpyxl、python-docx、python-pptx | MIT | Excel、Word、PPTX 导出 |
+| arxiv、bibtexparser | MIT；LGPL-3.0 或 BSD | 获取 arXiv 论文、解析 BibTeX |
+| cryptography、Pillow、httpx、PyYAML | Apache-2.0 或 BSD-3-Clause、MIT-CMU、BSD-3-Clause、MIT | 加密、图像处理、网络请求、配置读取 |
+| pywebview | BSD-3-Clause | 桌面窗口，使用系统已有的 Microsoft Edge WebView2 运行时 |
+| React、react-markdown、unified / remark / rehype、KaTeX、Cytoscape.js | MIT | 界面、Markdown 与公式渲染、关系图 |
+| PDF.js（pdfjs-dist） | Apache-2.0 | 内置 PDF 阅读器 |
+| highlight.js（经 rehype-highlight 使用） | BSD-3-Clause | 代码高亮 |
+
+打包时使用 PyInstaller（GPL-2.0-or-later，附 bootloader 例外）和 Inno Setup（Inno Setup License）。使用者自行配置的模型服务和外部数据服务都不随本程序分发，使用时遵守各自的服务条款。
+
+## 许可证
+
+本项目以 [GPL-3.0](LICENSE) 发布。
+
+- PyMuPDF 以 AGPL-3.0 授权。再分发本程序，或以网络服务方式提供修改后的版本时，还需满足 AGPL-3.0 对相应部分的要求。
+- 内置技能和第三方组件保留各自的许可证（Apache-2.0、MIT 等）。再分发时，请保留 THIRD_PARTY_NOTICES.md，以及 `third_party/`、`backend/builtin_skills/` 中的许可证和声明文件。
 
 ## 贡献
 
@@ -78,13 +161,8 @@ Windows 桌面程序使用 PyInstaller 打包，安装程序使用 Inno Setup �
 ## 文档
 
 - [版本变化](CHANGELOG.md)
+- [发布说明](docs/releases/)
 - [后端配置](backend/README.md)
 - [Windows 打包](build/README.md)
 - [第三方组件声明](THIRD_PARTY_NOTICES.md)
-
-## 许可证
-
-本项目以 [GPL-3.0](LICENSE) 协议发布。两项内置研究技能为上游项目的改编版本，分别延续 Apache-2.0 与 MIT 协议；再分发相应组件时应保留其许可证与归属说明，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-
-完整 [Nature Skills 与 Oh My Paper 内置技能库](docs/builtin-skills.md)：支持浏览原始资源、问答按需调用与专题综述自动写作路由。
+- [外部 agent 查询技能](skills/papermind-library/SKILL.md)
