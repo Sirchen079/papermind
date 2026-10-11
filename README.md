@@ -43,7 +43,7 @@ PaperMind 是在 Windows 本机运行的科研辅助工具，可以用来：
   - 也可以连接 Ollama、LM Studio 或 llama.cpp 服务。
 - **技能**：
   - 完整内置 Nature Skills 和 Oh My Paper 两个技能库，可在技能页浏览原文，在对话中按任务加载；专题综述按写作阶段调用这些技能。
-  - 可以从 GitHub 地址、本机文件夹或 zip 导入现成的 Agent Skills 技能包（`SKILL.md` 加 references、scripts 等目录的格式）。大仓库可以只导入某个技能目录，例如 `https://github.com/<owner>/<repo>/tree/main/skills/<技能名>`。导入的技能和内置技能一样由对话助手按需加载，技能页会显示来源、版本和许可证。技能包里的脚本只作为参考资料读取，不会被执行。
+  - 可以从 GitHub 地址、本机文件夹或 zip 导入现成的 Agent Skills 技能包（`SKILL.md` 加 references、scripts 等目录的格式）。大仓库可以只导入某个技能目录，例如 `https://github.com/<owner>/<repo>/tree/main/skills/<技能名>`。导入的技能和内置技能一样由对话助手按需加载，技能页会显示来源、版本和许可证。技能包里的脚本只作为参考资料读取，不会被执行。从 GitHub 导入会用到 GitHub API，未登录时每小时 60 次、按出口 IP 计算，多人共用代理时可能很快用完；可以设置环境变量 `GITHUB_TOKEN` 后重启 PaperMind，或者下载技能目录后用文件夹导入。
   - 也可以导入单个 Markdown 文件作为自定义技能。
 - **外部 agent 接口**：Claude Code、Codex 等支持 MCP 的工具可以直接连接 PaperMind，检索和阅读论文库、精读卡片与文献地图，也可以把笔记、研究想法和文档写回。配置方法见下文“接入外部 AI 工具”。
 - **数据安全**：API 密钥加密保存；支持项目备份和整应用备份。
