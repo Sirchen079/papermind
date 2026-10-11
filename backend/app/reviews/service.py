@@ -458,7 +458,7 @@ def run(engine, review_id, token):
         def reserve_key_for_current_model():
             return reserves.model_key(provider, model, window, effort)
 
-        scope = f"本次文献范围为用户选择的 {len(ids)} 篇，不代表穷尽领域。写作简报和前稿是生成的草案，事实判断以原文为准；材料未涉及的问题不等于整个领域无人研究。\n"
+        scope = f"本次文献范围为用户选择的 {len(ids)} 篇。写作简报和前稿是生成的草案，事实以原文为准。\n"
 
         def ask(
             instruction,

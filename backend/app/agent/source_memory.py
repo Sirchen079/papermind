@@ -21,9 +21,8 @@ def carry_sources(session, conversation_id, current_message_id, paper_ids, token
     if previous is None or token_budget <= 0:
         return '', []
     header = ('[此前研究中保存的来源]\n以下是此前返回的材料快照；material_kind 区分原文片段、摘要书目、检索线索、生成分析与研究记录。'
-              '检索线索用于发现材料，原文片段也不代表已读完整论文；这些快照不是上一版答案的事实背书。'
-              '修改或压缩时保留比较条件、作者归因与不确定性；新增判断应说明是你的推断。'
-              '不要把未证实解释改成确定结论。材料够用即可直接写；需要其他保存片段时可用 read_chat_sources。\n')
+              '修改或压缩时保留比较条件和作者归因。'
+              '材料够用即可直接写；需要其他保存片段时可用 read_chat_sources。\n')
     remaining = token_budget - estimate_tokens(header)
     records, carried = [], []
     # Preserve recent reading before early exploratory material. Reserve the

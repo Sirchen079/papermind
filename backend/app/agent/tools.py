@@ -444,12 +444,10 @@ TOOLS: list[Tool] = [
     Tool(
         name="ask_user",
         description=(
-            "Proactively ask the user 1–3 concise questions when their research goal, intended use, scope, "
-            "or key constraints are unclear and would materially change the analysis or search direction. "
-            "For substantive research or feasibility discussions, first understand relevant researcher background: "
-            "role and research stage, skills, prior work, research direction, available data/equipment/compute, "
-            "time and collaborators. Ask about important gaps before tailoring recommendations; use known "
-            "project and conversation context and never repeat an already answered background questionnaire. "
+            "Ask the user 1–3 concise questions only when their research goal, intended use, scope or key "
+            "constraints are unclear, cannot be reasonably assumed, and would materially change the analysis or "
+            "search direction. Use known project and conversation context; when researcher background is missing, "
+            "answer with stated assumptions first instead of asking up front, and never repeat an answered question. "
             "Clarify before aimless searching. Do not require every detail before helping; use reasonable "
             "defaults for minor preferences and explore directly when the user asks for initial ideas. "
             "Provide up to 4 suggested answers per question if useful; "
@@ -572,7 +570,7 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="read_paper_notes",
-        description="Read saved paper notes from this or earlier conversations, including researcher edits. Omit note_id to list notes for a known paper (20 per page, continue with next_offset). Supply note_id to read its body; continue with next_start_char until null. Notes are research records, not original paper evidence. Use their page/section pointers to return to get_paper_full_text for verification. This reads existing notes without changing them.",
+        description="Read saved paper notes from this or earlier conversations, including researcher edits. Omit note_id to list notes for a known paper (20 per page, continue with next_offset). Supply note_id to read its body; continue with next_start_char until null. Use their page/section pointers with get_paper_full_text when the original wording matters. This reads existing notes without changing them.",
         parameters={"type": "object", "properties": {
             "paper_id": {"type": "integer"}, "note_id": {"type": "integer"},
             "offset": {"type": "integer", "default": 0},
@@ -683,23 +681,23 @@ from app.agent.paper_search import search_paper_text
 
 TOOLS.extend([
     Tool(name='read_research_task',
-        description='Continue from a saved small-paper research result using the task_id and version attached by the user. part=document reads that exact version, its human/AI authorship and source catalog; part=source reads a saved original excerpt by source_index. Generated judgments are not primary evidence. A later version is reported but never silently substituted. Reading does not rerun or modify the task.',
+        description='Continue from a saved small-paper research result using the task_id and version attached by the user. part=document reads that exact version, its human/AI authorship and source catalog; part=source reads a saved original excerpt by source_index. A later version is reported but never silently substituted. Reading does not rerun or modify the task.',
         parameters={'type':'object','properties':{'task_id':{'type':'string'},'version':{'type':'integer','minimum':1},
             'part':{'type':'string','enum':['document','source']},'source_index':{'type':'integer'},
             'start_char':{'type':'integer'},'max_chars':{'type':'integer'}},
             'required':['task_id','version'],'additionalProperties':False},run=read_research_task),
     Tool(name='propose_document_edit',
-        description='Prepare a local edit preview for a saved research document, without writing a file. Use after reading the exact saved version and checking relevant evidence when proposing a replacement. before must match original Markdown exactly; after is the replacement, reason briefly explains the change and sources. The UI lets the user adjust and adopt it as a new version. The original remains unchanged. If a phrase occurs more than once, specify its start_char from the document. This does not certify factual accuracy or block a normal answer.',
+        description='Prepare a local edit preview for a saved research document, without writing a file. Use after reading the exact saved version and checking relevant evidence when proposing a replacement. before must match original Markdown exactly; after is the replacement, reason briefly explains the change and sources. The UI lets the user adjust and adopt it as a new version. The original remains unchanged. If a phrase occurs more than once, specify its start_char from the document.',
         parameters={'type':'object','properties':{'message_id':{'type':'integer'},'filename':{'type':'string'},
             'before':{'type':'string'},'after':{'type':'string'},'reason':{'type':'string'},'start_char':{'type':'integer'}},
             'required':['message_id','filename','before','after'],'additionalProperties':False},run=propose_document_edit),
     Tool(name='search_saved_documents',
-        description='Find saved research documents across conversations in the current workspace, including manual revisions. Use brief keywords from a topic or filename; empty query lists recent documents. Defaults to excluding replaced versions; an explicitly unadopted draft does not replace its parent; include_previous_versions returns those too. Search results are research material, not primary evidence.',
+        description='Find saved research documents across conversations in the current workspace, including manual revisions. Use brief keywords from a topic or filename; empty query lists recent documents. Defaults to excluding replaced versions; an explicitly unadopted draft does not replace its parent; include_previous_versions returns those too.',
         parameters={'type':'object','properties':{'query':{'type':'string'},'offset':{'type':'integer'},
             'limit':{'type':'integer'},'include_previous_versions':{'type':'boolean'}},'required':[],'additionalProperties':False},
         run=search_saved_documents),
     Tool(name='read_saved_document',
-        description='Read a document found by search_saved_documents or selected by the user, using message_id and filename. part=document reads the exact saved snapshot, lists sources and any newer_versions (descendant references with recorded authorship and adoption status). For continued research, consult applicable revisions; retain an explicitly requested historical version. Multiple entries can include separate branches or unadopted drafts alongside prior work. part=source reads a source_catalog entry by source_index. Continue long text using next_start_char. User revisions and assistant writing are distinct from primary source excerpts. Does not modify or regenerate anything.',
+        description='Read a document found by search_saved_documents or selected by the user, using message_id and filename. part=document reads the exact saved snapshot, lists sources and any newer_versions (descendant references with recorded authorship and adoption status). For continued research, consult applicable revisions; retain an explicitly requested historical version. Multiple entries can include separate branches or unadopted drafts alongside prior work. part=source reads a source_catalog entry by source_index. Continue long text using next_start_char. Does not modify or regenerate anything.',
         parameters={'type':'object','properties':{'message_id':{'type':'integer'},'filename':{'type':'string'},
             'part':{'type':'string','enum':['document','source']},'source_index':{'type':'integer'},
             'start_char':{'type':'integer'},'max_chars':{'type':'integer'}},'required':['message_id','filename'],'additionalProperties':False},
@@ -707,13 +705,13 @@ TOOLS.extend([
 ])
 
 TOOLS.append(Tool(name='search_paper_text',
-    description='Find original passages in the locally indexed paper library using a research question or keywords; exact wording is not required. Combines configured semantic retrieval, keyword search and reranking, with adjacent context. Optionally restrict paper_ids. Returns original text, paper IDs and source pages; read further with get_paper_full_text. Useful when titles/abstracts or exact-phrase lookup do not answer a specific question. Results are candidates to read, not verified conclusions.',
+    description='Find original passages in the locally indexed paper library using a research question or keywords; exact wording is not required. Combines configured semantic retrieval, keyword search and reranking, with adjacent context. Optionally restrict paper_ids. Returns original text, paper IDs and source pages; read further with get_paper_full_text. Useful when titles/abstracts or exact-phrase lookup do not answer a specific question.',
     parameters={'type':'object','properties':{'query':{'type':'string'},
         'paper_ids':{'type':'array','items':{'type':'integer'},'description':'Omit to search the library; use IDs to focus on selected papers.'},
         'top_k':{'type':'integer','default':6}},'required':['query'],'additionalProperties':False},run=search_paper_text))
 
 TOOLS.append(Tool(name='read_review',
-    description='Continue research from a saved review task. Use its review_id from the research link. overview lists papers and sections (including unfinished work); draft reads the saved manuscript or available chapter drafts; section reads one chapter; paper reads an existing paper analysis. These are generated or edited research materials, not independent primary evidence. Use get_paper_full_text for source facts. Reading never changes or restarts the review.',
+    description='Continue research from a saved review task. Use its review_id from the research link. overview lists papers and sections (including unfinished work); draft reads the saved manuscript or available chapter drafts; section reads one chapter; paper reads an existing paper analysis. Use get_paper_full_text for source facts. Reading never changes or restarts the review.',
     parameters={'type':'object','properties':{
         'review_id':{'type':'string'},'part':{'type':'string','enum':['overview','draft','section','paper']},
         'paper_id':{'type':'integer'},'section':{'type':'integer'},'start_char':{'type':'integer'},
@@ -734,16 +732,16 @@ from app.skills.paper_card import prepare_paper_card_sources, audit_paper_card, 
 
 TOOLS.extend([
     Tool(name='prepare_paper_card_sources',
-        description='Execute the original bundled Nature paper-card prepare_paper.py on a known local paper PDF. Returns a durable source bundle, file page count, automatic figure/table/equation inventory, warnings and script execution receipt. Reuses an unchanged PDF and script result. Preparation is not reading or scientific verification; inspect missing inventories in the PDF. Continue useful work if preparation fails.',
+        description='Execute the original bundled Nature paper-card prepare_paper.py on a known local paper PDF. Returns a durable source bundle, file page count, automatic figure/table/equation inventory, warnings and script execution receipt. Reuses an unchanged PDF and script result. Inspect missing inventories in the PDF. Continue useful work if preparation fails.',
         parameters={'type':'object','properties':{'paper_id':{'type':'integer'}},'required':['paper_id'],'additionalProperties':False},
         run=prepare_paper_card_sources),
     Tool(name='audit_paper_card',
-        description='Run the original Nature paper-card auditor on an exact saved note (note_id), saved document (message_id and filename), or unsaved card (content). Uses the original preparation script automatically if needed, preserves an immutable input and report, and never edits the card. A diagnostic with audit_pass=false means local issues to repair or mark partial, not a reason to block the whole answer. A pass is structural, not scientific validation. Prefer saved identities to resending long text.',
+        description='Run the original Nature paper-card auditor on an exact saved note (note_id), saved document (message_id and filename), or unsaved card (content). Uses the original preparation script automatically if needed, preserves an immutable input and report, and never edits the card. A diagnostic with audit_pass=false means local issues to repair or mark partial, not a reason to block the whole answer. Prefer saved identities to resending long text.',
         parameters={'type':'object','properties':{'paper_id':{'type':'integer'},'note_id':{'type':'integer'},
             'message_id':{'type':'integer'},'filename':{'type':'string'},'content':{'type':'string'}},
             'required':['paper_id'],'additionalProperties':False},run=audit_paper_card),
     Tool(name='read_skill_run',
-        description='Read a previous local skill execution receipt or its artifact by run_id. Available artifact names and downloads are listed in receipt.json; use character pagination for a long source_bundle.json or report. Reports and saved card inputs are workflow records, not independent scientific evidence.',
+        description='Read a previous local skill execution receipt or its artifact by run_id. Available artifact names and downloads are listed in receipt.json; use character pagination for a long source_bundle.json or report.',
         parameters={'type':'object','properties':{'run_id':{'type':'string'},'artifact':{'type':'string'},
             'start_char':{'type':'integer'},'max_chars':{'type':'integer'}},'required':['run_id'],'additionalProperties':False},
         run=read_skill_run),

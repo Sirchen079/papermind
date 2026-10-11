@@ -11,7 +11,7 @@ from app.ingestion.pdf_storage import resolve_pdf
 
 _PRINTED_URL = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 _NOTE = ('Links and nearby selectable PDF text are discovery material. They may be absent from OCR. '
-         'No website has been fetched; use read_webpage to check the destination and current availability. '
+         'No website has been fetched; use read_webpage to check the destination. '
          'An empty result does not prove that code, models or other resources are unavailable. '
          'Scanned or line-wrapped printed URLs may be missed; consult the original page if needed.')
 

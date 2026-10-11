@@ -114,7 +114,7 @@ def _prepare(session, paper_id):
             markdown += '\n\n来源问题：'+error
     else:
         markdown += '\n\n'+execution['stderr']
-    markdown += '\n\n自动清单可能漏掉图表和公式；整理完成不代表已读全文。请结合原 PDF 核对，缺口局部注明，可继续研究。'
+    markdown += '\n\n自动清单可能漏掉图表和公式，必要时看原 PDF；可继续研究。'
     receipt = _finish(directory, receipt, markdown)
     if receipt['ok']:
         index.parent.mkdir(parents=True, exist_ok=True)
@@ -174,7 +174,7 @@ def audit_paper_card(session, paper_id, note_id=None, message_id=None, filename=
     else:
         markdown += '本次脚本未完成：'+execution['stderr']
     for warning in prepared['validation'].get('warnings', []): markdown += '\n\n来源提示：'+warning
-    markdown += '\n\n检查主要覆盖结构和标注约定，不证明科学结论正确；自动图式清单为空或有遗漏时仍需看原页。只修订相关内容，不阻断其他回答。'
+    markdown += '\n\n检查只覆盖结构和标注约定，不证明科学结论正确；自动图式清单为空或有遗漏时看原页。只修订相关内容，不阻断其他回答。'
     return json.dumps(_finish(directory, receipt, markdown), ensure_ascii=False)
 
 

@@ -6,9 +6,9 @@ import { parseHash, type NavLocation } from '../pages/navigationModel';
 import { Sparkles } from '../icons';
 
 const starters = [
-  {label:'比较方法差异',question:'比较这些论文的方法、适用条件与局限，并指出哪些结果不能直接比较。'},
+  {label:'比较方法差异',question:'比较这些论文的方法、适用条件与效果，说明各自适合什么场景，并给出你的推荐。'},
   {label:'抓住论文重点',question:'总结这些论文要解决的问题、主要贡献与局限，列出对应的原文依据。'},
-  {label:'找出可追问的方向',question:'根据这些论文的局限与尚未解决的问题，提出值得进一步验证的研究问题，并说明依据和不确定性。'},
+  {label:'找出可追问的方向',question:'根据这些论文的局限与尚未解决的问题，提出值得进一步验证的研究问题，说明依据并给出第一步验证方案。'},
 ];
 
 export default function ResearchLaunch({papers,onNavigate}:{papers:Paper[];onNavigate?:(target:NavLocation|string)=>void}) {

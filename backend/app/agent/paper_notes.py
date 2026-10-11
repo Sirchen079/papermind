@@ -30,7 +30,7 @@ def read_paper_notes(session, paper_id, note_id=None, offset=0, start_char=0, ma
         return json.dumps({'error': f'paper {paper_id} not found'})
     base = {'paper_id': paper.id, 'title': paper.title,
             'material_kind': 'research_record',
-            'note': 'Saved editable research notes, not original paper text or proof of author claims. '
+            'note': 'Saved editable research notes, not original paper text. '
                     'Use their source locators to check original text when needed.'}
     if note_id is None:
         return json.dumps({**base, **notes_catalog(session, paper_id, offset)}, ensure_ascii=False)

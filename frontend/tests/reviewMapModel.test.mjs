@@ -153,7 +153,7 @@ test("researchHandoff 把值得研究的问题连同依据论文带入研究对�
   assert.match(handoff.question, /「弹性多参数」/);
   assert.match(handoff.question, /多参数串扰在实测数据上是否仍未解决？/);
   assert.match(handoff.question, /依据：多数结果来自合成模型/);
-  assert.match(handoff.question, /不能据此宣称：合成例子成功不能证明全局收敛/);
+  assert.match(handoff.question, /现有证据的缺口：合成例子成功不能证明全局收敛/);
   assert.match(handoff.question, /最小可行的验证方案/);
 });
 

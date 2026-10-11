@@ -235,7 +235,7 @@ def run_agent(
                 logging.getLogger(__name__).warning('Chat evidence review unavailable (%s)', type(exc).__name__)
                 audit = {'version': 2, 'status': 'unavailable', 'error_type': type(exc).__name__,
                          'draft_sha256': hashlib.sha256(content.encode()).hexdigest(), 'edits': []}
-                content = ('> 自动证据复核未完成，以下回答仍可阅读；引用、数值和关键结论尚未经过额外复核，请结合原文确认。\n\n' + content)
+                content = ('> 自动证据复核未完成，以下是未经额外复核的回答。\n\n' + content)
         if cancelled is not None and cancelled.is_set():
             yield ('error', {'message': '已停止，原问题已保留。'})
             return

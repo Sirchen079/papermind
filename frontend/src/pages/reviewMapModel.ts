@@ -121,7 +121,7 @@ export function researchHandoff(
       `围绕文献地图「${theme}」主题中的这个待研究问题继续研究：`,
       item.question,
       item.why ? `地图给出的依据：${item.why}` : '',
-      item.cannot_claim ? `地图提醒不能据此宣称：${item.cannot_claim}` : '',
+      item.cannot_claim ? `现有证据的缺口：${item.cannot_claim}` : '',
       '请先核对所附论文原文：这个问题是否确实尚未解决、已有工作做到哪一步、各自的实验条件；再提出一个最小可行的验证方案（数据、基线、评价指标、预期风险），并标出仍需我判断的地方。',
     ]
     : [
