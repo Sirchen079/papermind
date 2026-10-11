@@ -114,10 +114,15 @@ foreach ($doc in @("release-$Version.md", 'original-page-companion.md', 'release
                   'paper-section-reading.md', 'research-assistance-evaluation.md', 'saved-document-continuation.md', 'paper-reading-navigation.md',
                   'research-resource-reading.md', 'web-source-snapshots.md', 'fwi-research-workflow.md', 'research-continuation-home.md',
                   'document-version-continuation.md', 'research-entry-continuation.md')) {
-  # release-*.md 已移入 docs/releases/；其余仍在 docs/。两处都找不到才报错。
+  # release-*.md 已移入 docs/releases/；其余仍在 docs/。开发过程文档仅存在于本地，
+  # 从仅含源码的检出打包时找不到就跳过并警告，不算错误。
   $source = Join-Path $Root "docs/releases/$doc"
   if (-not (Test-Path -LiteralPath $source)) { $source = Join-Path $Root "docs/$doc" }
-  Copy-Item -LiteralPath $source -Destination $releaseDocs -Force
+  if (Test-Path -LiteralPath $source) {
+    Copy-Item -LiteralPath $source -Destination $releaseDocs -Force
+  } else {
+    Write-Warning "本地缺少文档，已跳过：$doc"
+  }
 }
 # 外部工具技能文件：随包分发，便于用户装进 Claude Code / Codex / ZCode 等工具的技能目录。
 $releaseSkills = Join-Path (Split-Path -Parent $exe) 'skills\papermind-library'

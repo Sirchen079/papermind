@@ -81,3 +81,8 @@ backend/.baseline-test-temp/
 backend/.prereq-*-temp/
 backend/.agent-*-temp/
 backend/.sources-*-temp/
+
+# 开发过程文档仅保留在本地，仓库只保留 docs/releases/ 下的发布说明。
+/docs/*
+!/docs/releases/
+/docs/releases/*-validation.md
