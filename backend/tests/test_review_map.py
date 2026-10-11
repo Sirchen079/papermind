@@ -640,3 +640,29 @@ def test_map_synth_exception_isolated_to_theme(client, monkeypatch):
     others = [e for tid, e in result['syntheses'].items() if tid != 'T2']
     assert others and all('trend' in e for e in others)
     assert '主题综合未完成' in result['stage']
+
+
+def test_stop_only_pauses_a_running_map(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=4)
+    client.post(prefix + '/map/run')
+    ready = client.get(prefix + '/map').json()
+    assert ready['status'] == 'ready'
+    res = client.post(prefix + '/map/stop')
+    assert res.status_code == 200
+    assert res.json()['status'] == 'ready'
+    assert client.get(prefix + '/map').json()['version'] == ready['version']
+
+
+def test_update_themes_reports_invalid_input_as_422_not_conflict(client, monkeypatch):
+    prefix, fake, ids = setup_map(client, monkeypatch, count=4)
+    client.post(prefix + '/map/run')
+    result = client.get(prefix + '/map').json()
+    version = result['version']
+    blank = [dict(result['themes'][0], name='  ')] + result['themes'][1:]
+    duplicate = result['themes'] + [dict(result['themes'][0])]
+    too_many = [{'id': '', 'name': f'主题{i}'} for i in range(16)]
+    for themes_list, message in ((blank, '非空名称'), (duplicate, '重复'), (too_many, '1 到 15'), ([], '1 到 15')):
+        res = client.put(prefix + '/map/themes', json={'themes': themes_list, 'expected_version': version})
+        assert res.status_code == 422, res.text
+        assert message in res.json()['detail']
+    assert client.get(prefix + '/map').json()['version'] == version

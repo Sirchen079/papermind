@@ -84,7 +84,8 @@ class MapThemesBody(BaseModel):
 @router.put('/{review_id}/map/themes')
 def map_themes(review_id:str,body:MapThemesBody,session:Session=Depends(get_session)):
     from app.reviews import map as review_map
-    return invoke(review_map.update_themes,session,review_id,body.themes,body.expected_version)
+    try:return invoke(review_map.update_themes,session,review_id,body.themes,body.expected_version)
+    except review_map.ThemeValidationError as exc:raise HTTPException(422,str(exc)) from exc
 
 @router.get('/{review_id}/map/export')
 def map_export(review_id:str,format:str='html',session:Session=Depends(get_session)):

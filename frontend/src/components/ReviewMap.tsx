@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspace } from '../workspaceContext';
 import { createReviewRequest, putReviewThemes, type MapTheme, type PaperCardEntry, type ReviewMapDetail, type ReviewMapPaper } from '../reviewsApi';
-import { addTheme, fieldLocation, filterPapers, mergeThemes, removeTheme, renameTheme, statusLabel, type CardField, type FilterablePaper } from '../pages/reviewMapModel';
+import { addTheme, fieldLocation, filterPapers, mergeThemes, removeTheme, renameTheme, statusLabel, themesForSave, type CardField, type FilterablePaper } from '../pages/reviewMapModel';
 
 const EXPORTS: [string, string][] = [['html', 'HTML'], ['xlsx', 'Excel'], ['docx', 'Word'], ['csv', 'CSV'], ['bib', 'BibTeX']];
 
@@ -25,6 +25,7 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
   const [mergeName, setMergeName] = useState('');
   const [newName, setNewName] = useState('');
   const [savedHint, setSavedHint] = useState('');
+  const [conflict, setConflict] = useState(false);
   const [query, setQuery] = useState('');
   const [themeFilter, setThemeFilter] = useState('');
   const [evidenceFilter, setEvidenceFilter] = useState('');
@@ -34,7 +35,7 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
 
   useEffect(() => {
     const g = ++generation.current;
-    setMap(null); setCards([]); setError(''); setEditing(false); setSavedHint('');
+    setMap(null); setCards([]); setError(''); setEditing(false); setSavedHint(''); setConflict(false); setBusy(false);
     request<ReviewMapDetail>(`/${reviewId}/map`).then((next) => { if (g === generation.current) setMap(next); })
       .catch((e) => { if (g === generation.current) setError((e as Error).message); });
     return () => { ++generation.current; };
@@ -70,15 +71,30 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
 
   async function saveThemes() {
     if (!map) return;
-    setBusy(true); setError(''); setSavedHint('');
+    const g = generation.current;
+    setBusy(true); setError(''); setSavedHint(''); setConflict(false);
     try {
-      const next = await putReviewThemes<ReviewMapDetail>(base, reviewId, draft, map.version);
+      const next = await putReviewThemes<ReviewMapDetail>(base, reviewId, themesForSave(draft), map.version);
+      if (g !== generation.current) return;
       setMap(next); setEditing(false); setMergePick([]); setMergeName(''); setNewName('');
       setSavedHint('主题已保存。点“重新生成受影响部分”更新地图。');
     } catch (e) {
+      if (g !== generation.current) return;
       const err = e as Error & { status?: number };
-      setError(err.status === 409 ? '地图已被更新，请刷新后再改' : err.message);
-    } finally { setBusy(false); }
+      setError(err.message);
+      setConflict(err.status === 409);
+    } finally { if (g === generation.current) setBusy(false); }
+  }
+
+  async function reload() {
+    const g = generation.current;
+    setBusy(true); setError('');
+    try {
+      const next = await request<ReviewMapDetail>(`/${reviewId}/map`);
+      if (g !== generation.current) return;
+      setMap(next); setEditing(false); setConflict(false); setMergePick([]); setMergeName(''); setNewName('');
+    } catch (e) { if (g === generation.current) setError((e as Error).message); }
+    finally { if (g === generation.current) setBusy(false); }
   }
 
   const cardById = useMemo(() => new Map(cards.map((c) => [c.paper_id, c])), [cards]);
@@ -118,7 +134,7 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
     </div>}
     {generated && !running && <>
       {map.error && <p className="text-sm text-amber-700">{map.error}</p>}
-      {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
+      {error && <p className="text-sm text-red-600" role="alert">{error}{conflict && <> <button className="btn-ghost text-sm" disabled={busy} onClick={reload}>刷新地图（放弃未保存的修改）</button></>}</p>}
       {savedHint && <p className="text-sm" style={{ color: 'var(--success, #15803d)' }}>{savedHint}</p>}
       <div className="flex flex-wrap gap-2">
         <button className="btn-primary" disabled={busy} onClick={() => call('run')}>{map.status === 'failed' ? '重新生成' : '重新生成受影响部分'}</button>
@@ -159,10 +175,10 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
           </details>;
         })}
         {editing && <div className="space-y-3">
-          {draft.map((theme, index) => <div key={theme.id || `new-${index}`} className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={mergePick.includes(theme.id)} disabled={!theme.id} onChange={() => setMergePick((old) => old.includes(theme.id) ? old.filter((x) => x !== theme.id) : [...old, theme.id])}/>合并</label>
+          {draft.map((theme) => <div key={theme.id} className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={mergePick.includes(theme.id)} onChange={() => setMergePick((old) => old.includes(theme.id) ? old.filter((x) => x !== theme.id) : [...old, theme.id])}/>合并</label>
             <input className="input flex-1 min-w-40" aria-label="主题名称" value={theme.name} onChange={(e) => setDraft(renameTheme(draft, theme.id, e.target.value))}/>
-            <button className="btn-ghost" disabled={!theme.id} onClick={() => setDraft(removeTheme(draft, theme.id))}>删除</button>
+            <button className="btn-ghost" onClick={() => { setDraft(removeTheme(draft, theme.id)); setMergePick((old) => old.filter((x) => x !== theme.id)); }}>删除</button>
           </div>)}
           <div className="flex flex-wrap items-center gap-2">
             <input className="input flex-1 min-w-40" placeholder="新主题名称" aria-label="新主题名称" value={newName} onChange={(e) => setNewName(e.target.value)}/>

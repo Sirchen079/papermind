@@ -9,6 +9,7 @@ import {
   removeTheme,
   renameTheme,
   statusLabel,
+  themesForSave,
 } from "../.tmp_graph_test_dist/reviewMapModel.js";
 
 test("statusLabel 按相似度区分近似核对", () => {
@@ -84,7 +85,7 @@ test("filterPapers 按关键词、主题、证据级别、需核对筛选", () =
   assert.equal(filterPapers(papers, {}).length, 3);
 });
 
-test("mergeThemes 删除被合并主题、新增不带 id 的主题、定义拼接且不改入参", () => {
+test("mergeThemes 删除被合并主题、新增带临时 id 的主题、定义拼接且不改入参", () => {
   const themes = [
     { id: "T1", name: "稀疏恢复", definition: "定义一", include: "a", exclude: "b" },
     { id: "T2", name: "检索增强", definition: "定义二", include: "c", exclude: "d" },
@@ -95,7 +96,7 @@ test("mergeThemes 删除被合并主题、新增不带 id 的主题、定义拼�
   assert.deepEqual(themes, snapshot); // 入参未被修改
   assert.equal(merged.length, 2);
   assert.deepEqual(merged[0], themes[2]);
-  assert.equal(merged[1].id, "");
+  assert.equal(merged[1].id, "new-1");
   assert.equal(merged[1].name, "合并主题");
   assert.equal(merged[1].definition, "定义一；定义二");
 });
@@ -113,7 +114,29 @@ test("removeTheme、renameTheme、addTheme 返回新数组", () => {
   assert.equal(themes[1].name, "检索增强");
   const added = addTheme(themes, "新主题");
   assert.equal(added.length, 3);
-  assert.equal(added[2].id, "");
+  assert.equal(added[2].id, "new-1");
   assert.equal(added[2].name, "新主题");
   assert.equal(themes.length, 2);
+});
+
+test("新增与合并的主题各有临时 id，改名、删除、合并只作用于一条", () => {
+  let draft = [{ id: "T1", name: "甲", definition: "d1" }, { id: "T2", name: "乙", definition: "d2" }];
+  draft = addTheme(draft, "新一");
+  draft = addTheme(draft, "新二");
+  assert.deepEqual(draft.map((t) => t.id), ["T1", "T2", "new-1", "new-2"]);
+  draft = renameTheme(draft, "new-1", "新一改");
+  assert.deepEqual(draft.map((t) => t.name), ["甲", "乙", "新一改", "新二"]);
+  draft = mergeThemes(draft, ["new-2", "T2"], "合并");
+  assert.deepEqual(draft.map((t) => t.id), ["T1", "new-1", "new-3"]); // 不复用刚被合并掉的 id
+  assert.equal(draft[2].name, "合并");
+  draft = removeTheme(draft, "new-1");
+  assert.deepEqual(draft.map((t) => t.name), ["甲", "合并"]);
+});
+
+test("themesForSave 去掉临时 id 交给后端编号，保留已有编号且不改入参", () => {
+  const draft = [{ id: "T1", name: "甲", definition: "d1" }, { id: "new-1", name: "乙", definition: "" }];
+  const saved = themesForSave(draft);
+  assert.deepEqual(saved.map((t) => t.id), ["T1", ""]);
+  assert.equal(saved[1].name, "乙");
+  assert.equal(draft[1].id, "new-1");
 });

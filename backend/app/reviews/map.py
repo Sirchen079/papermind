@@ -40,6 +40,8 @@ def stop_map(session, review_id):
     row = _map(session, review_id)
     if row is None:
         raise LookupError('文献地图尚未生成')
+    if row.status != 'running':  # a finished map stays as it is
+        return detail_map(session, review_id)
     row.run_token = ''
     row.status = 'paused'
     row.stage = '已暂停，继续时复用已完成步骤'
@@ -47,6 +49,10 @@ def stop_map(session, review_id):
     session.add(row)
     session.commit()
     return detail_map(session, review_id)
+
+
+class ThemeValidationError(Exception):
+    """Researcher-edited themes are invalid (422), unlike a version conflict (409)."""
 
 
 def update_themes(session, review_id, theme_list, expected_version):
@@ -65,7 +71,7 @@ def update_themes(session, review_id, theme_list, expected_version):
     if row.version != expected_version:
         raise ValueError('已有更新版本，请刷新后保存')
     if not 1 <= len(theme_list) <= 15:
-        raise ValueError('主题数量须在 1 到 15 之间')
+        raise ThemeValidationError('主题数量须在 1 到 15 之间')
     stored = json.loads(row.themes_json or '[]')
 
     def t_number(tid):
@@ -76,13 +82,13 @@ def update_themes(session, review_id, theme_list, expected_version):
     cleaned, seen = [], set()
     for theme in theme_list:
         if not isinstance(theme, dict) or not str(theme.get('name') or '').strip():
-            raise ValueError('每个主题都需要非空名称')
+            raise ThemeValidationError('每个主题都需要非空名称')
         tid = str(theme.get('id') or '').strip()
         if not tid:
             next_number += 1
             tid = f'T{next_number}'
         if tid in seen:
-            raise ValueError(f'主题 id 重复：{tid}')
+            raise ThemeValidationError(f'主题 id 重复：{tid}')
         seen.add(tid)
         cleaned.append({'id': tid, 'name': str(theme['name']).strip(),
                         'definition': str(theme.get('definition') or ''),

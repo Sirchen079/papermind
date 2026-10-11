@@ -68,19 +68,27 @@ export function filterPapers(papers: FilterablePaper[], filter: PaperFilter): Fi
   });
 }
 
+// 新增与合并出的主题先用临时 id（new-N）区分彼此，保存时去掉，由后端分配 T 编号。
+const TEMP_ID = /^new-\d+$/;
+
+function nextTempId(themes: MapTheme[]): string {
+  const used = new Set(themes.map((theme) => theme.id));
+  let n = 1;
+  while (used.has(`new-${n}`)) n += 1;
+  return `new-${n}`;
+}
+
 export function renameTheme(themes: MapTheme[], id: string, name: string): MapTheme[] {
   return themes.map((theme) => (theme.id === id ? { ...theme, name } : theme));
 }
 
 export function mergeThemes(themes: MapTheme[], ids: string[], name: string): MapTheme[] {
   const picked = themes.filter((theme) => ids.includes(theme.id));
+  const rest = themes.filter((theme) => !ids.includes(theme.id));
   const definition = picked.map((theme) => theme.definition).filter(Boolean).join('；');
   const include = picked.map((theme) => theme.include ?? '').filter(Boolean).join('；');
   const exclude = picked.map((theme) => theme.exclude ?? '').filter(Boolean).join('；');
-  return [
-    ...themes.filter((theme) => !ids.includes(theme.id)),
-    { id: '', name, definition, include, exclude },
-  ];
+  return [...rest, { id: nextTempId(themes), name, definition, include, exclude }];
 }
 
 export function removeTheme(themes: MapTheme[], id: string): MapTheme[] {
@@ -88,5 +96,9 @@ export function removeTheme(themes: MapTheme[], id: string): MapTheme[] {
 }
 
 export function addTheme(themes: MapTheme[], name: string, definition = ''): MapTheme[] {
-  return [...themes, { id: '', name, definition, include: '', exclude: '' }];
+  return [...themes, { id: nextTempId(themes), name, definition, include: '', exclude: '' }];
+}
+
+export function themesForSave(themes: MapTheme[]): MapTheme[] {
+  return themes.map((theme) => (TEMP_ID.test(theme.id) ? { ...theme, id: '' } : theme));
 }
