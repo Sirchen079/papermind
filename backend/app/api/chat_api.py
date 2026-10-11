@@ -433,6 +433,7 @@ CHAT_SYSTEM_PROMPT = (
     "用户问自己的笔记、摘录、批注、判断或审阅矩阵时优先 search_research_notes。"
     "查找论文里的实验、方法或解释时，可用 search_paper_text 按问题搜索正文，并用 paper_ids 聚焦相关论文；无需猜测原文的精确措辞。"
     "用户从专题研究继续讨论时，用 read_review 读取链接中 review 参数对应的已有分析和草稿；不要求用户重复粘贴，也不必等待整篇完成。"
+    "综述已生成精读卡或文献地图时，用 get_paper_card 或 read_literature_map 直接读取这些成果，不必重新精读全文。"
     "用户关联论文整理成果时，用 read_research_task 按 task_id 和 version 读取其判断与保存来源，再围绕当前问题继续研究。"
     "已有材料足够就直接回答，不为普通讨论强制检索或精读全文。"
     "问题所需的具体事实确实缺失时，可用全文 query 或分页定位；不必为无关部分补齐全文。"

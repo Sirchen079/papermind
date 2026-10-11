@@ -719,6 +719,24 @@ TOOLS.append(Tool(name='read_review',
         'query':{'type':'string','description':'Optional title substring or paper number for the overview.'}},
         'required':['review_id'],'additionalProperties':False},run=read_review))
 
+from app.agent.review_artifacts import get_paper_card, read_literature_map
+
+TOOLS.extend([
+    Tool(name='get_paper_card',
+        description="Read one paper's structured paper card from saved review work: field values with their verbatim quotes, verification status and PDF pages, plus the card generation time and owning review. Faster than re-reading the full text and keeps quotes and pages for citation. When the paper belongs to several reviews and review_id is unknown, returns the most recently updated card and lists the other reviews. Empty means no card was generated yet.",
+        parameters={'type':'object','properties':{
+            'paper_id':{'type':'integer','description':"The paper's id."},
+            'review_id':{'type':'string','description':'Optional review id to select which review\'s card context to report.'}},
+            'required':['paper_id'],'additionalProperties':False},run=get_paper_card),
+    Tool(name='read_literature_map',
+        description="Read a review's generated literature map: overview summary and reading route, each theme with its definition, synthesis, member papers, open questions/gaps and combination opportunities, plus unassigned paper counts. Omit theme for the map overview; give a theme name or id for its full synthesis and its papers' card key values with pages. Reports whether the map is running, paused, failed or not started. Use read_review for the manuscript itself.",
+        parameters={'type':'object','properties':{
+            'review_id':{'type':'string','description':'The review id from the research link.'},
+            'theme':{'type':'string','description':'Optional theme name or id from the map overview.'},
+            'offset':{'type':'integer','default':0,'description':'Offset for the theme page (overview) or paper page (single theme), from next_offset.'}},
+            'required':['review_id'],'additionalProperties':False},run=read_literature_map),
+])
+
 from app.agent.source_memory import read_chat_sources
 
 TOOLS.append(Tool(name='read_chat_sources',
