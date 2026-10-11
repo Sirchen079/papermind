@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useWorkspace } from '../workspaceContext';
 
 type Skill={id:string;slug:string;description:string;version:string;files:number};
-type Family={id:string;name:string;source:string;revision:string;file_count:number;skills:Skill[]};
+type Family={id:string;name:string;source:string;revision:string;file_count:number;skills:Skill[];imported?:boolean;license?:string|null};
 type Resource={text?:string;binary?:boolean;next_start:number|null;download_url:string;total_chars?:number};
 
 export function BuiltinSkills(){
@@ -22,10 +22,10 @@ export function BuiltinSkills(){
     try{const r=await request<Resource>('/resource?'+new URLSearchParams({skill_id:selected,path:nextPath,start:String(start)}));
       if(g===generation.current)setResource(old=>({...r,text:start?(old?.text??'')+(r.text??''):r.text}));
     }catch(e){if(g===generation.current)setError((e as Error).message);}}
-  return <section className="card space-y-4"><h2 className="text-lg font-semibold">内置科研技能库</h2>
-    <p className="text-sm text-muted">完整技能与引用资料随应用提供。问答可选择技能并按需读取资料；专题综述自动使用 Nature Writing 和 Oh My Paper。</p>
-    {families.map(f=><details key={f.id} className="space-y-2"><summary className="cursor-pointer">{f.name} · {f.skills.length} 个技能 · {f.file_count} 个资源文件</summary>
-      <a className="text-sm underline" href={f.source} target="_blank" rel="noreferrer">项目来源</a>
+  return <section className="card space-y-4"><h2 className="text-lg font-semibold">科研技能库</h2>
+    <p className="text-sm text-muted">内置技能与导入的技能包都在这里，问答可选择技能并按需读取资料；专题综述自动使用 Nature Writing 和 Oh My Paper。</p>
+    {families.map(f=><details key={f.id} className="space-y-2"><summary className="cursor-pointer">{f.name}{f.imported?' · 导入':''} · {f.skills.length} 个技能 · {f.file_count} 个资源文件</summary>
+      {f.source.startsWith('http')?<a className="text-sm underline" href={f.source} target="_blank" rel="noreferrer">项目来源</a>:<p className="text-sm text-muted break-all">来源：{f.source}</p>}
       <div className="grid gap-2 sm:grid-cols-2">{f.skills.map(s=><button key={s.id} className="shelf-paper text-left min-w-0" onClick={()=>setSelected(s.id)}><span className="break-words">{s.slug}</span><span className="text-xs text-muted">{s.version&&' · v'+s.version} · {s.files} 个文件</span></button>)}</div>
     </details>)}
     {error&&<p role="alert" className="text-red-600">{error}</p>}

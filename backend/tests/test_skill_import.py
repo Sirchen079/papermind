@@ -1,0 +1,282 @@
+"""S1 导入外部 Agent Skills：GitHub / 本地文件夹 / zip。
+
+导入后的技能与内置 Nature 技能走同一条发现-加载-读取路径；导出（GitHub）
+在测试里用 respx 伪造，不访问真实网络。
+"""
+import json
+
+import httpx
+import pytest
+import respx
+from sqlmodel import Session, select
+
+from app.db.engine import get_engine
+from app.models import Skill
+from app.skills import builtin, importer
+
+
+@pytest.fixture
+def imported_dir(tmp_path, monkeypatch):
+    target = tmp_path / 'imported'
+    monkeypatch.setenv('PAPERMIND_IMPORTED_SKILLS_DIR', str(target))
+    return target
+
+
+@pytest.fixture
+def local_token(env):
+    from app.security import local_token
+    local_token.reset_token_cache()
+    yield local_token
+    local_token.reset_token_cache()
+
+
+def auth(local_token):
+    return {'X-Local-Token': local_token.get_or_create_token()}
+
+
+def make_folder(tmp_path, name='skill-pack'):
+    root = tmp_path / name
+    (root / 'pdf-extract').mkdir(parents=True)
+    (root / 'pdf-extract' / 'SKILL.md').write_text(
+        '---\nname: pdf-extract\ndescription: 从 PDF 提取正文\nversion: 1.2.0\nlicense: MIT\n---\n'
+        '第一步：解析版面。\n', encoding='utf-8')
+    (root / 'pdf-extract' / 'references').mkdir()
+    (root / 'pdf-extract' / 'references' / 'layout.md').write_text('版面规则原文', encoding='utf-8')
+    (root / 'summarize').mkdir()
+    (root / 'summarize' / 'SKILL.md').write_text(
+        '没有 frontmatter 的摘要技能。\n\n第二段不用于描述。\n', encoding='utf-8')
+    (root / 'LICENSE').write_text('MIT License\n\nCopyright (c) 2026\n', encoding='utf-8')
+    return root
+
+
+def make_zip(entries):
+    import io
+    import zipfile
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w') as archive:
+        for name, content in entries:
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def github_zip():
+    return make_zip([
+        ('skillpack-v1.2.0/README.md', '# repo readme'),
+        ('skillpack-v1.2.0/LICENSE', 'MIT License\n'),
+        ('skillpack-v1.2.0/skills/pdf-extract/SKILL.md',
+         '---\nname: pdf-extract\ndescription: PDF 正文提取\n---\n正文流程。\n'),
+        ('skillpack-v1.2.0/skills/pdf-extract/references/notes.md', '提取备注'),
+        ('skillpack-v1.2.0/skills/other/readme.txt', 'no SKILL.md here'),
+    ])
+
+
+# --- 文件夹导入 -------------------------------------------------------------
+
+
+def test_folder_import_discovers_skills_license_and_references(client, tmp_path, imported_dir, local_token):
+    source = make_folder(tmp_path)
+    response = client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['id'] == 'import-skill-pack'
+    assert body['source'] == str(source.resolve())
+    assert body['revision'] == 'local'
+    assert body['license'] == 'MIT License' and body['license_file'] == 'LICENSE'
+    assert body['imported_at'] and body['bytes'] > 0 and body['file_count'] == 4
+    assert body['skills_added'] == 2
+    skills = {s['id']: s for s in body['skills']}
+    assert set(skills) == {'import-skill-pack/pdf-extract', 'import-skill-pack/summarize'}
+    assert skills['import-skill-pack/pdf-extract']['name'] == 'pdf-extract'
+    assert skills['import-skill-pack/pdf-extract']['description'] == '从 PDF 提取正文'
+    assert skills['import-skill-pack/pdf-extract']['license'] == 'MIT'
+    assert skills['import-skill-pack/summarize']['description'] == '没有 frontmatter 的摘要技能。'
+    assert skills['import-skill-pack/summarize']['license'] == 'MIT License'
+    assert (imported_dir / 'import-skill-pack' / 'pdf-extract' / 'references' / 'layout.md').is_file()
+    listed = client.get('/api/skill-imports', headers=auth(local_token)).json()
+    assert [f['id'] for f in listed] == ['import-skill-pack']
+    assert listed[0]['file_count'] == 4
+
+
+def test_folder_import_rejects_invalid_path(client, tmp_path, imported_dir, local_token):
+    missing = client.post('/api/skill-imports/folder', json={'path': str(tmp_path / 'nope')}, headers=auth(local_token))
+    assert missing.status_code == 400 and '文件夹不存在' in missing.json()['detail']
+    relative = client.post('/api/skill-imports/folder', json={'path': 'some/relative'}, headers=auth(local_token))
+    assert relative.status_code == 400 and '绝对路径' in relative.json()['detail']
+    empty_dir = tmp_path / 'empty'
+    empty_dir.mkdir()
+    no_skill = client.post('/api/skill-imports/folder', json={'path': str(empty_dir)}, headers=auth(local_token))
+    assert no_skill.status_code == 400 and '未找到 SKILL.md' in no_skill.json()['detail']
+
+
+def test_builtin_catalog_and_load_include_imported(client, tmp_path, imported_dir, local_token):
+    source = make_folder(tmp_path)
+    client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token))
+    catalog = builtin.public_catalog()
+    family = next(f for f in catalog if f['id'] == 'import-skill-pack')
+    assert family['imported'] is True and family['license'] == 'MIT License'
+    assert {s['id'] for s in family['skills']} == {'import-skill-pack/pdf-extract', 'import-skill-pack/summarize'}
+    assert family['file_count'] == 4 and 'files' not in family
+    listed = json.loads(builtin.list_builtin_skills(None, query='import-skill-pack'))
+    assert [s['id'] for s in listed] == ['import-skill-pack/pdf-extract', 'import-skill-pack/summarize']
+    loaded = json.loads(builtin.load_builtin_skill(None, 'import-skill-pack/pdf-extract'))
+    assert loaded['text'].startswith('[import-skill-pack/pdf-extract / SKILL.md]')
+    assert '第一步：解析版面。' in loaded['text'] and builtin.ADAPTER in loaded['text']
+    resource = json.loads(builtin.read_builtin_skill_resource(
+        None, 'import-skill-pack/pdf-extract', 'references/layout.md'))
+    assert resource['text'] == '版面规则原文'
+
+
+def test_imported_resource_keeps_path_traversal_blocked(client, tmp_path, imported_dir, local_token):
+    source = make_folder(tmp_path)
+    client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token))
+    sid = 'import-skill-pack/pdf-extract'
+    assert builtin.resource_path(sid, 'references/layout.md').is_file()
+    with pytest.raises(LookupError):
+        builtin.resource_path(sid, '../../../app/config.py')
+    response = client.get('/api/builtin-skills/resource',
+                          params={'skill_id': sid, 'path': '../../catalog.json'})
+    assert response.status_code == 404
+
+
+def test_reimport_folder_updates_in_place(client, tmp_path, imported_dir, local_token):
+    source = make_folder(tmp_path)
+    first = client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token)).json()
+    skill_md = source / 'pdf-extract' / 'SKILL.md'
+    skill_md.write_text(skill_md.read_text(encoding='utf-8').replace('从 PDF 提取正文', '第二版说明'), encoding='utf-8')
+    (source / 'pdf-extract' / 'references' / 'layout.md').unlink()
+    second = client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token)).json()
+    assert second['id'] == first['id'] and second['skills_added'] == 0
+    assert second['file_count'] == 3
+    target = imported_dir / first['id'] / 'pdf-extract'
+    assert not (target / 'references' / 'layout.md').exists()
+    with Session(get_engine()) as session:
+        row = session.exec(select(Skill).where(Skill.file_path == 'builtin://import-skill-pack/pdf-extract')).one()
+        assert row.source == 'imported' and '第二版说明' in row.body
+
+
+# --- zip 导入 ---------------------------------------------------------------
+
+
+def test_zip_import_skips_zip_slip_and_dependency_dirs(client, tmp_path, imported_dir, local_token):
+    payload = make_zip([
+        ('pack/SKILL.md', '---\nname: pack\ndescription: zip 技能\n---\n正文'),
+        ('pack/references/a.md', '内容'),
+        ('pack/node_modules/dep.js', 'should not land'),
+        ('pack/__pycache__/x.pyc', 'should not land'),
+        ('../evil.txt', 'zip slip file'),
+        ('/abs.txt', 'absolute entry'),
+        ('pack/../../evil2.txt', 'zip slip nested'),
+        ('pack/sub/evil3.txt/../../..', 'unresolvable'),
+    ])
+    response = client.post('/api/skill-imports/zip',
+        files={'file': ('my-skills.zip', payload, 'application/zip')}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['id'] == 'import-my-skills' and body['source'] == 'zip:my-skills.zip'
+    assert [s['id'] for s in body['skills']] == ['import-my-skills/pack']
+    assert body['skills_added'] == 1
+    assert body['file_count'] == 2
+    copied = {p.relative_to(imported_dir / body['id']).as_posix()
+              for p in (imported_dir / body['id']).rglob('*') if p.is_file()}
+    assert copied == {'pack/SKILL.md', 'pack/references/a.md'}
+    assert not (tmp_path / 'evil.txt').exists() and not (tmp_path / 'evil2.txt').exists()
+    assert not (imported_dir.parent / 'evil.txt').exists()
+
+
+def test_zip_import_rejects_invalid_archive(client, imported_dir, local_token):
+    response = client.post('/api/skill-imports/zip',
+        files={'file': ('bad.zip', b'not a zip', 'application/zip')}, headers=auth(local_token))
+    assert response.status_code == 400 and 'zip' in response.json()['detail']
+
+
+# --- GitHub 导入（respx 伪造） ---------------------------------------------
+
+
+@respx.mock
+def test_github_import_uses_ref_subpath_and_commit_sha(client, imported_dir, local_token):
+    zip_url = 'https://codeload.github.com/acme/skillpack/zip/v1.2.0'
+    respx.get(zip_url).mock(return_value=httpx.Response(200, content=github_zip()))
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/v1.2.0').mock(
+        return_value=httpx.Response(200, json={'sha': 'a' * 40}))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/v1.2.0/skills'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['id'] == 'import-skillpack'
+    assert body['source'] == 'https://github.com/acme/skillpack/tree/v1.2.0/skills'
+    assert body['revision'] == 'a' * 40
+    assert [s['id'] for s in body['skills']] == ['import-skillpack/pdf-extract']
+    assert body['file_count'] == 4 and body['license'] == 'MIT License'
+    target = imported_dir / 'import-skillpack'
+    assert (target / 'pdf-extract' / 'SKILL.md').is_file()
+    assert not (target / 'README.md').exists()  # 子路径之外的文件不导入
+    assert (target / 'LICENSE').is_file()  # 仓库根许可证随子路径导入
+    assert respx.calls.call_count == 2
+
+
+@respx.mock
+def test_github_import_falls_back_to_ref_when_commit_lookup_fails(client, imported_dir, local_token):
+    respx.get('https://codeload.github.com/acme/headless/zip/HEAD').mock(
+        return_value=httpx.Response(200, content=make_zip([
+            ('headless-main/SKILL.md', '---\nname: headless\n---\n正文')])))
+    respx.get('https://api.github.com/repos/acme/headless/commits/HEAD').mock(return_value=httpx.Response(404))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/headless'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    assert response.json()['revision'] == 'HEAD'
+
+
+@respx.mock
+def test_github_download_failure_is_502(client, imported_dir, local_token):
+    respx.get('https://codeload.github.com/acme/broken/zip/HEAD').mock(return_value=httpx.Response(500))
+    respx.get('https://api.github.com/repos/acme/broken/commits/HEAD').mock(return_value=httpx.Response(500))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/broken'}, headers=auth(local_token))
+    assert response.status_code == 502 and 'GitHub 下载失败' in response.json()['detail']
+
+
+def test_github_url_validation_400(client, imported_dir, local_token):
+    for url in ['https://gitlab.com/acme/skillpack', 'https://github.com/acme', 'not a url',
+                'https://github.com/acme/skillpack/blob/main/x']:
+        response = client.post('/api/skill-imports/github', json={'url': url}, headers=auth(local_token))
+        assert response.status_code == 400, url
+        assert 'GitHub 地址无效' in response.json()['detail']
+
+
+# --- 对话路径与删除 ---------------------------------------------------------
+
+
+def test_discovery_and_chat_prompt_skip_deleted_import(client, tmp_path, imported_dir, local_token):
+    source = make_folder(tmp_path)
+    client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token))
+    with Session(get_engine()) as session:
+        directory = builtin.discovery_prompt(session)
+        assert 'import-skill-pack/pdf-extract' in directory
+        row = session.exec(select(Skill).where(Skill.file_path == 'builtin://import-skill-pack/pdf-extract')).one()
+        assert row.source == 'imported'
+        assert '第一步：解析版面。' in builtin.chat_prompt(row)
+        importer.remove('import-skill-pack')  # 目录已删除、数据库行仍在
+        assert 'import-skill-pack/pdf-extract' not in builtin.discovery_prompt(session)
+        assert builtin.chat_prompt(row)  # 返回存量正文，不抛异常
+        assert builtin.sync(session) == 0
+        assert session.exec(select(Skill).where(Skill.source == 'imported')).all() == []
+
+
+def test_delete_removes_files_catalog_and_rows(client, tmp_path, imported_dir, local_token):
+    source = make_folder(tmp_path)
+    client.post('/api/skill-imports/folder', json={'path': str(source)}, headers=auth(local_token))
+    assert (imported_dir / 'import-skill-pack').is_dir()
+    assert client.delete('/api/skill-imports/import-skill-pack', headers=auth(local_token)).status_code == 204
+    assert not (imported_dir / 'import-skill-pack').exists()
+    assert client.get('/api/skill-imports', headers=auth(local_token)).json() == []
+    with Session(get_engine()) as session:
+        assert session.exec(select(Skill).where(Skill.source == 'imported')).all() == []
+        assert 'import-skill-pack' not in builtin.discovery_prompt(session)
+    assert client.delete('/api/skill-imports/import-skill-pack', headers=auth(local_token)).status_code == 404
+
+
+def test_imports_require_local_token(client, imported_dir):
+    assert client.get('/api/skill-imports').status_code == 403
+    assert client.post('/api/skill-imports/folder', json={'path': 'C:/tmp'}).status_code == 403
+    assert client.delete('/api/skill-imports/import-x').status_code == 403
+    assert client.post('/api/skill-imports/github', json={'url': 'https://github.com/a/b'}).status_code == 403

@@ -6,6 +6,7 @@ from pathlib import Path
 import yaml
 from sqlmodel import select
 from app.paths import backend_dir
+from app.skills import importer
 from app.models import Skill
 
 ADAPTER = '''PaperMind 技能运行约定（优先于技能的默认操作习惯）：
@@ -23,17 +24,28 @@ def root():
     return backend_dir() / 'builtin_skills'
 
 
+def family_root(family_id):
+    """内置或导入 family 的目录；resource_path/resources 以它为路径边界。"""
+    if any(f['id'] == family_id for f in importer.catalog()['families']):
+        return importer.root() / family_id
+    return root() / family_id
+
+
 @lru_cache(maxsize=4)
 def _catalog(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
 def catalog():
-    return _catalog(str(root() / 'catalog.json'))
+    base = _catalog(str(root() / 'catalog.json'))
+    imported = importer.catalog()['families']
+    if not imported:
+        return base
+    return {'format': base.get('format', 1), 'families': [*base['families'], *imported]}
 
 
 def public_catalog():
-    return [{**{k:v for k,v in f.items() if k != 'files'}, 'file_count':len(f['files'])}
+    return [{**{k:v for k,v in f.items() if k not in ('files', 'source_key')}, 'file_count':len(f['files'])}
             for f in catalog()['families']]
 
 
@@ -42,25 +54,26 @@ def entry(skill_id):
         for skill in family['skills']:
             if skill['id'] == skill_id:
                 return skill
-    raise LookupError('内置技能不存在')
+    raise LookupError('技能不存在')
 
 
 def resource_path(skill_id, relative='SKILL.md'):
-    skill=entry(skill_id)
-    path=(root()/skill['entry']).parent/relative
+    skill=entry(skill_id);family_id=skill_id.split('/')[0]
+    base=family_root(family_id)
+    path=(base/skill['entry'].removeprefix(family_id+'/')).parent/relative
     path=path.resolve()
-    family_root=(root()/skill_id.split('/')[0]).resolve()
-    if not path.is_relative_to(family_root) or not path.is_file():
+    if not path.is_relative_to(base.resolve()) or not path.is_file():
         raise LookupError('技能资源不存在')
     return path
 
 
 def resources(skill_id):
-    skill=entry(skill_id);family=next(f for f in catalog()['families'] if f['id']==skill_id.split('/')[0])
+    skill=entry(skill_id);family_id=skill_id.split('/')[0]
+    family=next(f for f in catalog()['families'] if f['id']==family_id)
     # Include shared files so a router's ../nature-shared links are also browsable.
-    base=(root()/skill['entry']).parent
+    base=(family_root(family_id)/skill['entry'].removeprefix(family_id+'/')).parent
     import os
-    return [os.path.relpath(root()/family['id']/p,base).replace('\\','/') for p in family['files']]
+    return [os.path.relpath(family_root(family_id)/p,base).replace('\\','/') for p in family['files']]
 
 
 def read_resource(skill_id, relative='SKILL.md', start=0, limit=16000):
@@ -102,16 +115,32 @@ def load(skill_id, axes=None, extra=(), body_override=None):
 
 def sync(session):
     count=0
+    known={s['id'] for f in catalog()['families'] for s in f['skills']}
+    # Rows left behind by a deleted import must not keep appearing in chat.
+    for skill in session.exec(select(Skill).where(Skill.source=='imported')).all():
+        if not (skill.file_path or '').startswith('builtin://') \
+                or skill.file_path.removeprefix('builtin://') not in known:
+            session.delete(skill)
     for family in catalog()['families']:
+        imported=bool(family.get('imported'))
         for e in family['skills']:
             uri='builtin://'+e['id']
             existing=session.exec(select(Skill).where(Skill.file_path==uri)).first()
-            if existing:continue  # Preserve user edits and enabled state.
+            try:
+                body=resource_path(e['id']).read_text(encoding='utf-8-sig')
+            except LookupError:
+                if existing is not None:session.delete(existing)  # Catalog lists a missing file.
+                continue
+            if existing:
+                if imported:  # Re-import refreshes content; enabled state and name stay.
+                    existing.description=e['description'];existing.body=body
+                    session.add(existing)
+                continue  # Built-in rows preserve user edits and enabled state.
             name=e['slug']
             if session.exec(select(Skill).where(Skill.name==name)).first():name=e['id']
-            session.add(Skill(name=name,description=e['description'],source='builtin',
-                type='instruction',trigger='manual',file_path=uri,
-                body=resource_path(e['id']).read_text(encoding='utf-8-sig')))
+            session.add(Skill(name=name,description=e['description'],
+                source='imported' if imported else 'builtin',
+                type='instruction',trigger='manual',file_path=uri,body=body))
             count+=1
     session.commit()
     return count
@@ -120,16 +149,23 @@ def sync(session):
 def chat_prompt(skill):
     if not (skill.file_path or '').startswith('builtin://'):
         return skill.body or ''
-    return load(skill.file_path.removeprefix('builtin://'),body_override=skill.body)['text']
+    try:
+        return load(skill.file_path.removeprefix('builtin://'),body_override=skill.body)['text']
+    except LookupError:
+        return skill.body or ''  # Deleted source: keep the stored text, don't fail the turn.
 
 
 def discovery_prompt(session):
     """Expose enabled skill metadata; the agent loads relevant resources on demand."""
+    known={s['id'] for f in catalog()['families'] for s in f['skills']}
     available = []
     for skill in session.exec(select(Skill).where(Skill.enabled == True).order_by(Skill.id)):
         if skill.type != 'instruction' or not (skill.file_path or '').startswith('builtin://'):
             continue
-        available.append({'id': skill.file_path.removeprefix('builtin://'),
+        skill_id=skill.file_path.removeprefix('builtin://')
+        if skill_id not in known:
+            continue  # A removed import no longer exists; list the rest normally.
+        available.append({'id': skill_id,
                           'description': skill.description})
     if not available:
         return ''

@@ -787,6 +787,29 @@ export interface BackupRestoreGuide {
   verification: BackupVerification;
 }
 
+// S1 技能包导入：外部 Agent Skills（SKILL.md + references/scripts）导入记录。
+export interface ImportedSkill {
+  id: string;
+  name: string;
+  description: string;
+  license: string | null;
+}
+
+export interface ImportedSkillFamily {
+  id: string;
+  name: string;
+  source: string; // GitHub URL / 文件夹路径 / 'zip:<文件名>'
+  revision: string;
+  license: string | null;
+  license_file: string | null;
+  imported_at: string;
+  bytes: number;
+  file_count: number;
+  skills: ImportedSkill[];
+}
+
+export type SkillImportResult = ImportedSkillFamily & { skills_added: number };
+
 export interface ArchiveStatus {
   data_dir: string;
   database_path: string;
@@ -1180,6 +1203,37 @@ return {
         headers: { "X-Local-Token": localToken() },
       },
     ),
+  // 技能包导入（S1）：GitHub 地址 / 本机文件夹 / zip 上传；均需本机令牌。
+  listSkillImports: () =>
+    req<ImportedSkillFamily[]>("/skill-imports", {
+      headers: { "X-Local-Token": localToken() },
+    }),
+  importSkillsFromGithub: (url: string) =>
+    req<SkillImportResult>("/skill-imports/github", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+      headers: { "X-Local-Token": localToken() },
+    }),
+  importSkillsFromFolder: (path: string) =>
+    req<SkillImportResult>("/skill-imports/folder", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+      headers: { "X-Local-Token": localToken() },
+    }),
+  importSkillsFromZip: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return req<SkillImportResult>("/skill-imports/zip", {
+      method: "POST",
+      body: form,
+      headers: { "X-Local-Token": localToken() },
+    });
+  },
+  deleteSkillImport: (familyId: string) =>
+    req<void>(`/skill-imports/${encodeURIComponent(familyId)}`, {
+      method: "DELETE",
+      headers: { "X-Local-Token": localToken() },
+    }),
   // suggestions
   listSuggestions: (status?: string) =>
     req<Suggestion[]>(`/suggestions${status ? `?status=${status}` : ""}`),

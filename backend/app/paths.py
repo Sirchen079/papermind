@@ -85,6 +85,14 @@ def user_skills_dir() -> Path:
     return backend_dir() / "user_skills"
 
 
+def imported_skills_dir() -> Path:
+    """Application-level store for imported Agent Skills (shared by workspaces)."""
+    env = os.environ.get("PAPERMIND_IMPORTED_SKILLS_DIR")
+    if env:
+        return Path(env).resolve()
+    return default_data_dir() / "skills" / "imported"
+
+
 def frontend_dist() -> Path:
     env = os.environ.get("PAPERMIND_FRONTEND_DIST")
     if env:

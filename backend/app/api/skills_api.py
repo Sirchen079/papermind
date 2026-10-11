@@ -3,7 +3,7 @@ from pathlib import Path
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
@@ -106,6 +106,100 @@ def reload_skills(session: Session = Depends(get_session)) -> dict:
 def builtin_catalog():
     from app.skills.builtin import public_catalog
     return public_catalog()
+
+
+def _imported_family(family: dict) -> dict:
+    """ImportedSkillFamily 契约：前端按此消费，字段名保持稳定。"""
+    return {
+        'id': family['id'],
+        'name': family['name'],
+        'source': family['source'],
+        'revision': family['revision'],
+        'license': family.get('license'),
+        'license_file': family.get('license_file'),
+        'imported_at': family.get('imported_at'),
+        'bytes': family.get('bytes', 0),
+        'file_count': len(family.get('files') or {}),
+        'skills': [{'id': s['id'], 'name': s.get('name') or s['slug'],
+                    'description': s.get('description') or '', 'license': s.get('license')}
+                   for s in family.get('skills', [])],
+    }
+
+
+class ImportGithubIn(BaseModel):
+    url: str
+
+
+class ImportFolderIn(BaseModel):
+    path: str
+
+
+def _import(family: dict, session: Session) -> dict:
+    from app.skills.builtin import sync
+    uris = ['builtin://' + s['id'] for s in family.get('skills', [])]
+    before = len(session.exec(select(Skill).where(Skill.file_path.in_(uris))).all())
+    sync(session)  # First import also registers pending built-in rows.
+    after = len(session.exec(select(Skill).where(Skill.file_path.in_(uris))).all())
+    return {**_imported_family(family), 'skills_added': after - before}
+
+
+@router.get('/skill-imports')
+def list_skill_imports(_: str = Depends(require_local_token)) -> list[dict]:
+    from app.skills import importer
+    return [_imported_family(f) for f in importer.catalog()['families']]
+
+
+@router.post('/skill-imports/github')
+def import_skill_github(body: ImportGithubIn, session: Session = Depends(get_session),
+                        _: str = Depends(require_local_token)) -> dict:
+    from app.skills import importer
+    try:
+        family = importer.import_github(body.url)
+    except importer.DownloadError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _import(family, session)
+
+
+@router.post('/skill-imports/folder')
+def import_skill_folder(body: ImportFolderIn, session: Session = Depends(get_session),
+                        _: str = Depends(require_local_token)) -> dict:
+    from app.skills import importer
+    try:
+        family = importer.import_folder(body.path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _import(family, session)
+
+
+@router.post('/skill-imports/zip')
+async def import_skill_zip(file: UploadFile = File(...), session: Session = Depends(get_session),
+                           _: str = Depends(require_local_token)) -> dict:
+    from app.skills import importer
+    raw = await file.read(importer.MAX_BYTES + 1)
+    await file.close()
+    if len(raw) > importer.MAX_BYTES:
+        raise HTTPException(400, 'zip 文件超过 100MB 上限')
+    try:
+        family = importer.import_zip(raw, file.filename or 'upload.zip')
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _import(family, session)
+
+
+@router.delete('/skill-imports/{family_id}', status_code=204)
+def delete_skill_import(family_id: str, session: Session = Depends(get_session),
+                        _: str = Depends(require_local_token)) -> None:
+    from app.skills import importer
+    try:
+        importer.remove(family_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    prefix = 'builtin://' + family_id + '/'
+    for skill in session.exec(select(Skill).where(Skill.file_path.startswith(prefix))).all():
+        session.delete(skill)
+    session.commit()
 
 
 @router.get('/builtin-skills/resources')
