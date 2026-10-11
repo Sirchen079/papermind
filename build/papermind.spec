@@ -65,6 +65,23 @@ for pkg in (
     "webview",
     "openpyxl",
     "docx",
+    # MCP SDK (S3 external interface) runtime dependencies: the server stack
+    # (app/integrations/mcp_server.py) imports mcp.server.lowlevel /
+    # streamable_http / transport_security, mcp_types, sse_starlette,
+    # opentelemetry, jsonschema, httpx2 and (Windows) pywin32 modules.
+    # The `mcp` package itself is collected separately below because its
+    # optional CLI subpackage needs the `typer` extra (not installed).
+    "mcp_types",
+    "sse_starlette",
+    "opentelemetry",
+    "jsonschema",
+    "httpx2",
+    "httpcore2",
+    "jwt",
+    "win32job",
+    "win32api",
+    "win32con",
+    "pywintypes",
 ):
     try:
         d, b, h = collect_all(pkg)
@@ -76,6 +93,19 @@ for pkg in (
     datas += d
     binaries += b
     hiddenimports += h
+
+# MCP SDK: collect_all("mcp") fails because the optional `mcp.cli` subpackage
+# imports typer (the `mcp[cli]` extra, not a PaperMind dependency). Collect the
+# package with the CLI subpackage filtered out instead; the library modules
+# (server/client/shared/os/cli are not imported by PaperMind) come along.
+try:
+    datas += collect_data_files("mcp")
+    binaries += collect_dynamic_libs("mcp")
+    hiddenimports += collect_submodules(
+        "mcp", filter=lambda name: not name.startswith("mcp.cli"), on_error="ignore"
+    )
+except Exception as exc:  # pragma: no cover - environment dependent
+    print(f"[spec] collecting 'mcp' failed: {exc}")
 
 # Read-only bundled resources. Destination dirs line up with app/paths.py.
 datas += [

@@ -82,3 +82,24 @@ files are preserved under `third_party/llama_cpp/upstream/`, including their
 individual copyright notices. PaperMind's runtime management code is separate
 from these unmodified components. Model weights are imported by the user and
 are not included in the installer; each model retains its own license.
+
+# MCP Python SDK (external AI client interface)
+
+PaperMind 0.6.x integrates the official Model Context Protocol Python SDK to
+expose its literature tools to external AI clients (Claude Code, Codex, ...)
+over Streamable HTTP at `/api/mcp` (per workspace `/api/w/<id>/mcp`).
+
+- Packages: `mcp` 2.3.0 and `mcp-types` 2.3.0, https://github.com/modelcontextprotocol/python-sdk (https://modelcontextprotocol.io).
+- License: MIT. Copyright (c) 2024 Anthropic, PBC.
+- Permission notice: the original MIT texts ship with the installed
+  distributions (`backend/.venv/Lib/site-packages/mcp-2.3.0.dist-info/licenses/LICENSE`
+  and `.../mcp_types-2.3.0.dist-info/licenses/LICENSE`); retain them when
+  redistributing.
+- PaperMind uses the unmodified SDK (lowlevel `Server`, `StreamableHTTPSessionManager`,
+  `TransportSecuritySettings`, `mcp.types`); no SDK source is copied or modified.
+  Integration code lives in `backend/app/integrations/mcp_server.py`.
+- The SDK's transitive runtime dependencies keep their own licenses in their
+  installed distributions, including: `sse-starlette` (BSD-3-Clause),
+  `opentelemetry-api` (Apache-2.0), `jsonschema` (MIT), `httpx2`/`httpcore2`
+  (BSD-3-Clause), `PyJWT` (MIT) and `pywin32` (PSF-2.0). The README license
+  column of each distribution is authoritative.

@@ -160,6 +160,14 @@ def _create_app() -> FastAPI:
             reason = registry.unavailable_reason(workspace['id'])
             registry.mark_unavailable(workspace['id'], reason or '项目初始化未完成，请检查应用日志和磁盘状态，恢复备份后重新启动。')
 
+    # MCP external interface (S3): one session manager per app instance, its
+    # run() entered in the lifespan below. Created here so the ASGI wrapper and
+    # the lifespan share the same instance.
+    from app.integrations.mcp_server import create_mcp_app, create_session_manager
+
+    mcp_session_manager = create_session_manager()
+    mcp_app = create_mcp_app(mcp_session_manager)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Literature radar (P10.2): opportunistic pull of due subscriptions in
@@ -172,8 +180,12 @@ def _create_app() -> FastAPI:
                     from app.ingestion.document_pipeline import resume_imports
                     resume_imports(get_engine())
                     start_background_refresh()
+        # MCP (Streamable HTTP) session manager: serves /api/mcp while the app
+        # runs. TestClient without the lifespan never enters this context; the
+        # MCP ASGI wrapper then answers 503 instead of crashing.
         try:
-            yield
+            async with mcp_session_manager.run():
+                yield
         finally:
             from app.providers.managed import manager
             try:manager(registry.root).close()
@@ -236,6 +248,13 @@ def _create_app() -> FastAPI:
 
     app.include_router(literature_router, prefix="/api")
     app.include_router(agent_query_router, prefix="/api")
+
+    # MCP external interface (S3): Streamable HTTP at /api/mcp. The
+    # WorkspaceMiddleware rewrites /api/w/<id>/mcp to this same path with the
+    # workspace bound, so the route naturally also serves per-workspace MCP.
+    # Registered as an ASGI app (not a function endpoint) and before the static
+    # mount below. include_in_schema=False keeps it out of the OpenAPI docs.
+    app.add_route("/api/mcp", route=mcp_app, methods=None, name="mcp", include_in_schema=False)
 
     # Serve the built frontend (production single-app mode) when present.
     # API routes are registered above with the /api prefix, so they take

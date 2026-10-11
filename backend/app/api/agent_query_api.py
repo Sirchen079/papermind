@@ -72,6 +72,7 @@ def agent_summary(request: Request, session: Session = Depends(get_session)) -> 
                 for item in (documents.get('items', []) if isinstance(documents, dict) else documents)
             ],
         },
+        'mcp': {'url': '/api/mcp', 'transport': 'streamable-http'},
         'note': '只读接口。正文检索用 /api/agent/search；论文列表用 /api/papers；全文用 /api/papers/{id}/document/markdown。',
     }
 
