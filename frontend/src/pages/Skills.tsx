@@ -273,6 +273,7 @@ export default function Skills() {
             {githubTouched && githubUrlError(githubUrl) && (
               <p className="mt-1 text-xs text-muted">{githubUrlError(githubUrl)}</p>
             )}
+            <p className="mt-1 text-xs text-muted">{"大仓库可只导入某个技能目录，如 https://github.com/<owner>/<repo>/tree/main/skills/<技能名>"}</p>
           </div>
           <div>
             <label className="label" htmlFor="skill-import-folder">本机文件夹路径</label>

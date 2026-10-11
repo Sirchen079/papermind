@@ -5,6 +5,7 @@ load_builtin_skill -> read_builtin_skill_resource。文件复制到应用级导�
 只读取不执行——导入包里的脚本永远不会被运行。导入先写临时目录再原子替换，
 失败不留半截内容。
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 import hashlib
 import io
@@ -13,7 +14,9 @@ import os
 from pathlib import Path
 import re
 import shutil
-from urllib.parse import urlparse
+import threading
+import time
+from urllib.parse import quote, urlparse
 import uuid
 import zipfile
 
@@ -26,6 +29,9 @@ MAX_BYTES = 100 * 1024 * 1024
 MAX_FILES = 5000
 SKIP_DIRS = {'.git', 'node_modules', '__pycache__', '__MACOSX'}
 LICENSE_NAMES = {'license', 'license.md', 'license.txt', 'copying'}
+# 子路径导入时并发下载 raw 文件；限额固定，避免大仓库导入变成串行等待。
+_DOWNLOAD_WORKERS = 8
+_API_HEADERS = {'Accept': 'application/vnd.github+json', 'User-Agent': 'PaperMind'}
 # Windows 保留名：写入会失败，按不可写名称跳过。
 _RESERVED = {'CON', 'PRN', 'AUX', 'NUL'} | {f'{prefix}{i}' for prefix in ('COM', 'LPT') for i in range(1, 10)}
 CATALOG_FORMAT = 1
@@ -35,6 +41,17 @@ _FRONT = re.compile(r'^\s*---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n?(.*)\Z', re.S)
 
 class DownloadError(Exception):
     """GitHub 下载失败（网络错误或非 200）；接口层映射为 502。"""
+
+
+class ApiLimitError(DownloadError):
+    """GitHub API 未认证额度受限（403/429）；接口层仍按 DownloadError 映射为 502。
+
+    reset_minutes 由 X-RateLimit-Reset 换算，供错误文案说明恢复时间。
+    """
+
+    def __init__(self, message: str, reset_minutes=None):
+        super().__init__(message)
+        self.reset_minutes = reset_minutes
 
 
 _cache = None  # ((catalog 路径, mtime), 目录内容)
@@ -88,8 +105,22 @@ def parse_github_url(url: str):
 
 def import_github(url: str) -> dict:
     owner, repo, ref, subpath = parse_github_url(url)
-    data = _download(f'https://codeload.github.com/{owner}/{repo}/zip/{ref or "HEAD"}')
-    revision = _resolve_commit(owner, repo, ref)
+    revision = commit_sha = None
+    data = None
+    if subpath:
+        # 大仓库整仓归档常超过上限，子路径导入优先走 Git Trees + raw 文件按需下载；
+        # API 受限或无网络（共享出口 IP 额度耗尽在当地很常见）时退回整仓归档解压。
+        try:
+            revision, commit_sha, tree = _commit_tree(owner, repo, ref)
+        except DownloadError as exc:
+            revision = ref or 'HEAD'
+            data = _fallback_zip(owner, repo, ref, exc)
+        else:
+            if tree is None:
+                data = _download_zip(owner, repo, ref)  # truncated 或历史 ref 时退回整仓归档
+    else:
+        revision = _resolve_commit(owner, repo, ref)
+        data = _download_zip(owner, repo, ref)
     source = f'https://github.com/{owner}/{repo}'
     if ref:
         source += '/tree/' + ref
@@ -97,11 +128,18 @@ def import_github(url: str) -> dict:
         source += '/' + subpath
     staging = _new_staging()
     try:
-        # codeload 归档外层目录名随 ref 变化，导入前剥离，技能 id 才能跨版本稳定。
-        _extract_zip(data, staging, subpath=subpath, strip_top=True, always_strip=True)
+        if data is not None:
+            # codeload 归档外层目录名随 ref 变化，导入前剥离，技能 id 才能跨版本稳定。
+            _extract_zip(data, staging, subpath=subpath, strip_top=True, always_strip=True)
+        else:
+            _download_subpath(owner, repo, commit_sha, tree, subpath, staging)
+        # 子路径本身是一个技能时用目录名命名，同仓库多次单技能导入才分得清。
+        label = repo
+        if subpath and any(entry.name.lower() == 'skill.md' for entry in staging.iterdir()):
+            label = subpath.strip('/').rsplit('/', 1)[-1]
         family = _build_family(staging, source=source,
             source_key=f'github:{owner.lower()}/{repo.lower()}/{subpath or ""}',
-            revision=revision, name=repo, base_slug=_slug(repo))
+            revision=revision, name=label, base_slug=_slug(label))
         _commit(family, staging)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -174,7 +212,7 @@ def remove(family_id: str) -> None:
 # --- 准备工作（下载、复制、解压、发现、落盘） -------------------------------
 
 
-def _download(url: str) -> bytes:
+def _download(url: str, limit_hint: str = None) -> bytes:
     chunks = []
     total = 0
     try:
@@ -185,19 +223,196 @@ def _download(url: str) -> bytes:
                 for chunk in response.iter_bytes(_CHUNK):
                     total += len(chunk)
                     if total > MAX_BYTES:
-                        raise ValueError('下载内容超过 100MB 上限，已中止')
+                        raise ValueError(limit_hint or '下载内容超过 100MB 上限，已中止')
                     chunks.append(chunk)
     except httpx.HTTPError as exc:
         raise DownloadError('GitHub 下载失败：无法连接 codeload.github.com，请检查网络后重试') from exc
     return b''.join(chunks)
 
 
+def _download_zip(owner: str, repo: str, ref: str) -> bytes:
+    hint = (f'仓库归档超过 100MB，请改用 https://github.com/{owner}/{repo}/tree/<分支>/<技能目录> '
+            '只导入需要的技能')
+    return _download(f'https://codeload.github.com/{owner}/{repo}/zip/{ref or "HEAD"}', limit_hint=hint)
+
+
+def _fallback_zip(owner: str, repo: str, ref: str, api_error: DownloadError) -> bytes:
+    """API 受限/网络错误时退回整仓归档；失败错误里带上 API 原因（令牌本身不落任何输出）。
+
+    zip 超 100MB（ValueError，接口层原约定 400）时，子路径导入的主导原因是 API
+    失败，合并原因后按 DownloadError 报 502，提示里同时说清两条出路。
+    """
+    try:
+        return _download_zip(owner, repo, ref)
+    except ValueError as exc:  # 归档超过 100MB
+        if isinstance(api_error, ApiLimitError):
+            raise ApiLimitError(_api_limit_message(api_error, zip_issue='超过 100MB')) from exc
+        # 整仓导入的超限提示对子路径用户没有意义，合并成一条 DownloadError（502）。
+        raise DownloadError(f'{api_error}；退回仓库归档也失败：{exc}') from exc
+    except DownloadError as exc:
+        if isinstance(api_error, ApiLimitError):
+            raise ApiLimitError(_api_limit_message(api_error, zip_issue='下载失败')) from exc
+        raise DownloadError(f'{api_error}；退回仓库归档也失败：{exc}') from exc
+
+
+def _token_headers(url: str = None) -> dict:
+    """GitHub Token 只随 api.github.com 请求发送；不写入日志、文件或错误信息。"""
+    try:
+        host = (urlparse(url).hostname or '').lower() if url else ''
+    except ValueError:
+        host = ''
+    if host == 'api.github.com':
+        token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+        if token:
+            return {'Authorization': 'Bearer ' + token}
+    return {}
+
+
+def _api_headers(url: str = None) -> dict:
+    return {**_API_HEADERS, **_token_headers(url)}
+
+
+def _rate_limit_reset_minutes(response: httpx.Response):
+    try:
+        reset = int(response.headers.get('X-RateLimit-Reset') or 0)
+    except (TypeError, ValueError):
+        return None
+    if not reset:
+        return None
+    return max(1, round((reset - time.time()) / 60))
+
+
+def _api_limit_message(api_error: DownloadError, zip_issue: str = None) -> str:
+    has_token = bool(os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN'))
+    text = 'GitHub API 访问受限（' + ('当前令牌额度用尽或权限不足' if has_token
+                                     else '未登录每小时 60 次，按出口 IP 计')
+    minutes = getattr(api_error, 'reset_minutes', None)
+    if minutes:
+        text += f'，约 {minutes} 分钟后恢复'
+    text += '）'
+    if zip_issue:
+        text += f'，且仓库归档{zip_issue}'
+    text += ('。可稍后再试；或确认 GITHUB_TOKEN 有效后重启 PaperMind；' if has_token
+             else '。可稍后再试；或设置环境变量 GITHUB_TOKEN 后重启 PaperMind；')
+    return text + '或下载该技能目录后用文件夹导入。'
+
+
+def _api_json(client: httpx.Client, url: str) -> dict:
+    """GitHub API GET；403/429（受限，额度按出口 IP 计）映射为 ApiLimitError（502）。"""
+    try:
+        response = client.get(url, headers=_api_headers(url))
+    except httpx.HTTPError as exc:
+        raise DownloadError('GitHub 下载失败：无法连接 api.github.com，请检查网络后重试') from exc
+    if response.status_code in (403, 429):
+        raise ApiLimitError('GitHub API 访问受限，请稍后再试',
+                            _rate_limit_reset_minutes(response))
+    if response.status_code != 200:
+        raise DownloadError(f'GitHub 下载失败：HTTP {response.status_code}')
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise DownloadError('GitHub 下载失败：响应格式异常') from exc
+    return data if isinstance(data, dict) else {}
+
+
+def _commit_tree(owner: str, repo: str, ref: str):
+    """解析 (revision, commit_sha, tree)；tree 为 None 表示 truncated，调用方退回 zip。
+
+    先取 ref（缺省时取仓库 default_branch）对应的 commit sha，再用该 sha 取 tree，
+    保证下载的文件与 revision 指向同一提交。API 受限/网络错误由调用方退回 zip。
+    """
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(30.0)) as client:
+        branch = ref
+        if not branch:
+            branch = _api_json(client, f'https://api.github.com/repos/{owner}/{repo}').get('default_branch')
+            if not branch:
+                raise DownloadError('GitHub 下载失败：无法解析默认分支')
+        sha = _api_json(client, f'https://api.github.com/repos/{owner}/{repo}/commits/{branch}').get('sha')
+        if not sha:
+            raise DownloadError('GitHub 下载失败：无法解析分支或提交')
+        tree = _api_json(client,
+            f'https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}?recursive=1')
+    if tree.get('truncated') or not isinstance(tree.get('tree'), list):
+        return sha, sha, None
+    return sha, sha, tree
+
+
+def _download_subpath(owner: str, repo: str, sha: str, tree: dict, subpath: str, staging: Path) -> None:
+    """子路径导入：从 tree 预检与筛选，再按 commit_sha 并发下载 raw 文件。"""
+    target = subpath.strip('/')
+    if not _safe_rel(target):
+        raise ValueError('仓库中找不到该路径：' + subpath)
+    selected = []
+    seen = set()
+    licenses = []
+    for entry in tree.get('tree') or []:
+        if not isinstance(entry, dict) or entry.get('type') != 'blob':
+            continue
+        path = entry.get('path') or ''
+        if path.startswith(target + '/'):
+            rel = _safe_rel(path[len(target) + 1:])
+        elif '/' not in path and path.lower() in LICENSE_NAMES:
+            rel = _safe_rel(path)  # 仓库根许可证随子路径导入，便于记录来源协议。
+            if rel:
+                licenses.append((rel, int(entry.get('size') or 0), path))
+            continue
+        else:
+            continue
+        if rel is None or rel in seen:
+            continue
+        seen.add(rel)
+        selected.append((rel, int(entry.get('size') or 0), path))
+    if not selected:
+        raise ValueError('仓库中找不到该路径：' + subpath)
+    # 与 zip 子路径导入一致：子路径内同名 LICENSE 优先，仓库根许可证只在无冲突时追加。
+    selected.extend(item for item in licenses if item[0] not in seen)
+    if len(selected) > MAX_FILES:
+        raise ValueError('文件数超过 5000 上限')
+    if sum(size for _, size, _ in selected) > MAX_BYTES:
+        raise ValueError('导入内容超过 100MB 大小限制')
+    total = 0
+    lock = threading.Lock()
+
+    def fetch(client: httpx.Client, item) -> None:
+        nonlocal total
+        rel, _, path = item
+        url = f'https://raw.githubusercontent.com/{owner}/{repo}/{sha}/' + quote(path, safe='/')
+        out = staging / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with client.stream('GET', url) as response:
+                if response.status_code != 200:
+                    raise DownloadError(f'GitHub 下载失败：HTTP {response.status_code}')
+                with out.open('wb') as handle:
+                    for chunk in response.iter_bytes(_CHUNK):
+                        with lock:
+                            total += len(chunk)
+                            exceeded = total > MAX_BYTES
+                        if exceeded:
+                            raise ValueError('导入内容超过 100MB 大小限制')
+                        handle.write(chunk)
+        except httpx.HTTPError as exc:
+            raise DownloadError('GitHub 下载失败：无法连接 raw.githubusercontent.com，请检查网络后重试') from exc
+
+    workers = min(_DOWNLOAD_WORKERS, len(selected))
+    with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(60.0, read=300.0)) as client:
+        executor = ThreadPoolExecutor(max_workers=workers)
+        futures = []
+        try:
+            futures = [executor.submit(fetch, client, item) for item in selected]
+            for future in as_completed(futures):
+                future.result()  # 首个失败在此抛出，未开始的任务不再执行
+        finally:
+            for future in futures:
+                future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
+
+
 def _resolve_commit(owner: str, repo: str, ref: str = None) -> str:
     """尽力解析 commit sha 作为 revision；失败时退回 ref（默认分支用 HEAD）。"""
+    url = f'https://api.github.com/repos/{owner}/{repo}/commits/{ref or "HEAD"}'
     try:
-        response = httpx.get(f'https://api.github.com/repos/{owner}/{repo}/commits/{ref or "HEAD"}',
-            headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'PaperMind'},
-            follow_redirects=True, timeout=10)
+        response = httpx.get(url, headers=_api_headers(url), follow_redirects=True, timeout=10)
         if response.status_code == 200:
             sha = response.json().get('sha')
             if sha:

@@ -4,6 +4,8 @@
 在测试里用 respx 伪造，不访问真实网络。
 """
 import json
+import re
+import time
 
 import httpx
 import pytest
@@ -192,26 +194,282 @@ def test_zip_import_rejects_invalid_archive(client, imported_dir, local_token):
 # --- GitHub 导入（respx 伪造） ---------------------------------------------
 
 
+def github_blobs():
+    """伪仓库内容：路径 -> 文本，形态对齐 codeload 归档剥离外层目录后的结果。"""
+    return [
+        ('README.md', '# repo readme'),
+        ('LICENSE', 'MIT License\n'),
+        ('skills/pdf-extract/SKILL.md',
+         '---\nname: pdf-extract\ndescription: PDF 正文提取\n---\n正文流程。\n'),
+        ('skills/pdf-extract/references/notes.md', '提取备注'),
+        ('skills/pdf-extract/node_modules/dep.js', 'should not land'),
+        ('skills/other/readme.txt', 'no SKILL.md here'),
+    ]
+
+
+def blob_entries(entries):
+    return [{'path': path, 'type': 'blob', 'size': len(content.encode('utf-8'))}
+            for path, content in entries]
+
+
+def mock_github_api(owner, repo, ref, sha, entries):
+    respx.get(f'https://api.github.com/repos/{owner}/{repo}/commits/{ref}').mock(
+        return_value=httpx.Response(200, json={'sha': sha}))
+    respx.get(f'https://api.github.com/repos/{owner}/{repo}/git/trees/{sha}',
+              params={'recursive': '1'}).mock(
+        return_value=httpx.Response(200, json={'truncated': False, 'tree': blob_entries(entries)}))
+
+
+def mock_raw(owner, repo, sha, entries):
+    for path, content in entries:
+        respx.get(f'https://raw.githubusercontent.com/{owner}/{repo}/{sha}/' + path).mock(
+            return_value=httpx.Response(200, content=content.encode('utf-8')))
+
+
+def request_urls():
+    return [str(call.request.url) for call in respx.calls]
+
+
+def test_api_headers_add_token_for_api_host_only(monkeypatch):
+    """GITHUB_TOKEN/GH_TOKEN 只随 api.github.com 请求发出，raw/codeload 不携带。"""
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.delenv('GH_TOKEN', raising=False)
+    api_url = 'https://api.github.com/repos/acme/skillpack'
+    assert 'Authorization' not in importer._api_headers(api_url)
+    monkeypatch.setenv('GITHUB_TOKEN', 'tok-first')
+    assert importer._api_headers(api_url)['Authorization'] == 'Bearer tok-first'
+    monkeypatch.delenv('GITHUB_TOKEN')
+    monkeypatch.setenv('GH_TOKEN', 'tok-second')
+    assert importer._api_headers(api_url)['Authorization'] == 'Bearer tok-second'
+    assert 'Authorization' not in importer._api_headers('https://raw.githubusercontent.com/acme/skillpack/main/a.md')
+    assert 'Authorization' not in importer._api_headers('https://codeload.github.com/acme/skillpack/zip/main')
+
+
 @respx.mock
-def test_github_import_uses_ref_subpath_and_commit_sha(client, imported_dir, local_token):
-    zip_url = 'https://codeload.github.com/acme/skillpack/zip/v1.2.0'
-    respx.get(zip_url).mock(return_value=httpx.Response(200, content=github_zip()))
-    respx.get('https://api.github.com/repos/acme/skillpack/commits/v1.2.0').mock(
-        return_value=httpx.Response(200, json={'sha': 'a' * 40}))
+def test_github_subpath_import_uses_tree_and_raw_without_codeload(client, imported_dir, local_token):
+    entries = github_blobs()
+    sha = 'a' * 40
+    mock_github_api('acme', 'skillpack', 'v1.2.0', sha, entries)
+    mock_raw('acme', 'skillpack', sha, [item for item in entries if item[0] != 'README.md' and 'node_modules' not in item[0]])
     response = client.post('/api/skill-imports/github',
         json={'url': 'https://github.com/acme/skillpack/tree/v1.2.0/skills'}, headers=auth(local_token))
     assert response.status_code == 200, response.text
     body = response.json()
     assert body['id'] == 'import-skillpack'
     assert body['source'] == 'https://github.com/acme/skillpack/tree/v1.2.0/skills'
-    assert body['revision'] == 'a' * 40
+    assert body['revision'] == sha  # tree 对应的 commit sha
     assert [s['id'] for s in body['skills']] == ['import-skillpack/pdf-extract']
     assert body['file_count'] == 4 and body['license'] == 'MIT License'
     target = imported_dir / 'import-skillpack'
     assert (target / 'pdf-extract' / 'SKILL.md').is_file()
+    assert (target / 'pdf-extract' / 'references' / 'notes.md').read_text(encoding='utf-8') == '提取备注'
     assert not (target / 'README.md').exists()  # 子路径之外的文件不导入
+    assert not (target / 'pdf-extract' / 'node_modules').exists()  # SKIP_DIRS 内的 blob 不下载
     assert (target / 'LICENSE').is_file()  # 仓库根许可证随子路径导入
-    assert respx.calls.call_count == 2
+    urls = request_urls()
+    assert not any('codeload.github.com' in url for url in urls)  # 子目录导入不碰整仓归档
+    api_calls = [call for call in respx.calls if 'api.github.com' in str(call.request.url)]
+    assert api_calls, urls
+    assert all(call.request.headers.get('user-agent') == 'PaperMind' for call in api_calls)
+    assert all(call.request.headers.get('accept') == 'application/vnd.github+json' for call in api_calls)
+
+
+@pytest.mark.parametrize('env_name', ['GITHUB_TOKEN', 'GH_TOKEN'])
+@respx.mock
+def test_github_token_is_sent_to_api_requests_only(client, imported_dir, local_token, monkeypatch, env_name):
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.delenv('GH_TOKEN', raising=False)
+    monkeypatch.setenv(env_name, 'ghp-local-secret')
+    entries = github_blobs()
+    sha = 'a' * 40
+    mock_github_api('acme', 'skillpack', 'v1.2.0', sha, entries)
+    mock_raw('acme', 'skillpack', sha, [item for item in entries
+                                        if item[0] != 'README.md' and 'node_modules' not in item[0]])
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/v1.2.0/skills'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    api_calls = [call for call in respx.calls if 'api.github.com' in str(call.request.url)]
+    raw_calls = [call for call in respx.calls if 'raw.githubusercontent.com' in str(call.request.url)]
+    assert api_calls and raw_calls
+    assert all(call.request.headers.get('authorization') == 'Bearer ghp-local-secret' for call in api_calls)
+    assert all('authorization' not in call.request.headers for call in raw_calls)
+    assert 'ghp-local-secret' not in response.text  # 令牌不进错误信息/响应
+
+
+@respx.mock
+def test_github_subpath_import_falls_back_to_zip_when_tree_truncated(client, imported_dir, local_token):
+    sha = 'a' * 40
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/v1.2.0').mock(
+        return_value=httpx.Response(200, json={'sha': sha}))
+    respx.get('https://api.github.com/repos/acme/skillpack/git/trees/' + sha,
+              params={'recursive': '1'}).mock(
+        return_value=httpx.Response(200, json={'truncated': True, 'tree': []}))
+    respx.get('https://codeload.github.com/acme/skillpack/zip/v1.2.0').mock(
+        return_value=httpx.Response(200, content=github_zip()))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/v1.2.0/skills'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['revision'] == sha
+    assert [s['id'] for s in body['skills']] == ['import-skillpack/pdf-extract']
+    assert body['file_count'] == 4
+    urls = request_urls()
+    assert any('codeload.github.com' in url for url in urls)
+    assert not any('raw.githubusercontent.com' in url for url in urls)
+
+
+@pytest.mark.parametrize('status', [403, 429])
+@respx.mock
+def test_github_api_limited_falls_back_to_zip_with_ref_revision(client, imported_dir, local_token,
+                                                                monkeypatch, status):
+    """API 受限时退回整仓归档解出子路径，revision 用 ref；令牌不发往 codeload。"""
+    monkeypatch.setenv('GITHUB_TOKEN', 'ghp-local-secret')
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/v1.2.0').mock(
+        return_value=httpx.Response(status, headers={'X-RateLimit-Reset': str(int(time.time()) + 300)}))
+    respx.get('https://codeload.github.com/acme/skillpack/zip/v1.2.0').mock(
+        return_value=httpx.Response(200, content=github_zip()))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/v1.2.0/skills'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['id'] == 'import-skillpack' and body['revision'] == 'v1.2.0'
+    assert [s['id'] for s in body['skills']] == ['import-skillpack/pdf-extract']
+    assert body['file_count'] == 4 and body['license'] == 'MIT License'
+    urls = request_urls()
+    assert any('codeload.github.com' in url for url in urls)
+    assert not any('raw.githubusercontent.com' in url for url in urls)
+    api_calls = [call for call in respx.calls if 'api.github.com' in str(call.request.url)]
+    codeload_calls = [call for call in respx.calls if 'codeload.github.com' in str(call.request.url)]
+    assert all(call.request.headers.get('authorization') == 'Bearer ghp-local-secret' for call in api_calls)
+    assert codeload_calls and all('authorization' not in call.request.headers for call in codeload_calls)
+
+
+@respx.mock
+def test_github_api_network_error_falls_back_to_zip(client, imported_dir, local_token):
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/main').mock(
+        side_effect=httpx.ConnectError('api.github.com unreachable'))
+    respx.get('https://codeload.github.com/acme/skillpack/zip/main').mock(
+        return_value=httpx.Response(200, content=github_zip()))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/main/skills'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['revision'] == 'main'
+    assert [s['id'] for s in body['skills']] == ['import-skillpack/pdf-extract']
+
+
+@respx.mock
+def test_github_api_error_and_zip_over_limit_is_502_with_both_reasons(client, imported_dir,
+                                                                      local_token, monkeypatch):
+    """API 非受限失败且归档超限：两类原因合并后仍按 DownloadError 映射 502。"""
+    monkeypatch.setattr(importer, 'MAX_BYTES', 32)
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/main').mock(
+        return_value=httpx.Response(500))
+    respx.get('https://codeload.github.com/acme/skillpack/zip/main').mock(
+        return_value=httpx.Response(200, content=b'x' * 64))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/main/skills'}, headers=auth(local_token))
+    assert response.status_code == 502
+    detail = response.json()['detail']
+    assert 'HTTP 500' in detail and '100MB' in detail
+
+
+@respx.mock
+def test_github_subpath_missing_is_400(client, imported_dir, local_token):
+    entries = github_blobs()
+    mock_github_api('acme', 'skillpack', 'main', 'a' * 40, entries)
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/main/skills/nonexistent'},
+        headers=auth(local_token))
+    assert response.status_code == 400
+    assert response.json()['detail'] == '仓库中找不到该路径：skills/nonexistent'
+    urls = request_urls()
+    assert not any('raw.githubusercontent.com' in url for url in urls)
+    assert not any('codeload.github.com' in url for url in urls)
+
+
+@respx.mock
+def test_github_subpath_tree_size_precheck_skips_downloads(client, imported_dir, local_token, monkeypatch):
+    monkeypatch.setattr(importer, 'MAX_BYTES', 16)
+    entries = [('skills/huge/SKILL.md', 'x' * 100)]
+    mock_github_api('acme', 'skillpack', 'main', 'a' * 40, entries)
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/main/skills/huge'},
+        headers=auth(local_token))
+    assert response.status_code == 400 and '100MB' in response.json()['detail']
+    assert not any('raw.githubusercontent.com' in url for url in request_urls())
+
+
+@pytest.mark.parametrize('status', [403, 429])
+@respx.mock
+def test_github_api_rate_limit_is_502(client, imported_dir, local_token, status):
+    """受限且归档退路也失败（HTTP 错误）时报 502 并给出办法。"""
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/main').mock(
+        return_value=httpx.Response(status, headers={'X-RateLimit-Reset': str(int(time.time()) + 300)}))
+    respx.get('https://codeload.github.com/acme/skillpack/zip/main').mock(
+        return_value=httpx.Response(404))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/main/skills/pdf-extract'},
+        headers=auth(local_token))
+    assert response.status_code == 502
+    detail = response.json()['detail']
+    assert 'GitHub API 访问受限' in detail
+    assert '仓库归档' in detail and 'GITHUB_TOKEN' in detail and '文件夹导入' in detail
+    assert any('codeload.github.com' in url for url in request_urls())  # 先尝试了归档退路
+
+
+@pytest.mark.parametrize('reset_seconds', [None, 600])
+@respx.mock
+def test_github_api_limited_and_zip_over_limit_reports_remedies(client, imported_dir, local_token,
+                                                                monkeypatch, reset_seconds):
+    monkeypatch.setattr(importer, 'MAX_BYTES', 32)
+    headers = {'X-RateLimit-Reset': str(int(time.time()) + reset_seconds)} if reset_seconds else {}
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/main').mock(
+        return_value=httpx.Response(403, headers=headers))
+    respx.get('https://codeload.github.com/acme/skillpack/zip/main').mock(
+        return_value=httpx.Response(200, content=b'x' * 64))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/main/skills/pdf-extract'},
+        headers=auth(local_token))
+    assert response.status_code == 502
+    detail = response.json()['detail']
+    assert 'GitHub API 访问受限' in detail and '仓库归档超过 100MB' in detail
+    assert 'GITHUB_TOKEN' in detail and '文件夹导入' in detail
+    if reset_seconds:
+        match = re.search(r'约 (\d+) 分钟后恢复', detail)
+        assert match and 9 <= int(match.group(1)) <= 11  # 600 秒 -> 约 10 分钟
+    else:
+        assert '分钟后恢复' not in detail  # 无 X-RateLimit-Reset 时省略这句
+
+
+@respx.mock
+def test_commit_tree_uses_default_branch_when_ref_missing(imported_dir):
+    sha = 'b' * 40
+    respx.get('https://api.github.com/repos/acme/skillpack').mock(
+        return_value=httpx.Response(200, json={'default_branch': 'trunk'}))
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/trunk').mock(
+        return_value=httpx.Response(200, json={'sha': sha}))
+    respx.get('https://api.github.com/repos/acme/skillpack/git/trees/' + sha,
+              params={'recursive': '1'}).mock(
+        return_value=httpx.Response(200, json={'truncated': False,
+                                               'tree': [{'path': 'SKILL.md', 'type': 'blob', 'size': 3}]}))
+    revision, commit_sha, tree = importer._commit_tree('acme', 'skillpack', None)
+    assert revision == commit_sha == sha
+    assert [entry['path'] for entry in tree['tree']] == ['SKILL.md']
+
+
+@respx.mock
+def test_github_repo_archive_over_limit_hints_subpath(client, imported_dir, local_token, monkeypatch):
+    monkeypatch.setattr(importer, 'MAX_BYTES', 32)
+    respx.get('https://codeload.github.com/acme/skillpack/zip/HEAD').mock(
+        return_value=httpx.Response(200, content=b'x' * 64))
+    respx.get('https://api.github.com/repos/acme/skillpack/commits/HEAD').mock(
+        return_value=httpx.Response(200, json={'sha': 'c' * 40}))
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack'}, headers=auth(local_token))
+    assert response.status_code == 400
+    detail = response.json()['detail']
+    assert '请改用' in detail and '/tree/' in detail
 
 
 @respx.mock
@@ -280,3 +538,17 @@ def test_imports_require_local_token(client, imported_dir):
     assert client.post('/api/skill-imports/folder', json={'path': 'C:/tmp'}).status_code == 403
     assert client.delete('/api/skill-imports/import-x').status_code == 403
     assert client.post('/api/skill-imports/github', json={'url': 'https://github.com/a/b'}).status_code == 403
+
+
+@respx.mock
+def test_github_single_skill_subpath_is_named_after_its_directory(client, imported_dir, local_token):
+    entries = github_blobs()
+    sha = 'a' * 40
+    mock_github_api('acme', 'skillpack', 'v1.2.0', sha, entries)
+    mock_raw('acme', 'skillpack', sha, [item for item in entries if item[0] != 'README.md' and 'node_modules' not in item[0]])
+    response = client.post('/api/skill-imports/github',
+        json={'url': 'https://github.com/acme/skillpack/tree/v1.2.0/skills/pdf-extract'}, headers=auth(local_token))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['id'] == 'import-pdf-extract' and body['name'] == 'pdf-extract'
+    assert [s['id'] for s in body['skills']] == ['import-pdf-extract/pdf-extract']
