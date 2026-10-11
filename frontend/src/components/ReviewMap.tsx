@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspace } from '../workspaceContext';
 import { createReviewRequest, putReviewThemes, type MapTheme, type PaperCardEntry, type ReviewMapDetail, type ReviewMapPaper } from '../reviewsApi';
-import { addTheme, fieldLocation, filterPapers, mergeThemes, removeTheme, renameTheme, statusLabel, themesForSave, type CardField, type FilterablePaper } from '../pages/reviewMapModel';
+import { addTheme, fieldLocation, filterPapers, mergeThemes, removeTheme, renameTheme, researchHandoff, statusLabel, themesForSave, type CardField, type FilterablePaper, type MapCombination, type MapOpenQuestion } from '../pages/reviewMapModel';
 
 const EXPORTS: [string, string][] = [['html', 'HTML'], ['xlsx', 'Excel'], ['docx', 'Word'], ['csv', 'CSV'], ['bib', 'BibTeX']];
 
@@ -12,7 +12,7 @@ function fieldsOf(card: PaperCardEntry['card']): CardField[] {
   );
 }
 
-export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenPaper: (id: number, page?: number) => void }) {
+export function ReviewMap({ reviewId, onOpenPaper, onResearch }: { reviewId: string; onOpenPaper: (id: number, page?: number) => void; onResearch?: (question: string, paperIds: number[]) => Promise<void> }) {
   const { base } = useWorkspace();
   const request = useMemo(() => createReviewRequest(base), [base]);
   const [map, setMap] = useState<ReviewMapDetail | null>(null);
@@ -26,6 +26,7 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
   const [newName, setNewName] = useState('');
   const [savedHint, setSavedHint] = useState('');
   const [conflict, setConflict] = useState(false);
+  const [starting, setStarting] = useState('');
   const [query, setQuery] = useState('');
   const [themeFilter, setThemeFilter] = useState('');
   const [evidenceFilter, setEvidenceFilter] = useState('');
@@ -84,6 +85,16 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
       setError(err.message);
       setConflict(err.status === 409);
     } finally { if (g === generation.current) setBusy(false); }
+  }
+
+  async function research(key: string, theme: string, item: MapOpenQuestion | MapCombination, representative: number[]) {
+    if (!onResearch || starting) return;
+    const g = generation.current;
+    const handoff = researchHandoff(theme, item, representative);
+    setStarting(key); setError('');
+    try { await onResearch(handoff.question, handoff.paperIds); }
+    catch (e) { if (g === generation.current) setError(`${(e as Error).message}；地图未改动，可重试。`); }
+    finally { if (g === generation.current) setStarting(''); }
   }
 
   async function reload() {
@@ -163,14 +174,16 @@ export function ReviewMap({ reviewId, onOpenPaper }: { reviewId: string; onOpenP
         <h3 className="font-semibold">研究主题 · {map.themes.length} 条</h3>
         {!editing && map.themes.map((theme) => {
           const synthesis = map.syntheses[theme.id] ?? {};
+          const representative = (synthesis.representative ?? []).map((r) => r.paper_id);
+          const researchButton = (key: string, item: MapOpenQuestion | MapCombination) => onResearch && <button className="btn-ghost text-xs" disabled={!!starting} onClick={() => research(key, theme.name, item, representative)}>{starting === key ? '正在带入…' : '带着这个问题继续研究 →'}</button>;
           return <details key={theme.id} className="space-y-2 border rounded p-2" style={{ borderColor: 'var(--border)' }}>
             <summary className="cursor-pointer">{theme.name} <span className="text-xs text-muted">{synthesis.stats?.count ?? 0} 篇</span></summary>
             <p className="text-sm text-muted">{theme.definition}</p>
             {synthesis.error && <p className="text-sm text-amber-700">{synthesis.error}</p>}
             {synthesis.stats && <p className="text-xs text-muted">年份：{Object.entries(synthesis.stats.years ?? {}).map(([y, n]) => `${y} 年 ${n} 篇`).join('、') || '无'}；数据：{Object.entries(synthesis.stats.setting ?? {}).map(([k, n]) => `${k} ${n}`).join('、')}</p>}
             {synthesis.trend && <p className="text-sm"><strong>趋势：</strong>{synthesis.trend}</p>}
-            {!!synthesis.open_questions?.length && <div className="text-sm"><p className="font-semibold">值得研究的问题</p><ul className="list-disc list-inside space-y-1">{synthesis.open_questions.map((q, i) => <li key={i}>{q.question}{q.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{q.cannot_claim && <span className="text-xs text-muted">（不能宣称：{q.cannot_claim}）</span>}</li>)}</ul></div>}
-            {!!synthesis.combination_opportunities?.length && <div className="text-sm"><p className="font-semibold">方法组合机会</p><ul className="list-disc list-inside space-y-1">{synthesis.combination_opportunities.map((c, i) => <li key={i}>{c.idea}{c.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{c.risk && <span className="text-xs text-muted">（风险：{c.risk}）</span>}</li>)}</ul></div>}
+            {!!synthesis.open_questions?.length && <div className="text-sm"><p className="font-semibold">值得研究的问题</p><ul className="list-disc list-inside space-y-1">{synthesis.open_questions.map((q, i) => <li key={i}>{q.question}{q.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{q.cannot_claim && <span className="text-xs text-muted">（不能宣称：{q.cannot_claim}）</span>} {researchButton(`${theme.id}-q${i}`, q)}</li>)}</ul></div>}
+            {!!synthesis.combination_opportunities?.length && <div className="text-sm"><p className="font-semibold">方法组合机会</p><ul className="list-disc list-inside space-y-1">{synthesis.combination_opportunities.map((c, i) => <li key={i}>{c.idea}{c.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{c.risk && <span className="text-xs text-muted">（风险：{c.risk}）</span>} {researchButton(`${theme.id}-c${i}`, c)}</li>)}</ul></div>}
             {!!synthesis.representative?.length && <p className="text-sm"><strong>代表论文：</strong>{synthesis.representative.map((r) => <button key={r.paper_id} className="btn-ghost text-xs" onClick={() => jumpTo(r.paper_id)}>[P{r.paper_id}] {paperTitle(r.paper_id)}</button>)}</p>}
           </details>;
         })}

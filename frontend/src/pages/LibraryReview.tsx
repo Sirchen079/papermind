@@ -14,7 +14,7 @@ const labels:Record<string,string>={draft:'待开始',running:'正在生成',rea
 export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Record<string,string>;onNavigate:(target:NavLocation|string)=>void;onOpenPaper:(id:number,page?:number)=>void}) {
   const {base,workspace}=useWorkspace();const api=useApi();
   const [history,setHistory]=useState<Review[]>([]),[job,setJob]=useState<Review|null>(null);
-  const [topic,setTopic]=useState(''),[whole,setWhole]=useState(true),[selected,setSelected]=useState<number[]>([]);
+  const [topic,setTopic]=useState(''),[whole,setWhole]=useState(true),[selected,setSelected]=useState<number[]>([]),[mapFirst,setMapFirst]=useState(true);
   const [query,setQuery]=useState(''),[offset,setOffset]=useState(0),[items,setItems]=useState<Paper[]>([]),[total,setTotal]=useState(0);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[filter,setFilter]=useState(''),[page,setPage]=useState(0);
   const [source,setSource]=useState<Source|null>(null),[editor,setEditor]=useState<string|null>(null),[editVersion,setEditVersion]=useState(0);
@@ -51,9 +51,16 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
   }
   async function create(){const g=generation.current;setBusy(true);setError('');try{
     const next=await request<Review>('',{request_id:requestId.current,question:topic,paper_ids:selected,whole_library:whole});
-    if(g!==generation.current)return;onNavigate({page:'research',params:{mode:'review',review:next.id}});
+    if(g!==generation.current)return;
+    // 先启动地图再进入页面，地图区块挂载时即可看到“正在生成”并开始轮询
+    if(mapFirst){await request('/'+next.id+'/map/run',{});onNavigate({page:'research',params:{mode:'review',review:next.id}});return;}
+    onNavigate({page:'research',params:{mode:'review',review:next.id}});
     await request('/'+next.id+'/run',{});if(current.current===next.id)setJob(await request<Review>('/'+next.id));
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+  async function researchFromMap(question:string,paperIds:number[]){
+    const conversation=paperIds.length?await api.createPaperDiscussion(paperIds):await api.createConversation();
+    onNavigate({page:'chat',params:{conversation:String(conversation.id),question}});
+  }
   async function showSource(pid:number){const g=generation.current;try{const next=await request<Source>(`/${id}/papers/${pid}`);if(g===generation.current)setSource(next);}catch(e){setError((e as Error).message);}}
   async function continueResearch(){
     if(!job||busy)return;const g=generation.current;setBusy(true);setError('');
@@ -70,24 +77,28 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
     <div className="grid gap-2 md:grid-cols-2">{items.map(p=><label className="paper-option" key={p.id}><input type="checkbox" checked={selected.includes(p.id)} disabled={!selected.includes(p.id)&&selected.length>=1000} onChange={()=>setSelected(old=>old.includes(p.id)?old.filter(x=>x!==p.id):[...old,p.id])}/><span className="break-words">{p.title??`论文 ${p.id}`}</span></label>)}</div>
     <div className="flex gap-3"><button className="btn-ghost" disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-30))}>上一页</button><span className="text-sm text-muted">共 {total} 篇</span><button className="btn-ghost" disabled={offset+30>=total} onClick={()=>setOffset(offset+30)}>下一页</button></div></div>;
   return <Shell max="wide"><div className="space-y-6">
-    <div className="flex flex-wrap justify-between gap-3"><div><h1 className="page-title">专题综述</h1><p className="page-subtitle mt-2">从最多 1000 篇论文中梳理研究路线、比较结果，形成可以继续修改的综述。</p></div><div className="flex gap-2"><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{}})}>少量论文比较</button><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{mode:'review'}})}>新建综述</button></div></div>
+    <div className="flex flex-wrap justify-between gap-3"><div><h1 className="page-title">专题综述</h1><p className="page-subtitle mt-2">从最多 1000 篇论文中生成文献地图（研究主题、值得研究的问题、阅读路线），并按需写成可以继续修改的综述。</p></div><div className="flex gap-2"><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{}})}>少量论文比较</button><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{mode:'review'}})}>新建综述</button></div></div>
     {error&&<p className="card text-red-600" role="alert">{error}</p>}
     {!id&&<section className="research-composer space-y-5"><p className="text-sm text-muted">内置 Nature Writing · Oh My Paper：先组织论证，再分章写作与整篇修订。</p><label className="block">综述主题与关注问题<textarea className="input w-full mt-2" aria-label="综述主题" rows={3} value={topic} onChange={e=>{setTopic(e.target.value);requestId.current=crypto.randomUUID();}} placeholder="例如：梳理检索增强生成的方法演进，比较检索、证据利用与评测方式。"/></label>
       <div className="flex gap-4"><label><input type="radio" checked={whole} onChange={()=>setWhole(true)}/> 当前整个论文库</label><label><input type="radio" checked={!whole} onChange={()=>setWhole(false)}/> 自选论文</label></div>
-      {!whole&&picker}<p className="text-sm text-muted">逐篇保存进度，可暂停后继续。部分论文缺少全文时会使用摘要并说明范围，其他材料正常生成。首次分析会产生模型调用费用，后续优先复用已有结果。</p>
-      <button className="btn-primary" disabled={busy||!topic.trim()||(!whole&&!selected.length)} onClick={create}>{busy?'正在创建…':'开始整理综述'}</button>
+      {!whole&&picker}
+      <div className="space-y-2"><label className="block"><input type="radio" checked={mapFirst} onChange={()=>setMapFirst(true)}/> 先生成文献地图（推荐）：精读卡片、研究主题、值得研究的问题和阅读路线，用量约为写综述正文的一半</label><label className="block"><input type="radio" checked={!mapFirst} onChange={()=>setMapFirst(false)}/> 直接写综述正文：逐篇分析、分章写作与整篇修订；地图之后也可以生成</label></div>
+      <p className="text-sm text-muted">逐篇保存进度，可暂停后继续。部分论文缺少全文时会使用摘要并说明范围，其他材料正常生成。首次分析会产生模型调用费用，后续优先复用已有结果。</p>
+      <button className="btn-primary" disabled={busy||!topic.trim()||(!whole&&!selected.length)} onClick={create}>{busy?'正在创建…':mapFirst?'开始生成文献地图':'开始整理综述'}</button>
     </section>}
     {id&&!job&&!error&&<p role="status">正在读取任务…</p>}
     {job&&<>
       <section className="card space-y-3"><h2 className="text-lg font-semibold">{job.question}</h2><p role="status">{job.stage}</p>
         <div className="flex flex-wrap items-center gap-3"><button className="btn-ghost" disabled={busy} onClick={continueResearch}>与 AI 继续研究</button><span className="text-sm text-muted">带上已保存的分析和草稿，继续比较、追问或讨论下一步。</span></div>
         {job.content&&<p className="text-sm text-muted">新增论文或修改论文笔记后，点击更新即可沿当前正文修改相关段落，复用未变的分析；已有版本可在历史中查看。</p>}
+        {job.status==='draft'&&!job.content?<p className="text-sm text-muted">共 {job.counts.total} 篇。综述正文尚未开始；文献地图在下方单独生成，需要成文综述时再点“生成综述正文”。</p>:<>
         <p className="text-xs text-muted">论文材料整理进度 · 完成后继续综合与写作</p>
-        <progress className="w-full" aria-label="论文材料整理进度" value={job.counts.total-job.counts.pending} max={job.counts.total||1}/><p className="text-sm text-muted">共 {job.counts.total} 篇 · 已分析 {job.counts.done} · 保留材料 {job.counts.fallback} · 缺少材料 {job.counts.missing} · 复用 {job.counts.reused}</p>
-        {job.error&&<p className="text-sm text-amber-700">{job.error}</p>}<div className="flex flex-wrap gap-2">{running?<button className="btn-ghost" disabled={busy} onClick={()=>action('stop')}>暂停</button>:<button className="btn-primary" disabled={busy} onClick={()=>action('run')}>{job.content?'更新综述 / 重试未完成内容':'继续生成'}</button>}
+        <progress className="w-full" aria-label="论文材料整理进度" value={job.counts.total-job.counts.pending} max={job.counts.total||1}/><p className="text-sm text-muted">共 {job.counts.total} 篇 · 已分析 {job.counts.done} · 保留材料 {job.counts.fallback} · 缺少材料 {job.counts.missing} · 复用 {job.counts.reused}</p></>}
+        {job.error&&<p className="text-sm text-amber-700">{job.error}</p>}<div className="flex flex-wrap gap-2">{running?<button className="btn-ghost" disabled={busy} onClick={()=>action('stop')}>暂停</button>:<button className="btn-primary" disabled={busy} onClick={()=>action('run')}>{job.content?'更新综述 / 重试未完成内容':job.status==='draft'?'生成综述正文':'继续生成'}</button>}
           <button className="btn-ghost" disabled={!job.content} onClick={()=>download(job.content,'专题综述.md')}>下载综述</button><button className="btn-ghost" onClick={coverage}>下载材料清单</button>
           {!running&&job.content&&editor===null&&<button className="btn-ghost" onClick={()=>{setEditor(job.content);setEditVersion(job.version);}}>编辑正文</button>}</div>
       </section>
+      <ReviewMap reviewId={job.id} onOpenPaper={onOpenPaper} onResearch={researchFromMap}/>
       {editor!==null&&<section className="card space-y-3"><p className="text-sm">正在编辑 v{editVersion}，当前版本 v{job.version}。编辑时仍可下载本机草稿。</p><textarea className="input w-full font-mono" aria-label="综述正文编辑" rows={24} value={editor} onChange={e=>setEditor(e.target.value)}/><div className="flex gap-2"><button className="btn-primary" disabled={busy||running} onClick={()=>action('content',{content:editor,expected_version:editVersion})}>保存版本</button><button className="btn-ghost" onClick={()=>download(editor,'综述编辑草稿.md')}>下载草稿</button></div></section>}
       {!!job.sections.length&&<details className="card space-y-4" open={!job.content}>
         <summary>已保存的章节草稿 · {job.sections.length} 章</summary>
@@ -101,7 +112,6 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
       {!!job.writing_skills?.length&&<details className="card space-y-3"><summary>写作技能与论证依据</summary><p className="text-sm text-muted">本次实际加载：{[...new Set(job.writing_skills.map(s=>s.id+(s.version?' v'+s.version:'')))].join(' · ')}</p>{job.writing_skills.some(s=>s.stage)&&<p className="text-sm text-muted">按阶段选用规范：{[...new Set(job.writing_skills.map(s=>({plan:'论证规划',intro:'开篇写作','related-work':'主题比较',discussion:'综合讨论',edit:'正文修订',update:'局部更新',synthesis:'材料归纳',outline:'章节组织'}[s.stage||'']||s.stage)).filter(Boolean))].join('、')}。完整技能保留在技能库中，本次请求按上下文容量选取原文段落。</p>}{job.writing_notes&&<MarkdownContent content={job.writing_notes}/>}</details>}
       {job.revisions.length>1&&<details className="card"><summary>历史版本</summary>{job.revisions.map(v=><button className="btn-ghost" key={v.version} onClick={async()=>{const g=generation.current;try{const old=await request<{version:number;content:string}>(`/${id}/revisions/${v.version}`);if(g===generation.current)setOldVersion(old);}catch(e){if(g===generation.current)setError((e as Error).message);}}}>v{v.version}</button>)}{oldVersion&&<><button className="btn-ghost" onClick={()=>download(oldVersion.content,`综述-v${oldVersion.version}.md`)}>下载 v{oldVersion.version}</button><button className="btn-primary" disabled={busy||running||editor!==null||oldVersion.content===job.content} onClick={()=>action(`revisions/${oldVersion.version}/restore`,{expected_version:job.version})}>恢复为当前版本</button><MarkdownContent content={oldVersion.content}/></>}</details>}
       {!running&&<details className="card space-y-3"><summary>加入新论文，更新这份综述</summary>{picker}<button className="btn-primary" disabled={busy||!selected.length} onClick={()=>action('papers',{paper_ids:selected})}>加入所选论文</button></details>}
-      <ReviewMap reviewId={job.id} onOpenPaper={onOpenPaper}/>
       <section className="card space-y-3"><h2 className="text-lg">论文分析与来源</h2><p className="text-sm text-muted">正文的 [P编号] 对应下方记录；可搜索编号查看当时使用的原文片段与研究笔记。</p><input className="input w-full" placeholder="搜索标题或 P 后的编号" aria-label="筛选综述来源" value={filter} onChange={e=>{setFilter(e.target.value.replace(/^P/i,''));setPage(0);}}/>
         {filtered.slice(page*20,page*20+20).map(p=><button key={p.paper_id} className="shelf-paper w-full text-left" onClick={()=>showSource(p.paper_id)}><span className="shelf-paper-content"><span>[P{p.paper_id}] {p.title}</span><span className="shelf-paper-meta">{labels[p.status]}{p.warning?' · '+p.warning:''}</span></span></button>)}
         <div className="flex gap-2"><button className="btn-ghost" disabled={!page} onClick={()=>setPage(page-1)}>上一页</button><button className="btn-ghost" disabled={(page+1)*20>=filtered.length} onClick={()=>setPage(page+1)}>下一页</button></div>

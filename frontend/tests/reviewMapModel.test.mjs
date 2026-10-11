@@ -8,6 +8,7 @@ import {
   mergeThemes,
   removeTheme,
   renameTheme,
+  researchHandoff,
   statusLabel,
   themesForSave,
 } from "../.tmp_graph_test_dist/reviewMapModel.js";
@@ -139,4 +140,33 @@ test("themesForSave 去掉临时 id 交给后端编号，保留已有编号且�
   assert.deepEqual(saved.map((t) => t.id), ["T1", ""]);
   assert.equal(saved[1].name, "乙");
   assert.equal(draft[1].id, "new-1");
+});
+
+test("researchHandoff 把值得研究的问题连同依据论文带入研究对话", () => {
+  const handoff = researchHandoff("弹性多参数", {
+    question: "多参数串扰在实测数据上是否仍未解决？",
+    why: "多数结果来自合成模型",
+    cannot_claim: "合成例子成功不能证明全局收敛",
+    cards: [12, 7, 12],
+  }, [7, 30, 31, 32, 33, 34, 35]);
+  assert.deepEqual(handoff.paperIds, [12, 7, 30, 31, 32, 33]);
+  assert.match(handoff.question, /「弹性多参数」/);
+  assert.match(handoff.question, /多参数串扰在实测数据上是否仍未解决？/);
+  assert.match(handoff.question, /依据：多数结果来自合成模型/);
+  assert.match(handoff.question, /不能据此宣称：合成例子成功不能证明全局收敛/);
+  assert.match(handoff.question, /最小可行的验证方案/);
+});
+
+test("researchHandoff 处理方法组合机会，缺少字段时不输出空行", () => {
+  const handoff = researchHandoff("生成式先验", { idea: "扩散先验结合不确定性估计", cards: [] }, []);
+  assert.deepEqual(handoff.paperIds, []);
+  assert.match(handoff.question, /方法组合机会/);
+  assert.match(handoff.question, /扩散先验结合不确定性估计/);
+  assert.ok(!handoff.question.includes("预期收益"), "缺少字段时不输出该行");
+  assert.ok(!handoff.question.includes("undefined"));
+});
+
+test("researchHandoff 题干不超过对话输入上限", () => {
+  const handoff = researchHandoff("长", { question: "问".repeat(5000), why: "因".repeat(500), cards: [1] }, []);
+  assert.ok(handoff.question.length <= 2000);
 });

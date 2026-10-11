@@ -102,3 +102,38 @@ export function addTheme(themes: MapTheme[], name: string, definition = ''): Map
 export function themesForSave(themes: MapTheme[]): MapTheme[] {
   return themes.map((theme) => (TEMP_ID.test(theme.id) ? { ...theme, id: '' } : theme));
 }
+
+// 地图里“值得研究的问题”和“方法组合机会”是研究起点：带着依据论文进入研究对话继续核对和设计验证。
+export type MapOpenQuestion = { question: string; why?: string; cannot_claim?: string; cards?: number[] };
+export type MapCombination = { idea: string; expected?: string; risk?: string; cards?: number[] };
+
+const HANDOFF_PAPERS = 6;
+const HANDOFF_CHARS = 2000;
+
+export function researchHandoff(
+  theme: string,
+  item: MapOpenQuestion | MapCombination,
+  representative: number[] = [],
+): { question: string; paperIds: number[] } {
+  const paperIds = [...new Set([...(item.cards ?? []), ...representative])].slice(0, HANDOFF_PAPERS);
+  const lines = 'question' in item
+    ? [
+      `围绕文献地图「${theme}」主题中的这个待研究问题继续研究：`,
+      item.question,
+      item.why ? `地图给出的依据：${item.why}` : '',
+      item.cannot_claim ? `地图提醒不能据此宣称：${item.cannot_claim}` : '',
+      '请先核对所附论文原文：这个问题是否确实尚未解决、已有工作做到哪一步、各自的实验条件；再提出一个最小可行的验证方案（数据、基线、评价指标、预期风险），并标出仍需我判断的地方。',
+    ]
+    : [
+      `围绕文献地图「${theme}」主题中的这个方法组合机会继续研究：`,
+      item.idea,
+      item.expected ? `预期收益：${item.expected}` : '',
+      item.risk ? `地图提示的风险：${item.risk}` : '',
+      '请先核对所附论文原文中相关方法的前提与实验条件，判断这一组合是否成立、是否已有人做过；再给出最小可行的验证方案（数据、基线、评价指标、预期风险），并标出仍需我判断的地方。',
+    ];
+  const instruction = lines[lines.length - 1];
+  let body = lines.slice(0, -1).filter(Boolean).join('\n');
+  const room = HANDOFF_CHARS - instruction.length - 2;
+  if (body.length > room) body = body.slice(0, room - 1) + '…';
+  return { question: `${body}\n\n${instruction}`, paperIds };
+}
