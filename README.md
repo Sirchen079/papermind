@@ -41,10 +41,11 @@ PaperMind 是在 Windows 本机运行的科研辅助工具，可以用来：
 - **本机模型**：
   - 可导入单文件 GGUF，由内置 llama.cpp 在 CPU 上推理；
   - 也可以连接 Ollama、LM Studio 或 llama.cpp 服务。
-- **内置技能**：
+- **技能**：
   - 完整内置 Nature Skills 和 Oh My Paper 两个技能库，可在技能页浏览原文，在对话中按任务加载；专题综述按写作阶段调用这些技能。
+  - 可以从 GitHub 地址、本机文件夹或 zip 导入现成的 Agent Skills 技能包（`SKILL.md` 加 references、scripts 等目录的格式）。大仓库可以只导入某个技能目录，例如 `https://github.com/<owner>/<repo>/tree/main/skills/<技能名>`。导入的技能和内置技能一样由对话助手按需加载，技能页会显示来源、版本和许可证。技能包里的脚本只作为参考资料读取，不会被执行。
   - 也可以导入单个 Markdown 文件作为自定义技能。
-- **外部 agent 接口**：本机有一个只读 HTTP 接口，需要本机令牌才能访问。配合 [skills/papermind-library/SKILL.md](skills/papermind-library/SKILL.md)，可以让 Claude Code、Codex 等工具查询论文库。
+- **外部 agent 接口**：Claude Code、Codex 等支持 MCP 的工具可以直接连接 PaperMind，检索和阅读论文库、精读卡片与文献地图，也可以把笔记、研究想法和文档写回。配置方法见下文“接入外部 AI 工具”。
 - **数据安全**：API 密钥加密保存；支持项目备份和整应用备份。
 
 ## 安装与首次配置
@@ -60,6 +61,21 @@ PaperMind 是在 Windows 本机运行的科研辅助工具，可以用来：
   - 思考等级在模型设置中选择，未设置时默认 high；
   - 效果基准是 glm-5.3（max 思考等级），能力更弱的模型或更低的思考等级也能用，但效果不作保证；
   - 文献地图和专题综述建议使用上下文不少于 64K 的模型，并在模型设置中填写实际上下文长度。
+
+## 接入外部 AI 工具
+
+PaperMind 运行时，在本机提供 MCP 接口（Streamable HTTP），需要本机令牌才能访问：
+
+- 地址：`http://127.0.0.1:<端口>/api/w/<项目 id>/mcp`。端口默认 4278，实际端口写在数据目录的 `agent_access.json` 中；项目 id 可以从 `GET /api/workspaces` 获得，默认项目是 `legacy`。
+- 令牌：数据目录下 `api_token` 文件的内容，放在 `X-Local-Token` 请求头中（也可以用 `Authorization: Bearer <令牌>`）。
+
+以 Claude Code 为例：
+
+```powershell
+claude mcp add --transport http papermind http://127.0.0.1:4278/api/w/legacy/mcp --header "X-Local-Token: <api_token 的内容>"
+```
+
+接口提供的工具与应用内对话助手相同：检索论文库和正文、读论文详情与全文、读精读卡片和文献地图、读研究笔记和已保存文档、加载内置或导入的技能；写入只限保存论文笔记、研究想法和 Markdown 文档。读取本机任意文件、联网检索和下载 PDF 等工具不通过这个接口提供。不支持 MCP 的工具，可以按 [skills/papermind-library/SKILL.md](skills/papermind-library/SKILL.md) 使用只读 HTTP 查询接口。
 
 ## 从源码运行
 
@@ -91,7 +107,8 @@ Windows 桌面程序用 PyInstaller 打包，安装程序用 Inno Setup 构建�
 
 - **本机数据**：论文、笔记、索引和研究记录都保存在本机数据目录。应用没有账号体系；PaperMind 自身不收集使用数据，也不向开发者上传任何数据。
 - **发送给模型服务的内容**：调用模型时，相关的论文片段、问题和材料会发送到你配置的模型服务，适用该服务的隐私条款和计费规则。不希望外发的资料，请改用本机模型，或者不要发送。
-- **联网访问**：文献调研、DOI 补全、公开全文获取、网页搜索与读取会访问 OpenAlex、Crossref、arXiv、Bing 搜索结果，以及你指定的网页。只有使用这些功能时才会联网，arXiv 订阅除外：设置了订阅后，每次启动会自动拉取超过 24 小时未更新的订阅。
+- **联网访问**：文献调研、DOI 补全、公开全文获取、网页搜索与读取会访问 OpenAlex、Crossref、arXiv、Bing 搜索结果，以及你指定的网页；从 GitHub 导入技能包会访问 GitHub。只有使用这些功能时才会联网，arXiv 订阅除外：设置了订阅后，每次启动会自动拉取超过 24 小时未更新的订阅。
+- **外部 AI 工具**：通过 MCP 接口连接的工具读到的论文内容，会按该工具自己的设置发送给它使用的模型服务，适用该服务的条款。接口只监听本机地址，并要求本机令牌；不要把令牌分享给他人，也不要写入公开的配置文件或代码仓库。
 - **费用**：
   - 模型调用费用由使用者承担；
   - 应用内的用量统计按服务返回的 token 数计算，仅供参考，以服务商账单为准；
@@ -105,6 +122,7 @@ Windows 桌面程序用 PyInstaller 打包，安装程序用 Inno Setup 构建�
   - 拿不到全文的论文，只能依据摘要或元数据处理，界面会标出证据级别。
 - **学术规范由研究者负责。** 研究者对引用、投稿和发表的内容负责，请遵守所在机构、期刊和会议关于 AI 辅助写作与披露的规定。本工具用于提升研究效率，不得用于捏造数据、伪造引用或其他学术不端行为。
 - **文献获取与版权。** 全文获取只使用公开的开放获取链接，不绕过登录或付费访问控制。导入和使用文献的权利，由使用者自行确认。
+- **导入的技能。** 从第三方导入的技能包按其原有许可证使用，许可证和内容是否适合你的用途由使用者自行确认；技能页显示的许可证是从技能文件或仓库许可证文件中读取的，仅供参考。导入的技能不随本程序分发，PaperMind 不对其内容负责。
 - **无隶属或背书关系。** 本项目与 Springer Nature、Nature 期刊、K-Dense、Oh My Paper、OpenAlex、Crossref、arXiv、Microsoft 及各模型服务商均无隶属、合作或背书关系。“Nature Skills”是一个社区开源项目的名称，与 Nature 期刊及其出版商无关。文中出现的相关名称只用于说明来源。
 - **无担保。** 软件按“现状”提供，不附带任何明示或默示的担保；责任限制见 GPL-3.0 第 15、16 条。
 
@@ -139,6 +157,7 @@ PaperMind 优先复用成熟的开源技能和组件，只为实际缺口编写�
 | python-markdownify、Beautiful Soup、Soup Sieve | MIT | 把 OCR 得到的表格转成 Markdown |
 | openpyxl、python-docx、python-pptx | MIT | Excel、Word、PPTX 导出 |
 | arxiv、bibtexparser | MIT；LGPL-3.0 或 BSD | 获取 arXiv 论文、解析 BibTeX |
+| [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk)（mcp） | MIT | 外部 AI 工具接入的 MCP 接口 |
 | cryptography、Pillow、httpx、PyYAML | Apache-2.0 或 BSD-3-Clause、MIT-CMU、BSD-3-Clause、MIT | 加密、图像处理、网络请求、配置读取 |
 | pywebview | BSD-3-Clause | 桌面窗口，使用系统已有的 Microsoft Edge WebView2 运行时 |
 | React、react-markdown、unified / remark / rehype、KaTeX、Cytoscape.js | MIT | 界面、Markdown 与公式渲染、关系图 |
@@ -165,4 +184,4 @@ PaperMind 优先复用成熟的开源技能和组件，只为实际缺口编写�
 - [后端配置](backend/README.md)
 - [Windows 打包](build/README.md)
 - [第三方组件声明](THIRD_PARTY_NOTICES.md)
-- [外部 agent 查询技能](skills/papermind-library/SKILL.md)
+- [外部 agent 查询技能（MCP 与 HTTP）](skills/papermind-library/SKILL.md)
