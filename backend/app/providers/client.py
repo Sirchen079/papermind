@@ -2,7 +2,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import json
+import logging
 import math
+import time
 from typing import Any
 
 import litellm
@@ -44,6 +46,47 @@ def _review_generation_timeout(api_base, effort):
         return _generation_timeout(api_base, effort)
     return httpx.Timeout(1800 if effort in {'xhigh', 'max'} else 900,
                          connect=10, write=60, pool=60)
+
+
+logger = logging.getLogger(__name__)
+
+# Background review/map calls run for an hour; one provider-side 5xx, 429 or
+# dropped connection must not end the job. Timeouts are excluded: the read
+# already waited up to 30 minutes and repeating it would double that.
+_TRANSIENT_ERRORS = (litellm.InternalServerError, litellm.ServiceUnavailableError, litellm.BadGatewayError,
+                     litellm.RateLimitError, litellm.APIConnectionError)
+_TRANSIENT_RETRY_DELAYS = (5, 20, 60)
+_RETRY_AFTER_CAP = 120
+_retry_sleep = time.sleep
+
+
+def _retry_after(exc) -> int | None:
+    for source in (getattr(getattr(exc, 'response', None), 'headers', None),
+                   getattr(exc, 'litellm_response_headers', None), getattr(exc, 'headers', None)):
+        try:
+            value = source.get('retry-after') or source.get('Retry-After')
+            return int(str(value).strip())
+        except Exception:
+            continue
+    return None
+
+
+def _call_with_transient_retry(call, kwargs, request_kind):
+    if request_kind != 'library_review':
+        return call(**kwargs)
+    for attempt, delay in enumerate((*_TRANSIENT_RETRY_DELAYS, None), start=1):
+        try:
+            return call(**kwargs)
+        except Exception as exc:
+            if delay is None or isinstance(exc, litellm.Timeout) or not isinstance(exc, _TRANSIENT_ERRORS):
+                raise
+            if isinstance(exc, litellm.RateLimitError):
+                hinted = _retry_after(exc)
+                if hinted is not None:
+                    delay = max(delay, min(hinted, _RETRY_AFTER_CAP))
+            logger.warning('library_review call failed with %s; retry %d in %ss',
+                           type(exc).__name__, attempt, delay)
+            _retry_sleep(delay)
 
 
 class EmptyResponseError(ValueError):
@@ -275,13 +318,13 @@ class ProviderClient:
             kwargs["input"] = [{**m, "content": responses_content(m.get("content"))} for m in kwargs.pop("messages")]
             if max_tokens is not None:
                 kwargs["max_output_tokens"] = max_tokens
-            resp = litellm.responses(**kwargs)
+            resp = _call_with_transient_retry(litellm.responses, kwargs, request_kind)
             content = _responses_text(resp)
             usage = getattr(resp, "usage", None)
         else:
             if max_tokens is not None:
                 kwargs["max_tokens"] = max_tokens
-            resp = litellm.completion(**kwargs)
+            resp = _call_with_transient_retry(litellm.completion, kwargs, request_kind)
             content = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
 

@@ -1,10 +1,13 @@
 """Structured (card/map) model calls: full output budget, failure counting.
 
 The same asker serves the card pool's three worker threads and the map
-pipeline, so the consecutive-error counter is lock-protected.
+pipeline, so the consecutive-error counter is lock-protected. Transient
+provider errors are already retried inside the client; a rejected key,
+permission or model name stops the task on the first call.
 """
 import threading
 
+import litellm
 from sqlmodel import Session, select
 from app.models import Model
 from app.providers import capabilities
@@ -50,6 +53,9 @@ class StructuredAsker:
                 [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
                 request_kind='library_review', ref_id=self._ref_id, max_tokens=max_tokens,
                 reasoning_effort=None)
+        except (litellm.AuthenticationError, litellm.PermissionDeniedError, litellm.NotFoundError) as exc:
+            raise ModelUnavailable(
+                f'模型服务拒绝请求（{type(exc).__name__}）：请检查 API key、账户权限和模型名称') from exc
         except Exception as exc:
             with self._lock:
                 self._consecutive += 1

@@ -56,3 +56,9 @@ def accept_evidence_review(monkeypatch):
             return SimpleNamespace(content='{"edits":[]}',total_tokens=2)
         return original(self,*args,**kwargs)
     monkeypatch.setattr(ProviderClient,'complete',complete)
+
+
+@pytest.fixture(autouse=True)
+def _no_transient_retry_sleep(monkeypatch):
+    # library_review calls back off on provider 5xx/429; tests never wait.
+    monkeypatch.setattr('app.providers.client._retry_sleep', lambda seconds: None)
