@@ -132,7 +132,8 @@ def test_short_edit_on_large_context_does_not_request_huge_output(client,monkeyp
     def complete(*args,**kwargs):
         calls.append(kwargs)
         assert block['text'] in args[2][-1]['content']
-        assert kwargs['max_tokens']<=2000
+        # 卡 24 后默认 high：2000 正文 + 推理余量（约 1 万），仍远小于 1M 窗口的一半
+        assert kwargs['max_tokens']<=20000
         return SimpleNamespace(content='更清楚的表述 [P7]。')
     monkeypatch.setattr(editing,'pick_llm',lambda *a:(SimpleNamespace(complete=complete),SimpleNamespace(id=pid),'large'))
     response=client.post(prefix+'/paragraphs/propose',json={'expected_version':1,'block_id':block['id'],'instruction':'压缩'})

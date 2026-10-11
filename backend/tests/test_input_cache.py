@@ -101,7 +101,7 @@ def setup_research(client, monkeypatch):
         payload = json.loads(messages[1]['content'])
         evidence = payload.get('material',{}).get('evidence') or payload['materials'][0]['evidence']
         return SimpleNamespace(content=json.dumps({'answer':'Candidate answer', 'evidence_refs':[evidence[0]['ref']], 'unknowns':[], 'route':'continue','next_step':'Check source'}), cached_input_tokens=123, cache_usage_reported=True)
-    monkeypatch.setattr(service, 'pick_llm', lambda *args:(SimpleNamespace(complete=complete),provider,'synthetic-model'))
+    monkeypatch.setattr(service, 'pick_llm', lambda *args:(SimpleNamespace(complete=complete,effective_effort=lambda *a:'high'),provider,'synthetic-model'))
     def run(question='Compare method conditions'):
         created = client.post('/api/research/tasks', json={'request_id':str(uuid4()),'question':question,'paper_ids':[paper_id],'depth':'evidence'})
         assert created.status_code == 201, created.text
