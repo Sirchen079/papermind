@@ -301,6 +301,31 @@ def fetch_crossref(doi: str) -> FetchedPaper:
     )
 
 
+def fetch_arxiv_metadata(arxiv_id: str) -> tuple[FetchedPaper | None, dict]:
+    """Best-effort arXiv metadata lookup for an already-identified id.
+
+    Shared by the URL importer and PDF uploads: reuses the importer's parsing
+    (``download_pdf=False``) with a zero-retry, 15-second client so an arXiv
+    outage degrades to an ``unavailable`` receipt instead of blocking an
+    import that already holds the full text.
+    """
+    try:
+        import arxiv
+        from functools import partial
+        client = arxiv.Client(num_retries=0)
+        # arxiv.Client currently exposes no timeout option. Adapt only this
+        # lookup's session, leaving ordinary arXiv imports and other clients alone.
+        client._session.get = partial(client._session.get, timeout=15)
+        try:
+            fetched = fetch_arxiv(arxiv_id, client=client, download_pdf=False)
+        finally:
+            client._session.close()
+        return fetched, {'status': 'retrieved', 'source': 'arxiv', 'identifier': arxiv_id}
+    except Exception as exc:
+        return None, {'status': 'unavailable', 'source': 'arxiv', 'identifier': arxiv_id,
+                      'error_type': type(exc).__name__}
+
+
 def lookup_doi_metadata(doi: str | None) -> tuple[FetchedPaper | None, dict | None]:
     """Shared best-effort lookup; unavailable metadata never aborts an import."""
     identifier = normalize_doi(doi)

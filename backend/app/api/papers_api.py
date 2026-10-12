@@ -12,6 +12,7 @@ from app.api.deps import get_session
 from app.config import get_settings
 from app.ingestion.citation_key import normalize_citation_key
 from app.ingestion.dedup import normalize_title
+from app.ingestion.pdf_identify import verify_upload_identity
 from app.ingestion.service import analyze_paper, persist_fetched
 from app.ingestion.sources import FetchedPaper, fetch_arxiv, parse_bibtex, parse_ris
 from app.models import (
@@ -943,10 +944,22 @@ def ingest_ris(body: RisIn, session: Session = Depends(get_session)) -> list[dic
 @router.post("/papers/pdf")
 async def ingest_pdf(file: UploadFile = File(...), session: Session = Depends(get_session)) -> dict:
     data = await file.read()
+    # Identify/verify before persisting: the upload filename is a label, never
+    # a title. Verification is best-effort; an outage only degrades the receipt.
+    fields, receipt = await run_in_threadpool(verify_upload_identity, data, file.filename)
     fetched = FetchedPaper(
         source="pdf",
         source_ref=file.filename,
-        title=file.filename,
+        title=fields["title"],
+        authors=fields["authors"],
+        abstract=fields["abstract"],
+        year=fields["year"],
+        venue=fields["venue"],
+        volume=fields["volume"],
+        issue=fields["issue"],
+        pages=fields["pages"],
+        doi=fields["doi"],
+        arxiv_id=fields["arxiv_id"],
         pdf_bytes=data,
     )
     ctx = _analysis_ctx(session)
@@ -960,4 +973,4 @@ async def ingest_pdf(file: UploadFile = File(...), session: Session = Depends(ge
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return _public(paper)
+    return {**_public(paper), "identity": receipt}

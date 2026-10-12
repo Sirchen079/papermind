@@ -141,3 +141,41 @@ def identify_pdf(pdf_input: bytes | Path) -> dict:
         return result
     text = _PAGE_MARKER_RE.sub(' ', '\n'.join(page_texts))
     return extract_from_text(text, meta)
+
+
+def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dict]:
+    """Verify an uploaded PDF's identity against arXiv/Crossref (best effort).
+
+    Network access is allowed here, but no exception ever escapes: an outage
+    only degrades the receipt. Returns ``(fields, receipt)`` where ``fields``
+    prefers verified bibliographic values and falls back to what the PDF itself
+    declares (``title`` only from verification or the document's metadata —
+    ``filename`` is never used as a title), and ``receipt`` records whether
+    verification came from arxiv/crossref/none and its status.
+    """
+    candidate = identify_pdf(data)
+    fields = {'title': candidate.get('title'), 'authors': [], 'abstract': None,
+              'year': None, 'venue': None, 'volume': None, 'issue': None,
+              'pages': None, 'doi': candidate.get('doi'),
+              'arxiv_id': candidate.get('arxiv_id')}
+    receipt: dict = {'status': 'none', 'source': 'none'}
+    try:
+        verified = None
+        if fields['arxiv_id']:
+            from app.ingestion.sources import fetch_arxiv_metadata
+            verified, receipt = fetch_arxiv_metadata(fields['arxiv_id'])
+        if verified is None and fields['doi']:
+            from app.ingestion.sources import lookup_doi_metadata
+            verified, receipt = lookup_doi_metadata(fields['doi'])
+        if verified is not None:
+            fields['title'] = verified.title or fields['title']
+            if verified.authors:
+                fields['authors'] = [str(author) for author in verified.authors]
+            for field in ('abstract', 'year', 'venue', 'volume', 'issue', 'pages',
+                          'doi', 'arxiv_id'):
+                value = getattr(verified, field)
+                if value:
+                    fields[field] = value
+    except Exception as exc:  # noqa: BLE001 — verification must never block an upload
+        receipt = {**receipt, 'status': 'unavailable', 'error_type': type(exc).__name__}
+    return fields, receipt

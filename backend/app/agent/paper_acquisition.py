@@ -45,23 +45,8 @@ def _arxiv_metadata(url):
     arxiv_id = _arxiv_id(url)
     if arxiv_id is None:
         return None, None
-    from app.ingestion.sources import fetch_arxiv
-    try:
-        import arxiv
-        from functools import partial
-        client = arxiv.Client(num_retries=0)
-        # arxiv.Client currently exposes no timeout option. Adapt only this
-        # lookup's session, leaving ordinary arXiv imports and other clients alone.
-        client._session.get = partial(client._session.get, timeout=15)
-        try:
-            fetched = fetch_arxiv(arxiv_id, client=client, download_pdf=False)
-        finally:
-            client._session.close()
-        return fetched, {'status': 'retrieved', 'source': 'arxiv', 'identifier': arxiv_id}
-    except Exception as exc:
-        # Bibliographic lookup must not make the available full text unusable.
-        return None, {'status': 'unavailable', 'source': 'arxiv', 'identifier': arxiv_id,
-                      'error_type': type(exc).__name__}
+    from app.ingestion.sources import fetch_arxiv_metadata
+    return fetch_arxiv_metadata(arxiv_id)
 
 
 def _doi_metadata(doi):

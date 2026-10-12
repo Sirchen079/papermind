@@ -111,13 +111,22 @@ def persist_fetched(
                 if old_path and pdf_digest(old_path) == digest:
                     session.commit()
                     return candidate
-    existing = target if target is not None else (None if fetched.source == "pdf" else
-                find_duplicate(session, fetched.doi, fetched.arxiv_id, fetched.title))
-    if existing and pdf_path and existing.pdf_path:
+    # PDF uploads dedup by identifier only: a shared title like "Supplementary
+    # information" must never merge two different documents. Other sources keep
+    # title-based dedup.
+    existing = target if target is not None else find_duplicate(
+        session, fetched.doi, fetched.arxiv_id,
+        None if fetched.source == "pdf" else fetched.title)
+    pdf_upload = fetched.source == "pdf" and target_paper_id is None
+    if existing and pdf_path and existing.pdf_path and not pdf_upload:
         old_path = resolve_pdf(existing.pdf_path, Path(pdf_dir))
         if old_path and pdf_digest(old_path) != digest:
             raise ValueError("这篇论文已有不同内容的 PDF，已保留原文。请将新版本作为独立论文导入。")
     paper = existing if existing is not None else Paper(source=fetched.source, source_ref=fetched.source_ref)
+    # A PDF upload landing on an existing paper fills only empty bibliographic
+    # fields (same curated protection as import_paper_pdf); other import paths
+    # keep their previous merge behavior.
+    pdf_attach = existing is not None and pdf_upload
 
     if (
         fetched.citation_key
@@ -125,16 +134,31 @@ def persist_fetched(
         and _citation_key_available(session, fetched.citation_key, paper.id)
     ):
         paper.citation_key = fetched.citation_key
-    paper.title = fetched.title or paper.title
-    if fetched.authors:
-        paper.authors_json = json.dumps(fetched.authors, ensure_ascii=False)
-    paper.abstract = fetched.abstract or paper.abstract
+    if pdf_attach:
+        # Only fill fields the existing record lacks; verified values never
+        # overwrite curated metadata (same protection as import_paper_pdf).
+        paper.title = paper.title or fetched.title
+        if fetched.authors and not (paper.authors_json or '').strip():
+            paper.authors_json = json.dumps(fetched.authors, ensure_ascii=False)
+        paper.abstract = paper.abstract or fetched.abstract
+        paper.year = paper.year or fetched.year
+        paper.venue = paper.venue or fetched.venue
+        for field in ("volume", "issue", "pages"):
+            setattr(paper, field, getattr(paper, field) or getattr(fetched, field))
+    else:
+        paper.title = fetched.title or paper.title
+        if (existing is None and pdf_upload and not (fetched.title or '').strip()
+                and fetched.source_ref):
+            paper.title = Path(fetched.source_ref).stem
+        if fetched.authors:
+            paper.authors_json = json.dumps(fetched.authors, ensure_ascii=False)
+        paper.abstract = fetched.abstract or paper.abstract
+        paper.year = fetched.year or paper.year
+        paper.venue = fetched.venue or paper.venue
+        for field in ("volume", "issue", "pages"):
+            setattr(paper, field, getattr(fetched, field) or getattr(paper, field))
     paper.doi = fetched.doi or paper.doi
     paper.arxiv_id = fetched.arxiv_id or paper.arxiv_id
-    paper.year = fetched.year or paper.year
-    paper.venue = fetched.venue or paper.venue
-    for field in ("volume", "issue", "pages"):
-        setattr(paper, field, getattr(fetched, field) or getattr(paper, field))
     paper.title_norm = normalize_title(paper.title)
     paper.updated_at = utcnow()
 
