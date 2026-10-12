@@ -548,7 +548,7 @@
   .home-section-label > span:first-child { font-size: 10px; letter-spacing: .14em; color: var(--accent); }
   .home-section-label h2 { font-family: var(--font-title); font-size: 18px; font-weight: 600; color: var(--text); }
   .section-rule { height: 1px; flex: 1; background: var(--border); }
-  .start-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; margin-bottom: 32px; }
+  .start-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; margin-bottom: 32px; }
   .start-card { display: grid; grid-template-columns: 36px minmax(0,1fr); column-gap: 12px; row-gap: 8px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
   .start-card::after { content: none; }
   .start-card:hover { transform: none; }

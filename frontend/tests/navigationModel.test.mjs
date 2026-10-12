@@ -21,6 +21,13 @@ test("navigation model parses plain top-level hashes", () => {
   assert.deepEqual(parseHash("#graph"), { page: "graph", params: {} });
 });
 
+test("navigation model treats the review map as a known top-level page", () => {
+  assert.equal(parseHash("#map").page, "map");
+  assert.deepEqual(parseHash("#map?review=7"), { page: "map", params: { review: "7" } });
+  assert.equal(buildHash({ page: "map", params: {} }), "#map");
+  assert.equal(buildHash({ page: "map", params: { review: "7" } }), "#map?review=7");
+});
+
 test("navigation model parses library deep-link params", () => {
   assert.deepEqual(parseHash("#library?view=matrix"), {
     page: "library",

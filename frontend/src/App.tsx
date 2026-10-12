@@ -33,6 +33,7 @@ const Home = lazy(() => import("./pages/Home"));
 const Research = lazy(() => import("./pages/Research"));
 const LibraryReview = lazy(() => import('./pages/LibraryReview'));
 const CardsPage = lazy(() => import("./pages/CardsPage"));
+const MapPage = lazy(() => import("./pages/MapPage"));
 const Wiki = lazy(() => import('./pages/Wiki'));
 const Literature = lazy(() => import('./pages/Literature'));
 const Help = lazy(() => import('./pages/Help'));
@@ -300,6 +301,7 @@ export default function App() {
             {page === "home" && <Home guided={guide.state?.status==='welcome'||guide.state?.status==='active'} onOpenPaper={openPaper} onNavigate={navigate} />}
             {page === "research" && (location.params.mode==='review' ? <LibraryReview params={location.params} onNavigate={navigate} onOpenPaper={openPaper}/> : <Research params={location.params} onNavigate={navigate} onOpenPaper={openPaper} />)}
             {page === "cards" && <CardsPage params={location.params} onNavigate={navigate} onOpenPaper={openPaper}/>}
+            {page === "map" && <MapPage params={location.params} onNavigate={navigate} onOpenPaper={openPaper}/>}
             {page === 'wiki' && <Wiki params={location.params} onNavigate={navigate} onOpenPaper={openPaper}/>}
             {page === "library" && (
               <Library

@@ -9,7 +9,7 @@ import LibraryDiagnosticsPanel from "../components/LibraryDiagnosticsPanel";
 import type { NavLocation } from "./navigationModel";
 import { ReadingDesk } from '../components/ReadingDesk';
 import ResearchLaunch from '../components/ResearchLaunch';
-import { BookOpen, Sparkles, Logo, Settings } from '../icons';
+import { BookOpen, Sparkles, Logo, Settings, Share2 } from '../icons';
 import { EmptyState } from '../components/ui/EmptyState';
 
 const READING_STATUS_LABELS: Record<string, string> = {
@@ -77,6 +77,7 @@ export default function Home({
         <div className="start-card"><div className="start-card-top"><span className="start-icon"><Logo size={22}/></span></div><h2 className="font-semibold">把论文交给 PaperMind</h2><p className="text-sm text-muted flex-1">导入 PDF，原文、摘录和后续研究放在一起。</p><button className="btn-ghost" onClick={()=>onNavigate?.({page:'library',params:{import:'pdf'}})}>导入论文 <span aria-hidden="true">↗</span></button></div>
         <div className="start-card"><div className="start-card-top"><span className="start-icon"><BookOpen size={22}/></span></div><h2 className="font-semibold">接着刚才读到的地方</h2><p className="text-sm text-muted flex-1">回到论文与笔记，不用重新找材料。</p><button className="btn-ghost" onClick={()=>recentlyRead?.[0]?onOpenPaper(recentlyRead[0].id):recentImports?.[0]?onOpenPaper(recentImports[0].id):onNavigate?.('library')}>{recentlyRead?.length?'继续上次阅读':'打开论文库'} <span aria-hidden="true">↗</span></button></div>
         <div className="start-card"><div className="start-card-top"><span className="start-icon"><Sparkles size={22}/></span></div><h2 className="font-semibold">卡在一句话？直接问</h2><p className="text-sm text-muted flex-1">让 AI 解释概念、梳理思路，围绕论文继续聊。</p><button className="btn-ghost" onClick={()=>onNavigate?.('chat')}>打开研究对话 <span aria-hidden="true">↗</span></button></div>
+        <div className="start-card"><div className="start-card-top"><span className="start-icon"><Share2 size={22}/></span></div><h2 className="font-semibold">精读一批论文</h2><p className="text-sm text-muted flex-1">选一批论文生成精读卡片、研究主题和值得研究的问题，用量约为写综述正文的一半。</p><button className="btn-ghost" onClick={()=>onNavigate?.({page:'research',params:{mode:'review'}})}>生成文献地图 <span aria-hidden="true">↗</span></button></div>
       </section>
 
       {Boolean(recentlyRead?.length||recentImports?.length)&&<div className="home-recent-grid mb-4 grid grid-cols-1 gap-5 lg:grid-cols-2">
