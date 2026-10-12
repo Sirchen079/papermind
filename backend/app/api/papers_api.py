@@ -973,4 +973,7 @@ async def ingest_pdf(file: UploadFile = File(...), session: Session = Depends(ge
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    return {**_public(paper), "identity": receipt}
+    identity = dict(receipt)
+    if getattr(paper, "_upload_kept_existing_pdf", False):
+        identity["pdf"] = "kept_existing"
+    return {**_public(paper), "identity": identity}

@@ -118,9 +118,17 @@ def persist_fetched(
         session, fetched.doi, fetched.arxiv_id,
         None if fetched.source == "pdf" else fetched.title)
     pdf_upload = fetched.source == "pdf" and target_paper_id is None
-    if existing and pdf_path and existing.pdf_path and not pdf_upload:
+    if existing and pdf_path and existing.pdf_path:
         old_path = resolve_pdf(existing.pdf_path, Path(pdf_dir))
         if old_path and pdf_digest(old_path) != digest:
+            if pdf_upload:
+                # Same identifier, different bytes: keep the stored PDF and the
+                # page-anchored evidence (excerpts, notes) that refers to it.
+                # The upload counts as a duplicate, not a replacement; the
+                # route surfaces this via identity['pdf'] = 'kept_existing'.
+                session.commit()
+                existing._upload_kept_existing_pdf = True
+                return existing
             raise ValueError("这篇论文已有不同内容的 PDF，已保留原文。请将新版本作为独立论文导入。")
     paper = existing if existing is not None else Paper(source=fetched.source, source_ref=fetched.source_ref)
     # A PDF upload landing on an existing paper fills only empty bibliographic
@@ -138,7 +146,7 @@ def persist_fetched(
         # Only fill fields the existing record lacks; verified values never
         # overwrite curated metadata (same protection as import_paper_pdf).
         paper.title = paper.title or fetched.title
-        if fetched.authors and not (paper.authors_json or '').strip():
+        if fetched.authors and not json.loads(paper.authors_json or '[]'):
             paper.authors_json = json.dumps(fetched.authors, ensure_ascii=False)
         paper.abstract = paper.abstract or fetched.abstract
         paper.year = paper.year or fetched.year

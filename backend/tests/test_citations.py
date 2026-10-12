@@ -267,6 +267,22 @@ def test_store_citations_idempotent_on_reextraction(client):
         )
 
 
+def _await_citations(session, source_paper_id, at_least=1, timeout=8.0):
+    """The auto-mode Markdown worker stores citations just after the upload
+    response returns; poll briefly instead of racing it."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while True:
+        rows = session.exec(
+            select(PaperCitation).where(PaperCitation.source_paper_id == source_paper_id)
+        ).all()
+        if len(rows) >= at_least or time.monotonic() >= deadline:
+            return rows
+        time.sleep(0.2)
+        session.expire_all()
+
+
 def test_pdf_ingest_extracts_citations_end_to_end(client):
     """Full ingest path: PDF upload → parse → rule-based extraction, no LLM."""
     import fitz
@@ -293,9 +309,7 @@ def test_pdf_ingest_extracts_citations_end_to_end(client):
     pid = res.json()["id"]
 
     with Session(get_engine()) as session:
-        rows = session.exec(
-            select(PaperCitation).where(PaperCitation.source_paper_id == pid)
-        ).all()
+        rows = _await_citations(session, pid, at_least=2)
         norms = {r.ref_title_norm for r in rows}
         assert len(rows) >= 2  # parse fidelity varies; core entries must survive
         assert "a study of graph networks" in norms
@@ -465,10 +479,9 @@ def test_persist_fetched_matches_after_extraction(client):
     pid = res.json()["id"]
 
     with Session(get_engine()) as session:
-        row = session.exec(
-            select(PaperCitation).where(PaperCitation.source_paper_id == pid)
-        ).first()
-        assert row is not None
+        rows = _await_citations(session, pid, at_least=1)
+        assert rows
+        row = rows[0]
         assert row.target_paper_id == target_id
         assert row.match_status == "matched"
 
@@ -550,3 +563,19 @@ def test_paper_citations_endpoint_lists_outgoing_and_incoming(client):
     assert incoming[0]["source_title"] == "Paper A"
 
     assert client.get("/api/papers/99999/citations").status_code == 404
+
+
+@pytest.fixture(autouse=True)
+def _offline_upload_identity(monkeypatch):
+    """P1b makes PDF uploads verify arXiv/Crossref identity; this suite's
+    sample PDF carries reference identifiers, so keep it offline."""
+    from app.ingestion import sources
+
+    monkeypatch.setattr(
+        sources, "fetch_arxiv_metadata",
+        lambda aid: (None, {"status": "unavailable", "source": "arxiv",
+                            "identifier": aid, "error_type": "OfflineTest"}))
+    monkeypatch.setattr(
+        sources, "lookup_doi_metadata",
+        lambda doi: (None, {"status": "unavailable", "source": "crossref",
+                            "identifier": doi, "error_type": "OfflineTest"}))

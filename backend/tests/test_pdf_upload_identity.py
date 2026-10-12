@@ -5,6 +5,7 @@ All network is mocked (crossref/arXiv lookups); PDFs are generated in-process
 with pymupdf.
 """
 import json
+from pathlib import Path
 
 import fitz
 import pytest
@@ -71,13 +72,19 @@ def test_same_bytes_upload_stays_one_paper(client, monkeypatch):
     assert total_papers(client) == 1
 
 
-def test_same_doi_different_bytes_merge_into_one_paper(client, monkeypatch):
+def test_same_doi_different_bytes_keeps_stored_pdf(client, monkeypatch):
     mock_crossref(monkeypatch, "10.1038/merge")
-    first = upload(client, make_pdf("Study body A. doi:10.1038/merge"), "a.pdf").json()
+    first_raw = make_pdf("Study body A. doi:10.1038/merge")
+    first = upload(client, first_raw, "a.pdf").json()
     second = upload(client, make_pdf("Expanded study body B. doi:10.1038/merge"), "b.pdf")
     assert second.status_code == 200
-    assert second.json()["id"] == first["id"]
+    body = second.json()
+    assert body["id"] == first["id"]
+    assert body["identity"]["pdf"] == "kept_existing"
     assert total_papers(client) == 1
+    with Session(get_engine()) as session:
+        stored = Path(session.get(Paper, first["id"]).pdf_path).read_bytes()
+    assert stored == first_raw
 
 
 def test_pdf_with_known_doi_attaches_to_bibtex_record_without_overwrite(client, monkeypatch):
@@ -156,3 +163,18 @@ def test_persist_pdf_merge_fills_only_empty_fields(client):
         assert json.loads(paper.authors_json) == ["Ada"]
         assert paper.year == 2024
         assert len(session.exec(select(Paper)).all()) == 1
+
+
+def test_persist_pdf_merge_fills_authors_when_list_empty(client):
+    from app.ingestion.service import persist_fetched
+    with Session(get_engine()) as session:
+        existing = Paper(source="bibtex", title="Empty authors", authors_json="[]",
+                         doi="10.1038/empty")
+        session.add(existing)
+        session.commit()
+        fetched = FetchedPaper(source="pdf", source_ref="uploaded.pdf", title=None,
+                               authors=["Bo Bai"], doi="10.1038/empty",
+                               pdf_bytes=make_pdf("Body. doi:10.1038/empty"))
+        paper = persist_fetched(session, fetched, get_settings().data_dir / "pdfs")
+        assert paper.id == existing.id
+        assert json.loads(paper.authors_json) == ["Bo Bai"]
