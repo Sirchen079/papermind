@@ -225,6 +225,39 @@ def test_group_synthesis_retains_late_results_and_qualifications(client,monkeypa
         assert f'POSSIBLE_NOT_ESTABLISHED_{pid}' in groups[0]
 
 
+def test_estimate_materials_counts_and_tokens(client):
+    from app.providers.client import _estimate_tokens
+    with Session(get_engine()) as s:
+        rows=[Paper(source='manual',title='T3',full_text='C'*40),Paper(source='manual',title='T2',abstract='D'*80),Paper(source='manual',title='T1')]
+        s.add_all(rows);s.commit();ids=[r.id for r in rows]
+        expected=sum(_estimate_tokens(t) for t in ('C'*40,'D'*80,'T1'))
+        assert service.estimate_materials(s,ids)=={'papers':3,'with_full_text':1,'material_tokens':expected}
+        dup=service.estimate_materials(s,[ids[0],ids[0],ids[2]])
+        assert dup['papers']==2 and dup['material_tokens']==expected-_estimate_tokens('D'*80)
+        whole=service.estimate_materials(s,whole_library=True)
+        assert whole['papers']==3 and whole['material_tokens']==expected
+        assert service.estimate_materials(s,[])=={'papers':0,'with_full_text':0,'material_tokens':0}
+
+
+def test_estimate_api_explicit_ids_whole_library_and_empty(client):
+    with Session(get_engine()) as s:
+        rows=[Paper(source='manual',title='P1',full_text='C'*40),Paper(source='manual',title='P2',abstract='D'*80),Paper(source='manual',title='P3')]
+        s.add_all(rows);s.commit();ids=[r.id for r in rows]
+    material=sum(max(1,len(t)//4) for t in ('C'*40,'D'*80,'P3'))
+    response=client.get('/api/reviews/estimate',params={'paper_ids':','.join(map(str,ids))})
+    assert response.status_code==200,response.text
+    result=response.json()
+    assert result['papers']==3 and result['with_full_text']==1 and result['material_tokens']==material
+    assert result['map_tokens']==round(material*service.ESTIMATE_MAP_FACTOR)
+    assert result['review_tokens']==round(material*service.ESTIMATE_REVIEW_FACTOR)
+    whole=client.get('/api/reviews/estimate',params={'whole_library':'true'}).json()
+    assert whole['papers']==3 and whole['material_tokens']==material and whole['map_tokens']==round(material*1.5)
+    dup=client.get('/api/reviews/estimate',params={'paper_ids':f'{ids[0]},{ids[0]}'}).json()
+    assert dup['papers']==1
+    missing=client.get('/api/reviews/estimate',params={'paper_ids':'999999'}).json()
+    assert missing=={'papers':0,'with_full_text':0,'material_tokens':0,'map_tokens':0,'review_tokens':0}
+
+
 def test_review_background_workers_keep_workspace_and_sources_isolated(client,monkeypatch):
     from app.workspaces.context import bind_workspace
     contexts=[]

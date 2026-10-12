@@ -50,6 +50,13 @@ def list_reviews(session:Session=Depends(get_session)):
 def create(body:CreateBody,session:Session=Depends(get_session)):
     return invoke(service.create,session,str(body.request_id),body.question,body.paper_ids,body.whole_library)
 
+@router.get('/estimate')
+def estimate(whole_library:bool=False,paper_ids:str='',session:Session=Depends(get_session)):
+    try:ids=[int(x) for x in paper_ids.split(',') if x.strip()]
+    except ValueError:raise HTTPException(409,'paper_ids 需为逗号分隔的论文编号') from None
+    result=invoke(service.estimate_materials,session,ids or None,whole_library)
+    return {**result,'map_tokens':round(result['material_tokens']*service.ESTIMATE_MAP_FACTOR),'review_tokens':round(result['material_tokens']*service.ESTIMATE_REVIEW_FACTOR)}
+
 @router.get('/{review_id}')
 def get(review_id:str,session:Session=Depends(get_session)):
     return invoke(service.detail,session,review_id)

@@ -7,6 +7,7 @@ import { ReviewMap } from '../components/ReviewMap';
 import { ReviewParagraphEditor } from '../components/ReviewParagraphEditor';
 import {createReviewRequest,type LibraryReviewDetail as Review,type ReviewSource as Source} from '../reviewsApi';
 import type { NavLocation } from './navigationModel';
+import {formatTokenEstimate,type ReviewEstimate} from './reviewComposerModel';
 import type { Paper } from '../api';
 
 const labels:Record<string,string>={draft:'待开始',running:'正在生成',ready:'已生成',partial:'部分完成',paused:'已暂停',needs_input:'等待材料或模型',done:'已分析',fallback:'保留已有材料',missing:'缺少可读材料',pending:'待分析'};
@@ -18,6 +19,7 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
   const [query,setQuery]=useState(''),[offset,setOffset]=useState(0),[items,setItems]=useState<Paper[]>([]),[total,setTotal]=useState(0);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[filter,setFilter]=useState(''),[page,setPage]=useState(0);
   const [source,setSource]=useState<Source|null>(null),[editor,setEditor]=useState<string|null>(null),[editVersion,setEditVersion]=useState(0);
+  const [estimate,setEstimate]=useState<ReviewEstimate|null>(null);
   const [editSelection,setEditSelection]=useState<{id:string;version:number;request:number}|null>(null);
   const editRequest=useRef(0);
   const [oldVersion,setOldVersion]=useState<{version:number;content:string}|null>(null);
@@ -29,6 +31,13 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
     let alive=true;const timer=setTimeout(()=>api.listPapers(30,offset,query).then(r=>{if(alive){setItems(r.items);setTotal(r.total);}}).catch(e=>{if(alive)setError(e.message);}),200);
     return()=>{alive=false;clearTimeout(timer);};
   },[api,query,offset]);
+  // 卡 P4b：创建前用量预估；失败静默，不阻塞创建。
+  useEffect(()=>{
+    if(id)return;
+    if(!whole&&!selected.length){setEstimate(null);return;}
+    let alive=true;const timer=setTimeout(()=>{request<ReviewEstimate>(`/estimate?whole_library=${whole}&paper_ids=${selected.join(',')}`).then(x=>{if(alive)setEstimate(x);}).catch(()=>{if(alive)setEstimate(null);});},300);
+    return()=>{alive=false;clearTimeout(timer);};
+  },[id,whole,selected,items,request]);
   useEffect(()=>{
     const g=++generation.current;setJob(null);setSource(null);setEditor(null);setOldVersion(null);setEditSelection(null);setError('');setBusy(false);setPage(0);setFilter('');setSelected([]);requestId.current=crypto.randomUUID();
     if(!id)return;
@@ -75,6 +84,7 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
   async function coverage(){try{const res=await fetch(`${base}/reviews/${id}/export?kind=coverage`);if(!res.ok)throw new Error('覆盖清单下载失败');download(await res.text(),'综述材料清单.jsonl','application/x-ndjson');}catch(e){setError((e as Error).message);}}
   const filtered=(job?.papers??[]).filter(p=>!filter||p.title.toLowerCase().includes(filter.toLowerCase())||String(p.paper_id)===filter);
   const running=job?.status==='running';
+  const estimateText=estimate?formatTokenEstimate(estimate):'';
   const picker=<div className="space-y-3"><input className="input w-full" aria-label="搜索综述论文" placeholder="搜索论文" value={query} onChange={e=>{setQuery(e.target.value);setOffset(0);}}/>
     <div className="flex flex-wrap gap-2"><button className="btn-ghost" onClick={()=>setSelected(old=>Array.from(new Set([...old,...items.map(p=>p.id)])).slice(0,1000))}>选择本页</button><button className="btn-ghost" onClick={()=>setSelected([])}>清空选择</button><span className="text-sm text-muted">已选 {selected.length} 篇</span></div>
     <div className="grid gap-2 md:grid-cols-2">{items.map(p=><label className="paper-option" key={p.id}><input type="checkbox" checked={selected.includes(p.id)} disabled={!selected.includes(p.id)&&selected.length>=1000} onChange={()=>setSelected(old=>old.includes(p.id)?old.filter(x=>x!==p.id):[...old,p.id])}/><span className="break-words">{p.title??`论文 ${p.id}`}</span></label>)}</div>
@@ -86,6 +96,7 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
       <div className="flex gap-4"><label><input type="radio" checked={whole} onChange={()=>setWhole(true)}/> 当前整个论文库</label><label><input type="radio" checked={!whole} onChange={()=>setWhole(false)}/> 自选论文</label></div>
       {!whole&&picker}
       <div className="space-y-2"><label className="block"><input type="radio" checked={mapFirst} onChange={()=>setMapFirst(true)}/> 先生成文献地图（推荐）：精读卡片、研究主题、值得研究的问题和阅读路线，用量约为写综述正文的一半</label><label className="block"><input type="radio" checked={!mapFirst} onChange={()=>setMapFirst(false)}/> 直接写综述正文：逐篇分析、分章写作与整篇修订；地图之后也可以生成</label></div>
+      {estimateText&&<p className="text-sm text-muted" aria-live="polite">{estimateText}</p>}
       <p className="text-sm text-muted">逐篇保存进度，可暂停后继续。部分论文缺少全文时会使用摘要并说明范围，其他材料正常生成。首次分析会产生模型调用费用，后续优先复用已有结果。</p>
       <button className="btn-primary" disabled={busy||!topic.trim()||(!whole&&!selected.length)} onClick={create}>{busy?'正在创建…':mapFirst?'开始生成文献地图':'开始整理综述'}</button>
     </section>}
