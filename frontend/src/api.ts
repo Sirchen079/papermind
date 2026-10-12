@@ -1136,6 +1136,11 @@ return {
     req<Provider>(`/providers/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProvider: (id: number) => req(`/providers/${id}`, { method: "DELETE" }),
   refreshModels: (id: number) => req<{ count: number }>(`/providers/${id}/models/refresh`, { method: "POST" }),
+  testProvider: (pid: number, kind: "chat" | "embedding" = "chat", modelId?: string) =>
+    req<{ ok: boolean; latency_ms: number; model_id: string; kind: string; note?: string; error?: string }>(
+      `/providers/${pid}/test`,
+      { method: "POST", body: JSON.stringify({ kind, ...(modelId ? { model_id: modelId } : {}) }) }
+    ),
   addModel: (pid: number, body: { model_id: string; display_name?: string; context_window?: number; role_default?: string }) =>
     req<Model>(`/providers/${pid}/models`, { method: "POST", body: JSON.stringify(body) }),
   providerModels: (id: number) => req<Model[]>(`/providers/${id}/models`),

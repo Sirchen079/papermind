@@ -18,6 +18,7 @@ import {
   type RadarStatus,
 } from "../api";
 import { restoreGuideStatusLabel, restoreGuideTone, type ArchiveTone } from "./archiveModel";
+import { PROVIDER_PRESETS, applyPreset, testResultText, type ProviderTestResult } from "./providerSetupModel";
 import { ApplicationBackupPanel } from '../components/ApplicationBackupPanel';
 import { shouldSubmitOnEnter } from "./keyGuardModel";
 import { modelRoleStatus } from "./readinessModel";
@@ -156,6 +157,11 @@ export default function Settings() {
   const [backupVerifications, setBackupVerifications] = useState<Record<string, BackupVerification>>({});
   const [restoreGuides, setRestoreGuides] = useState<Record<string, BackupRestoreGuide>>({});
   const [form, setForm] = useState({ name: "", type: "openai_chat", base_url: "", api_key: "" });
+  // 「常用服务商」预设下拉：选中即填接口类型与地址；「自定义」不改表单。
+  const [presetKey, setPresetKey] = useState("custom");
+  // 每行「测试连接」的进行中标记与最近一次结果（列表刷新后清空）。
+  const [testing, setTesting] = useState<Record<number, boolean>>({});
+  const [testResults, setTestResults] = useState<Record<number, ProviderTestResult>>({});
   const [indexing, setIndexing] = useState(false);
   const [loading, setLoading] = useState(true);
   const toast = useToast();
@@ -206,6 +212,7 @@ export default function Settings() {
         api.listSettings(),
       ]);
       setProviders(nextProviders);
+      setTestResults({}); // 列表刷新后清空各行的测试结果
       const savedModels = await Promise.all(nextProviders.map(async provider =>
         [provider.id, await api.providerModels(provider.id)] as const));
       setModels(Object.fromEntries(savedModels));
@@ -248,6 +255,19 @@ export default function Settings() {
       toast.success(`已获取 ${r.count} 个模型。`);
     } catch (e: any) {
       toast.error(e.message);
+    }
+  }
+
+  // 行内「测试连接」：发一次最小真实请求；后端 404/409 等接口错误也按失败文案显示。
+  async function runProviderTest(p: Provider) {
+    setTesting((prev) => ({ ...prev, [p.id]: true }));
+    try {
+      const r = await api.testProvider(p.id);
+      setTestResults((prev) => ({ ...prev, [p.id]: r }));
+    } catch (e: any) {
+      setTestResults((prev) => ({ ...prev, [p.id]: { ok: false, latency_ms: 0, model_id: "", error: e?.message ?? String(e) } }));
+    } finally {
+      setTesting((prev) => ({ ...prev, [p.id]: false }));
     }
   }
 
@@ -562,6 +582,26 @@ export default function Settings() {
 
       <section className="card">
         <h3 className="mb-3 font-semibold">连接一个 AI 服务</h3>
+        <label className="mb-3 block text-sm">常用服务商
+          <select
+            aria-label="常用服务商"
+            className="input w-full"
+            value={presetKey}
+            onChange={(e) => {
+              const key = e.target.value;
+              setPresetKey(key);
+              const preset = PROVIDER_PRESETS.find((p) => p.key === key);
+              if (preset) setForm((f) => applyPreset(f, preset));
+            }}
+          >
+            {PROVIDER_PRESETS.map((p) => (
+              <option key={p.key} value={p.key}>{p.label}</option>
+            ))}
+          </select>
+          <span className="text-xs text-muted">
+            {PROVIDER_PRESETS.find((p) => p.key === presetKey)?.note ?? "选中后自动填接口类型与地址，仍可手动修改。"}
+          </span>
+        </label>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
           <label className="text-sm">服务名称<input
             className="input"
@@ -651,6 +691,14 @@ export default function Settings() {
                   {p.enabled ? "已启用" : "已禁用"}
                 </span>
                 <div className="ml-auto flex flex-wrap items-center gap-1">
+                  <button
+                    onClick={() => runProviderTest(p)}
+                    className="btn-ghost py-1"
+                    disabled={!!testing[p.id] || !!p.shared_unavailable}
+                    title={p.shared_unavailable ? "共享连接当前不可用，无法测试" : undefined}
+                  >
+                    {testing[p.id] ? "测试中…" : "测试连接"}
+                  </button>
                   <button onClick={() => refresh(p.id)} className="btn-ghost py-1">
                     刷新模型
                   </button>
@@ -669,6 +717,15 @@ export default function Settings() {
                   </button>
                 </div>
               </div>
+              {testResults[p.id] && (
+                <div
+                  className="mb-2 break-all text-xs"
+                  style={{ color: testResults[p.id].ok ? "var(--success)" : "var(--danger)" }}
+                  aria-live="polite"
+                >
+                  {testResultText(testResults[p.id])}
+                </div>
+              )}
               {editing === p.id && (
                 <div className="mb-2 grid grid-cols-1 gap-2 rounded-lg p-2 md:grid-cols-2" style={{ backgroundColor: "var(--surface-2)" }}>
                   <input
