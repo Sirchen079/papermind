@@ -1031,6 +1031,18 @@ return {
       skipped_no_text: number;
       error: string | null;
     }>("/papers/reindex", { method: "POST" }),
+  // P1c：批量按 DOI 补全书目信息/摘要（单次上限 200，超限 422）。
+  enrichMetadata: (paperIds: number[]) =>
+    req<{ results: Array<{ paper_id: number; status: string; fields: string[]; abstract_source: string | null }>, counts: Record<string, number> }>(
+      "/papers/enrich-metadata",
+      { method: "POST", body: JSON.stringify({ paper_ids: paperIds }) },
+    ),
+  // P1c：批量获取开放获取全文（单次上限 50，超限 422）。
+  fetchOpenFulltext: (paperIds: number[]) =>
+    req<{ results: Array<{ paper_id: number; status: string }>, counts: Record<string, number> }>(
+      "/papers/fetch-open-fulltext",
+      { method: "POST", body: JSON.stringify({ paper_ids: paperIds }) },
+    ),
   createManualPaper: (body: Record<string, unknown>) =>
     req<Paper>("/papers/manual", { method: "POST", body: JSON.stringify(body) }),
   // T10：库外发现一键加入待读（幂等；重复论文返回已有论文并置为待读）。

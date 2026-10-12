@@ -82,6 +82,13 @@ import {
   toggleBulkPaperSelection,
   type BulkOrganizationTargetType,
 } from "./bulkOrganizationModel";
+import {
+  ENRICH_METADATA_CAP,
+  FETCH_FULLTEXT_CAP,
+  buildPaperIdsPayload,
+  summarizeEnrichResults,
+  summarizeFulltextResults,
+} from "./libraryEnrichModel";
 
 // 摘要字段键是固定的英文标识（由后端结构化），这里只做中文展示。
 const SUMMARY_LABELS: Record<string, string> = {
@@ -447,6 +454,9 @@ export default function Library({
   const [bulkTargetId, setBulkTargetId] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkMsg, setBulkMsg] = useState<string | null>(null);
+  // P1c：批量补全书目信息 / 获取公开全文（各自独立 busy，避免与批量应用互相打断显示）。
+  const [enrichBusy, setEnrichBusy] = useState(false);
+  const [fulltextBusy, setFulltextBusy] = useState(false);
   const [noteDraft, setNoteDraft, clearSavedNote, noteStorageError] = usePaperDraft<NoteForm>(selected?.id, { kind: "note", content: "", tags: "" }, "note");
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [noteEditVersion, setNoteEditVersion] = useState(1);
@@ -1538,6 +1548,50 @@ export default function Library({
     }
   }
 
+  // P1c：批量按 DOI 补全书目信息/摘要（后端单次上限 200）。
+  async function runBulkEnrichMetadata() {
+    if (enrichBusy) return;
+    const paperIds = buildPaperIdsPayload(bulkSelectedPaperIds, ENRICH_METADATA_CAP);
+    if (!paperIds) {
+      setError(`一次最多补全 ${ENRICH_METADATA_CAP} 篇论文的元数据。`);
+      return;
+    }
+
+    setEnrichBusy(true);
+    setBulkMsg(null);
+    setError(null);
+    try {
+      const res = await api.enrichMetadata(paperIds);
+      setBulkMsg(summarizeEnrichResults(res.counts));
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setEnrichBusy(false);
+    }
+  }
+
+  // P1c：批量获取开放获取全文（后端单次上限 50）。
+  async function runBulkFetchOpenFulltext() {
+    if (fulltextBusy) return;
+    const paperIds = buildPaperIdsPayload(bulkSelectedPaperIds, FETCH_FULLTEXT_CAP);
+    if (!paperIds) {
+      setError(`一次最多获取 ${FETCH_FULLTEXT_CAP} 篇论文的公开全文。`);
+      return;
+    }
+
+    setFulltextBusy(true);
+    setBulkMsg(null);
+    setError(null);
+    try {
+      const res = await api.fetchOpenFulltext(paperIds);
+      setBulkMsg(summarizeFulltextResults(res.counts));
+    } catch (e: any) {
+      toast.error(e.message);
+    } finally {
+      setFulltextBusy(false);
+    }
+  }
+
   // T9：文本搜索已交给服务端（全库匹配）；这里的客户端筛选只保留阅读状态/
   // 优先级/相关度/写作链接/组织等复杂条件，且只作用于已加载范围（见提示条）。
   const serverSearchActive = isServerSearchActive(serverQuery);
@@ -1909,6 +1963,28 @@ export default function Library({
                 finally { setDiscussionOpening(false); }
               }}>{discussionOpening ? '正在打开讨论…' : bulkSelectedPaperIds.length > 100 ? '基于所选论文讨论（最多 100 篇）' : '基于所选论文讨论'}</button>
               <button className="btn-primary min-h-9 py-1 text-xs" disabled={bulkSelectedPaperIds.length>5} onClick={()=>onNavigate?.({page:'research',params:{papers:bulkSelectedPaperIds.join(',')}})}>围绕问题比较{bulkSelectedPaperIds.length>5?'（最多 5 篇）':''}</button>
+              <button
+                onClick={runBulkEnrichMetadata}
+                disabled={enrichBusy || fulltextBusy || bulkSelectedPaperIds.length > ENRICH_METADATA_CAP}
+                className="btn-primary min-h-9 py-1 text-xs"
+              >
+                {enrichBusy
+                  ? "补全中…"
+                  : bulkSelectedPaperIds.length > ENRICH_METADATA_CAP
+                  ? `补全书目信息(最多 ${ENRICH_METADATA_CAP} 篇)`
+                  : "补全书目信息"}
+              </button>
+              <button
+                onClick={runBulkFetchOpenFulltext}
+                disabled={enrichBusy || fulltextBusy || bulkSelectedPaperIds.length > FETCH_FULLTEXT_CAP}
+                className="btn-primary min-h-9 py-1 text-xs"
+              >
+                {fulltextBusy
+                  ? "获取中…"
+                  : bulkSelectedPaperIds.length > FETCH_FULLTEXT_CAP
+                  ? `获取公开全文(最多 ${FETCH_FULLTEXT_CAP} 篇)`
+                  : "获取公开全文"}
+              </button>
               <select
                 className="input min-h-9 w-28 py-1 text-xs"
                 value={bulkTargetType}

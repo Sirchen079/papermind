@@ -34,6 +34,7 @@
     "src/pages/manualPaperModel.ts",
     "src/pages/pdfBatchModel.ts",
     "src/pages/bulkOrganizationModel.ts",
+    "src/pages/libraryEnrichModel.ts",
     "src/pages/archiveModel.ts",
     "src/pages/keyGuardModel.ts",
     "src/pages/apiErrorModel.ts",
