@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import httpx
 
-from app.providers.client import ModelInfo
+from app.providers.client import CompletionResult, EmptyResponseError, ModelInfo
 
 
 # Runtime-generated placeholder; avoids hardcoding credential-like literals.
@@ -176,3 +176,141 @@ def test_refresh_failure_returns_502(client):
     ):
         res = client.post(f"/api/providers/{pid}/models/refresh")
     assert res.status_code == 502
+
+
+def test_provider_test_chat_success(client):
+    pid = client.post(
+        "/api/providers",
+        json={
+            "name": "ds",
+            "type": "openai_compat",
+            "base_url": "https://api.deepseek.com/v1",
+            "api_key": FAKE_KEY,
+        },
+    ).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "deepseek-chat", "role_default": "chat"})
+
+    seen = {}
+
+    def fake_complete(self, provider, model_id, messages, request_kind, **kwargs):
+        seen.update(model_id=model_id, messages=messages, request_kind=request_kind, kwargs=kwargs)
+        return CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+    with patch("app.api.providers_api.ProviderClient.complete", new=fake_complete):
+        res = client.post(f"/api/providers/{pid}/test", json={})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert body["latency_ms"] >= 0
+    assert body["model_id"] == "deepseek-chat"
+    assert body["kind"] == "chat"
+    assert seen["model_id"] == "deepseek-chat"
+    assert seen["request_kind"] == "test"
+    # 思考型模型的输出可能很慢,连接测试不设 max_tokens,避免截断被误判为失败。
+    assert "max_tokens" not in seen["kwargs"]
+    assert seen["messages"] == [{"role": "user", "content": "连通性测试,请只回复 ok"}]
+
+
+def test_provider_test_explicit_model_id_wins(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "default-chat", "role_default": "chat"})
+
+    seen = {}
+
+    def fake_complete(self, provider, model_id, messages, request_kind, **kwargs):
+        seen["model_id"] = model_id
+        return CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+    with patch("app.api.providers_api.ProviderClient.complete", new=fake_complete):
+        res = client.post(f"/api/providers/{pid}/test", json={"model_id": "custom-model"})
+    assert res.status_code == 200
+    assert res.json()["model_id"] == "custom-model"
+    assert seen["model_id"] == "custom-model"
+
+
+def test_provider_test_connection_failure(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "gpt-4o"})
+    with patch(
+        "app.api.providers_api.ProviderClient.complete",
+        side_effect=httpx.ConnectError("refused"),
+    ):
+        res = client.post(f"/api/providers/{pid}/test", json={})
+    # 测试失败是结果,不是接口错误:HTTP 仍为 200。
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is False
+    assert "ConnectError" in body["error"]
+    assert body["latency_ms"] >= 0
+    assert body["model_id"] == "gpt-4o"
+    assert body["kind"] == "chat"
+
+
+def test_provider_test_embedding_success(client):
+    pid = client.post(
+        "/api/providers",
+        json={
+            "name": "sf",
+            "type": "openai_compat",
+            "base_url": "https://api.siliconflow.cn/v1",
+            "api_key": FAKE_KEY,
+        },
+    ).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "chat-model", "role_default": "chat"})
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "bge-m3", "role_default": "embedding"})
+
+    seen, chat_calls = {}, []
+
+    def fake_embed(self, provider, model_id, inputs, request_kind="embedding", ref_id=None):
+        seen.update(model_id=model_id, inputs=inputs)
+        return [[0.1, 0.2, 0.3]]
+
+    def unexpected_complete(self, *args, **kwargs):
+        chat_calls.append("complete")
+        return CompletionResult(content="ok", prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+    with patch("app.api.providers_api.ProviderClient.embed", new=fake_embed), patch(
+        "app.api.providers_api.ProviderClient.complete", new=unexpected_complete
+    ):
+        res = client.post(f"/api/providers/{pid}/test", json={"kind": "embedding"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    # 选中该 kind 的 role_default 模型,而不是第一个模型。
+    assert body["model_id"] == "bge-m3"
+    assert body["kind"] == "embedding"
+    assert seen["inputs"] == ["连通性测试"]
+    assert chat_calls == []
+
+
+def test_provider_test_empty_reply_counts_as_connected(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    client.post(f"/api/providers/{pid}/models", json={"model_id": "thinking-model", "role_default": "chat"})
+    with patch(
+        "app.api.providers_api.ProviderClient.complete",
+        side_effect=EmptyResponseError("模型未返回最终文本；可能达到输出上限，不能当作任务完成"),
+    ):
+        res = client.post(f"/api/providers/{pid}/test", json={})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["ok"] is True
+    assert "回复为空" in body["note"]
+    assert body["model_id"] == "thinking-model"
+
+
+def test_provider_test_unknown_provider_404(client):
+    res = client.post("/api/providers/9999/test", json={})
+    assert res.status_code == 404
+
+
+def test_provider_test_without_models_409(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    res = client.post(f"/api/providers/{pid}/test", json={})
+    assert res.status_code == 409
+    assert "还没有可测试的模型" in res.json()["detail"]
+
+
+def test_provider_test_invalid_kind_422(client):
+    pid = client.post("/api/providers", json={"name": "z", "type": "openai_chat"}).json()["id"]
+    res = client.post(f"/api/providers/{pid}/test", json={"kind": "rerank"})
+    assert res.status_code == 422

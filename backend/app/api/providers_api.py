@@ -1,3 +1,6 @@
+import time
+from typing import Literal
+
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
@@ -6,7 +9,7 @@ from sqlmodel import Session, select
 from app.api.deps import get_session
 from app.models import Model, Provider
 from app.models.base import utcnow
-from app.providers.client import ProviderClient
+from app.providers.client import EmptyResponseError, ProviderClient
 from app.providers import shared
 from app.providers.routing import ProviderType
 from app.security.crypto import get_crypto
@@ -244,6 +247,56 @@ def refresh_models(pid: int, session: Session = Depends(get_session)) -> dict:
         row.is_manual = False
     session.commit()
     return {"count": len(fetched)}
+
+
+class TestIn(BaseModel):
+    kind: Literal["chat", "embedding"] = "chat"
+    model_id: str | None = None
+
+
+@router.post("/providers/{pid}/test")
+def test_provider(pid: int, body: TestIn, session: Session = Depends(get_session)) -> dict:
+    """One minimal real request (a single chat completion or embedding) to
+    verify a provider's base_url and credentials. Failures are results, not
+    interface errors: the endpoint answers 200 with ok=False. Stateless —
+    the test outcome is not stored; token accounting goes through the
+    client's existing usage mechanism (request_kind="test")."""
+    p = session.get(Provider, pid)
+    if p is None or p.is_deleted:
+        raise HTTPException(404, "provider not found")
+    try:
+        actual, crypto = shared.resolve(p)
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if body.model_id:
+        model_id = body.model_id
+    else:
+        rows = session.exec(select(Model).where(Model.provider_id == pid)).all()
+        chosen = next((m for m in rows if m.role_default == body.kind), None) or (rows[0] if rows else None)
+        if chosen is None:
+            raise HTTPException(409, "还没有可测试的模型,请先刷新模型或手动添加")
+        model_id = chosen.model_id
+    engine = session.get_bind()
+    client = ProviderClient(session_factory=lambda: Session(engine), crypto=crypto)
+    started = time.perf_counter()
+    try:
+        if body.kind == "embedding":
+            client.embed(actual, model_id, ["连通性测试"])
+        else:
+            # 不传 max_tokens:思考型模型的回复可能很慢很长,截断会被误报为失败。
+            client.complete(actual, model_id,
+                            [{"role": "user", "content": "连通性测试,请只回复 ok"}],
+                            request_kind="test")
+    except EmptyResponseError:
+        return {"ok": True, "note": "连接正常(回复为空,可能是思考型模型)",
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "model_id": model_id, "kind": body.kind}
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:500],
+                "latency_ms": int((time.perf_counter() - started) * 1000),
+                "model_id": model_id, "kind": body.kind}
+    return {"ok": True, "latency_ms": int((time.perf_counter() - started) * 1000),
+            "model_id": model_id, "kind": body.kind}
 
 
 @router.get("/providers/{pid}/models")
