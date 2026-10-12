@@ -1,6 +1,6 @@
 from sqlmodel import Session
 from app.db.engine import get_engine
-from app.models import ResearchTask, Conversation, Message
+from app.models import ResearchTask, Conversation, Message, LibraryReview, ReviewMap, Paper, PaperDocument
 from app.workspaces.context import bind_workspace
 
 
@@ -42,3 +42,38 @@ def test_old_running_tasks_and_pending_questions_remain_visible_among_recent_com
     rows=response.json()['items']
     assert any(r['key'].endswith(':old-running') and r['active'] for r in rows)
     assert any(r['status']=='awaiting_user' for r in rows)
+
+
+def test_running_review_maps_surface_even_when_review_is_draft(client):
+    with Session(get_engine()) as session:
+        for rid, question in (('rev-running', '文献地图要回答的问题'), ('rev-notitle', ''), ('rev-never', '')):
+            session.add(LibraryReview(id=rid, question=question, status='draft'))
+        session.add(ReviewMap(review_id='rev-running', status='running', stage='正在归类'))
+        session.add(ReviewMap(review_id='rev-notitle', status='running'))
+        session.add(ReviewMap(review_id='rev-never', status='draft'))
+        session.commit()
+    rows=client.get('/api/workspaces/activity').json()['items']
+    running=[r for r in rows if r['key'].endswith('map:rev-running')]
+    assert len(running)==1 and running[0]['kind']=='map' and running[0]['active']
+    assert 'map?review=rev-running' in running[0]['url']
+    assert running[0]['title']=='文献地图要回答的问题'
+    fallback=[r for r in rows if r['key'].endswith('map:rev-notitle')]
+    assert len(fallback)==1 and fallback[0]['active'] and fallback[0]['title']=='文献地图 rev-noti'
+    assert all(not r['key'].endswith('map:rev-never') for r in rows)
+
+
+def test_document_conversion_jobs_cover_active_queue_and_recent_errors(client):
+    statuses = {1: 'queued', 2: 'running', 3: 'waiting_model', 4: 'error', 5: 'idle'}
+    with Session(get_engine()) as session:
+        for pid, status in statuses.items():
+            session.add(Paper(id=pid, source='pdf', title=f'转换论文 {pid}'))
+        session.flush()
+        for pid, status in statuses.items():
+            session.add(PaperDocument(paper_id=pid, status=status))
+        session.commit()
+    rows=client.get('/api/workspaces/activity').json()['items']
+    imports={r['key']:r for r in rows if r['kind']=='import'}
+    assert {key for key, row in imports.items() if row['active']}=={'legacy:import:1', 'legacy:import:2', 'legacy:import:3'}
+    assert imports['legacy:import:4']['active'] is False
+    assert imports['legacy:import:4']['title']=='转换论文 4' and 'library' in imports['legacy:import:4']['url']
+    assert 'legacy:import:5' not in imports

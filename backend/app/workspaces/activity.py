@@ -5,12 +5,12 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.db.engine import get_engine
-from app.models import ResearchTask, Message, Conversation, WikiUpdate, WikiPage
+from app.models import ResearchTask, Message, Conversation, WikiUpdate, WikiPage, ReviewMap, Paper, PaperDocument
 from app.models.review import LibraryReview
 from app.workspaces.context import bind_workspace
 
 
-ACTIVE = ('running', 'queued', 'pending')
+ACTIVE = ('running', 'queued', 'pending', 'waiting_model')
 
 
 def _item(kind, rid, title, status, when, route):
@@ -31,6 +31,29 @@ def _task_items(session, limit, include_drafts=False):
         items.extend(_item(kind, rid, title, status, when, 'research?' + urlencode(params(rid)))
                      for rid, title, status, when in rows)
     return items
+
+
+def _map_items(session, limit):
+    # A map whose review is still draft must stay visible while it runs ("map
+    # first, prose later"), but never-generated maps (draft) are not activity.
+    query = select(ReviewMap.review_id, ReviewMap.status, ReviewMap.updated_at, LibraryReview.question).join(
+        LibraryReview, LibraryReview.id == ReviewMap.review_id)
+    rows = (session.exec(query.where(ReviewMap.status == 'running')).all() +
+            session.exec(query.where(ReviewMap.status.not_in(['draft', 'running']))
+                         .order_by(ReviewMap.updated_at.desc(), ReviewMap.review_id).limit(limit)).all())
+    return [_item('map', rid, question or f'文献地图 {rid[:8]}', status, when, 'map?' + urlencode({'review': rid}))
+            for rid, status, when, question in rows]
+
+
+def _import_items(session, limit):
+    # PDF conversion queue (OCR -> Markdown); papers keep the timestamps.
+    query = select(PaperDocument.paper_id, PaperDocument.status, Paper.title, Paper.updated_at).join(
+        Paper, Paper.id == PaperDocument.paper_id).where(Paper.is_deleted == False)
+    rows = (session.exec(query.where(PaperDocument.status.in_(['queued', 'running', 'waiting_model']))).all() +
+            session.exec(query.where(PaperDocument.status == 'error')
+                         .order_by(Paper.updated_at.desc(), PaperDocument.paper_id).limit(min(10, limit))).all())
+    return [_item('import', pid, title or f'论文 {pid}', status, when, 'library')
+            for pid, status, title, when in rows]
 
 
 def _wiki_events(session, limit):
@@ -108,7 +131,8 @@ def list_activity(registry):
             unavailable.append({'id': workspace['id'], 'name': workspace['name']}); continue
         try:
             with bind_workspace(registry.context(workspace['id'])), Session(get_engine()) as session:
-                for item in _task_items(session, 30) + _wiki_events(session, 30) + _chat_events(session, 30):
+                for item in (_task_items(session, 30) + _wiki_events(session, 30) + _chat_events(session, 30)
+                             + _map_items(session, 30) + _import_items(session, 30)):
                     route = item.pop('route')
                     result.append({**item, 'key': workspace['id'] + ':' + item['key'],
                                    'workspace_id': workspace['id'], 'workspace_name': workspace['name'],
