@@ -137,6 +137,23 @@ def test_idea_project_anchor_validated(client):
     assert patched["project_id"] is None
 
 
+def test_idea_origin_map_links_basis_paper(client):
+    with Session(get_engine()) as session:
+        paper = _paper(session, "Map Basis Paper")
+
+    created = _create_idea(
+        client,
+        title="从文献地图沉淀的想法",
+        content="来源：文献地图主题「示例主题」",
+        origin="map",
+        papers=[{"paper_id": paper.id, "role": "basis"}],
+    )
+    assert created["origin"] == "map"
+    assert created["papers"] == [
+        {"paper_id": paper.id, "title": "Map Basis Paper", "role": "basis", "note": None}
+    ]
+
+
 def test_idea_filters(client):
     _create_idea(client, title="想法 A", priority="high")
     _create_idea(client, title="想法 B", priority="low")

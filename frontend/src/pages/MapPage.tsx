@@ -45,6 +45,12 @@ export default function MapPage({ params, onNavigate, onOpenPaper }: { params: R
     onNavigate({ page: 'chat', params: { conversation: String(conversation.id), question } });
   }
 
+  // 与 LibraryReview 的 ideaFromMap 等价：地图条目就地存为研究想法（origin=map），
+  // 代表论文以 basis 角色关联；成功提示由 ReviewMap 显示，不跳转页面。
+  async function ideaFromMap(p: { title: string; content: string; paperIds: number[] }) {
+    await api.createIdea({ title: p.title, content: p.content, origin: 'map', papers: p.paperIds.map(id => ({ paper_id: id, role: 'basis' })) });
+  }
+
   return <Shell max="wide"><div className="space-y-6">
     <div className="flex flex-wrap justify-between gap-3">
       <div><h1 className="page-title">文献地图</h1><p className="page-subtitle mt-2">按专题查看研究主题、值得研究的问题、方法组合机会与阅读路线。</p></div>
@@ -59,7 +65,7 @@ export default function MapPage({ params, onNavigate, onOpenPaper }: { params: R
     {!!reviews.length && <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
       <aside className="space-y-2"><h2 className="text-lg">专题</h2><ReviewListPicker reviews={reviews} selectedId={selectedId} onSelect={setSelectedId}/></aside>
       <section className="space-y-3">
-        {selectedId && <ReviewMap reviewId={selectedId} onOpenPaper={onOpenPaper} onResearch={researchFromMap}/>}
+        {selectedId && <ReviewMap reviewId={selectedId} onOpenPaper={onOpenPaper} onResearch={researchFromMap} onCreateIdea={ideaFromMap}/>}
       </section>
     </div>}
   </div></Shell>;

@@ -137,3 +137,24 @@ export function researchHandoff(
   if (body.length > room) body = body.slice(0, room - 1) + '…';
   return { question: `${body}\n\n${instruction}`, paperIds };
 }
+
+// 「转为研究想法」：把地图条目就地沉淀为研究想法（origin=map），代表论文随想法一并关联。
+export function ideaHandoff(
+  theme: string,
+  item: MapOpenQuestion | MapCombination,
+  representative: number[] = [],
+): { title: string; content: string; paperIds: number[] } {
+  const paperIds = [...new Set([...(item.cards ?? []), ...representative])].slice(0, HANDOFF_PAPERS);
+  const title = 'question' in item ? item.question : item.idea;
+  const detailLines = 'question' in item
+    ? [
+      item.why ? `地图给出的依据：${item.why}` : '',
+      item.cannot_claim ? `现有证据的缺口：${item.cannot_claim}` : '',
+    ]
+    : [
+      item.expected ? `预期收益：${item.expected}` : '',
+      item.risk ? `地图提示的风险：${item.risk}` : '',
+    ];
+  const content = [title, ...detailLines, `来源：文献地图主题「${theme}」`].filter(Boolean).join('\n');
+  return { title, content, paperIds };
+}

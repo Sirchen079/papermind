@@ -61,6 +61,9 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
     const conversation=paperIds.length?await api.createPaperDiscussion(paperIds):await api.createConversation();
     onNavigate({page:'chat',params:{conversation:String(conversation.id),question}});
   }
+  async function ideaFromMap(p:{title:string;content:string;paperIds:number[]}){
+    await api.createIdea({title:p.title,content:p.content,origin:"map",papers:p.paperIds.map(id=>({paper_id:id,role:"basis"}))});
+  }
   async function showSource(pid:number){const g=generation.current;try{const next=await request<Source>(`/${id}/papers/${pid}`);if(g===generation.current)setSource(next);}catch(e){setError((e as Error).message);}}
   async function continueResearch(){
     if(!job||busy)return;const g=generation.current;setBusy(true);setError('');
@@ -98,7 +101,7 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
           <button className="btn-ghost" disabled={!job.content} onClick={()=>download(job.content,'专题综述.md')}>下载综述</button><button className="btn-ghost" onClick={coverage}>下载材料清单</button>
           {!running&&job.content&&editor===null&&<button className="btn-ghost" onClick={()=>{setEditor(job.content);setEditVersion(job.version);}}>编辑正文</button>}</div>
       </section>
-      <ReviewMap reviewId={job.id} onOpenPaper={onOpenPaper} onResearch={researchFromMap}/>
+      <ReviewMap reviewId={job.id} onOpenPaper={onOpenPaper} onResearch={researchFromMap} onCreateIdea={ideaFromMap}/>
       {editor!==null&&<section className="card space-y-3"><p className="text-sm">正在编辑 v{editVersion}，当前版本 v{job.version}。编辑时仍可下载本机草稿。</p><textarea className="input w-full font-mono" aria-label="综述正文编辑" rows={24} value={editor} onChange={e=>setEditor(e.target.value)}/><div className="flex gap-2"><button className="btn-primary" disabled={busy||running} onClick={()=>action('content',{content:editor,expected_version:editVersion})}>保存版本</button><button className="btn-ghost" onClick={()=>download(editor,'综述编辑草稿.md')}>下载草稿</button></div></section>}
       {!!job.sections.length&&<details className="card space-y-4" open={!job.content}>
         <summary>已保存的章节草稿 · {job.sections.length} 章</summary>

@@ -288,7 +288,7 @@ export interface Idea {
   hypothesis: string | null;
   status: "proposed" | "refining" | "testing" | "adopted" | "dropped";
   priority: "low" | "normal" | "high";
-  origin: "manual" | "matrix" | "suggestion" | "gap";
+  origin: "manual" | "matrix" | "suggestion" | "gap" | "map";
   project_id: number | null;
   created_at: string;
   updated_at: string;

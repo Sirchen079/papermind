@@ -5,6 +5,7 @@ import {
   addTheme,
   fieldLocation,
   filterPapers,
+  ideaHandoff,
   mergeThemes,
   removeTheme,
   renameTheme,
@@ -169,4 +170,34 @@ test("researchHandoff 处理方法组合机会，缺少字段时不输出空行"
 test("researchHandoff 题干不超过对话输入上限", () => {
   const handoff = researchHandoff("长", { question: "问".repeat(5000), why: "因".repeat(500), cards: [1] }, []);
   assert.ok(handoff.question.length <= 2000);
+});
+
+test("ideaHandoff 拼装问题类想法的字段并合并去重论文", () => {
+  const out = ideaHandoff("弹性多参数", {
+    question: "多参数串扰在实测数据上是否仍未解决？",
+    why: "多数结果来自合成模型",
+    cannot_claim: "合成例子成功不能证明全局收敛",
+    cards: [12, 7, 12],
+  }, [7, 30, 31, 32, 33, 34, 35]);
+  assert.equal(out.title, "多参数串扰在实测数据上是否仍未解决？");
+  assert.ok(out.content.includes("多参数串扰在实测数据上是否仍未解决？"));
+  assert.ok(out.content.includes("地图给出的依据：多数结果来自合成模型"));
+  assert.ok(out.content.includes("现有证据的缺口：合成例子成功不能证明全局收敛"));
+  assert.ok(out.content.endsWith("来源：文献地图主题「弹性多参数」"));
+  assert.ok(!out.content.includes("预期收益"), "问题类想法不出现组合字段");
+  assert.deepEqual(out.paperIds, [12, 7, 30, 31, 32, 33]);
+});
+
+test("ideaHandoff 拼装组合类想法，空字段行跳过", () => {
+  const out = ideaHandoff("生成式先验", {
+    idea: "扩散先验结合不确定性估计",
+    expected: "减少标注需求",
+    cards: [],
+  }, []);
+  assert.equal(out.title, "扩散先验结合不确定性估计");
+  assert.ok(out.content.includes("预期收益：减少标注需求"));
+  assert.ok(out.content.endsWith("来源：文献地图主题「生成式先验」"));
+  assert.ok(!out.content.includes("地图提示的风险"), "缺少风险时不输出该行");
+  assert.ok(!out.content.includes("undefined"));
+  assert.deepEqual(out.paperIds, []);
 });

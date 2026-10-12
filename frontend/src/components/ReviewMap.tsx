@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspace } from '../workspaceContext';
 import { createReviewRequest, putReviewThemes, type MapTheme, type PaperCardEntry, type ReviewMapDetail, type ReviewMapPaper } from '../reviewsApi';
-import { addTheme, fieldLocation, filterPapers, mergeThemes, removeTheme, renameTheme, researchHandoff, statusLabel, themesForSave, type CardField, type FilterablePaper, type MapCombination, type MapOpenQuestion } from '../pages/reviewMapModel';
+import { addTheme, fieldLocation, filterPapers, ideaHandoff, mergeThemes, removeTheme, renameTheme, researchHandoff, statusLabel, themesForSave, type CardField, type FilterablePaper, type MapCombination, type MapOpenQuestion } from '../pages/reviewMapModel';
 
 const EXPORTS: [string, string][] = [['html', 'HTML'], ['xlsx', 'Excel'], ['docx', 'Word'], ['csv', 'CSV'], ['bib', 'BibTeX']];
+
+type IdeaPayload = { title: string; content: string; paperIds: number[] };
 
 function fieldsOf(card: PaperCardEntry['card']): CardField[] {
   if (!card) return [];
@@ -12,7 +14,7 @@ function fieldsOf(card: PaperCardEntry['card']): CardField[] {
   );
 }
 
-export function ReviewMap({ reviewId, onOpenPaper, onResearch }: { reviewId: string; onOpenPaper: (id: number, page?: number) => void; onResearch?: (question: string, paperIds: number[]) => Promise<void> }) {
+export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: { reviewId: string; onOpenPaper: (id: number, page?: number) => void; onResearch?: (question: string, paperIds: number[]) => Promise<void>; onCreateIdea?: (payload: IdeaPayload) => Promise<unknown> }) {
   const { base } = useWorkspace();
   const request = useMemo(() => createReviewRequest(base), [base]);
   const [map, setMap] = useState<ReviewMapDetail | null>(null);
@@ -27,6 +29,8 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch }: { reviewId: str
   const [savedHint, setSavedHint] = useState('');
   const [conflict, setConflict] = useState(false);
   const [starting, setStarting] = useState('');
+  const [savingIdea, setSavingIdea] = useState('');
+  const [ideaSaved, setIdeaSaved] = useState<string[]>([]);
   const [query, setQuery] = useState('');
   const [themeFilter, setThemeFilter] = useState('');
   const [evidenceFilter, setEvidenceFilter] = useState('');
@@ -36,7 +40,7 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch }: { reviewId: str
 
   useEffect(() => {
     const g = ++generation.current;
-    setMap(null); setCards([]); setError(''); setEditing(false); setSavedHint(''); setConflict(false); setBusy(false);
+    setMap(null); setCards([]); setError(''); setEditing(false); setSavedHint(''); setConflict(false); setBusy(false); setSavingIdea(''); setIdeaSaved([]);
     request<ReviewMapDetail>(`/${reviewId}/map`).then((next) => { if (g === generation.current) setMap(next); })
       .catch((e) => { if (g === generation.current) setError((e as Error).message); });
     return () => { ++generation.current; };
@@ -95,6 +99,18 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch }: { reviewId: str
     try { await onResearch(handoff.question, handoff.paperIds); }
     catch (e) { if (g === generation.current) setError(`${(e as Error).message}；地图未改动，可重试。`); }
     finally { if (g === generation.current) setStarting(''); }
+  }
+
+  async function saveIdea(key: string, theme: string, item: MapOpenQuestion | MapCombination, representative: number[]) {
+    if (!onCreateIdea || savingIdea) return;
+    const g = generation.current;
+    setSavingIdea(key); setError('');
+    try {
+      await onCreateIdea(ideaHandoff(theme, item, representative));
+      if (g !== generation.current) return;
+      setIdeaSaved((old) => old.includes(key) ? old : [...old, key]);
+    } catch (e) { if (g === generation.current) setError(`${(e as Error).message}；想法未保存，可重试。`); }
+    finally { if (g === generation.current) setSavingIdea(''); }
   }
 
   async function reload() {
@@ -176,14 +192,18 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch }: { reviewId: str
           const synthesis = map.syntheses[theme.id] ?? {};
           const representative = (synthesis.representative ?? []).map((r) => r.paper_id);
           const researchButton = (key: string, item: MapOpenQuestion | MapCombination) => onResearch && <button className="btn-ghost text-xs" disabled={!!starting} onClick={() => research(key, theme.name, item, representative)}>{starting === key ? '正在带入…' : '带着这个问题继续研究 →'}</button>;
+          const ideaButton = (key: string, item: MapOpenQuestion | MapCombination) => onCreateIdea && <>
+            <button className="btn-ghost text-xs" disabled={!!savingIdea} onClick={() => saveIdea(key, theme.name, item, representative)}>{savingIdea === key ? '正在保存…' : '转为研究想法 →'}</button>
+            {ideaSaved.includes(key) && <span className="text-xs" style={{ color: 'var(--success, #15803d)' }}>已存入研究想法 ✓</span>}
+          </>;
           return <details key={theme.id} className="space-y-2 border rounded p-2" style={{ borderColor: 'var(--border)' }}>
             <summary className="cursor-pointer">{theme.name} <span className="text-xs text-muted">{synthesis.stats?.count ?? 0} 篇</span></summary>
             <p className="text-sm text-muted">{theme.definition}</p>
             {synthesis.error && <p className="text-sm text-amber-700">{synthesis.error}</p>}
             {synthesis.stats && <p className="text-xs text-muted">年份：{Object.entries(synthesis.stats.years ?? {}).map(([y, n]) => `${y} 年 ${n} 篇`).join('、') || '无'}；数据：{Object.entries(synthesis.stats.setting ?? {}).map(([k, n]) => `${k} ${n}`).join('、')}</p>}
             {synthesis.trend && <p className="text-sm"><strong>趋势：</strong>{synthesis.trend}</p>}
-            {!!synthesis.open_questions?.length && <div className="text-sm"><p className="font-semibold">值得研究的问题</p><ul className="list-disc list-inside space-y-1">{synthesis.open_questions.map((q, i) => <li key={i}>{q.question}{q.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{q.cannot_claim && <span className="text-xs text-muted">（现有证据缺口：{q.cannot_claim}）</span>} {researchButton(`${theme.id}-q${i}`, q)}</li>)}</ul></div>}
-            {!!synthesis.combination_opportunities?.length && <div className="text-sm"><p className="font-semibold">方法组合机会</p><ul className="list-disc list-inside space-y-1">{synthesis.combination_opportunities.map((c, i) => <li key={i}>{c.idea}{c.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{c.risk && <span className="text-xs text-muted">（风险：{c.risk}）</span>} {researchButton(`${theme.id}-c${i}`, c)}</li>)}</ul></div>}
+            {!!synthesis.open_questions?.length && <div className="text-sm"><p className="font-semibold">值得研究的问题</p><ul className="list-disc list-inside space-y-1">{synthesis.open_questions.map((q, i) => <li key={i}>{q.question}{q.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{q.cannot_claim && <span className="text-xs text-muted">（现有证据缺口：{q.cannot_claim}）</span>} {researchButton(`${theme.id}-q${i}`, q)} {ideaButton(`${theme.id}-q${i}`, q)}</li>)}</ul></div>}
+            {!!synthesis.combination_opportunities?.length && <div className="text-sm"><p className="font-semibold">方法组合机会</p><ul className="list-disc list-inside space-y-1">{synthesis.combination_opportunities.map((c, i) => <li key={i}>{c.idea}{c.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}{c.risk && <span className="text-xs text-muted">（风险：{c.risk}）</span>} {researchButton(`${theme.id}-c${i}`, c)} {ideaButton(`${theme.id}-c${i}`, c)}</li>)}</ul></div>}
             {!!synthesis.representative?.length && <p className="text-sm"><strong>代表论文：</strong>{synthesis.representative.map((r) => <button key={r.paper_id} className="btn-ghost text-xs" onClick={() => jumpTo(r.paper_id)}>[P{r.paper_id}] {paperTitle(r.paper_id)}</button>)}</p>}
           </details>;
         })}

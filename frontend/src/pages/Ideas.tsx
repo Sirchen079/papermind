@@ -26,6 +26,7 @@ const ORIGIN_LABELS: Record<string, string> = {
   matrix: "矩阵",
   suggestion: "建议",
   gap: "研究缺口",
+  map: "文献地图",
 };
 const ROLE_LABELS: Record<string, string> = { basis: "基础", contrast: "对比", support: "支撑" };
 const ROLE_OPTIONS = ["basis", "contrast", "support"] as const;

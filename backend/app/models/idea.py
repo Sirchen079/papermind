@@ -6,7 +6,7 @@ from app.models.base import utcnow
 
 IDEA_STATUSES = ("proposed", "refining", "testing", "adopted", "dropped")
 IDEA_PRIORITIES = ("low", "normal", "high")
-IDEA_ORIGINS = ("manual", "matrix", "suggestion", "gap")
+IDEA_ORIGINS = ("manual", "matrix", "suggestion", "gap", "map")
 IDEA_PAPER_ROLES = ("basis", "contrast", "support")
 
 # Lifecycle: proposed → refining → testing → adopted/dropped, plus the cheap
