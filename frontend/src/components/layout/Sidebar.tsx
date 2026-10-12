@@ -7,6 +7,7 @@ const primary = [
   {key:'library',label:'论文库',icon:BookOpen,hint:'导入、阅读、记笔记'},
   {key:'chat',label:'研究对话',icon:MessageSquare,hint:'持续补查、比较、讨论与修订'},
   {key:'research',label:'论文整理',icon:Sparkles,hint:'快速比较少量论文，或批量整理专题综述'},
+  {key:'cards',label:'精读卡片',icon:BookOpen,hint:'按专题浏览精读卡片，可单篇导出'},
 ];
 const more = [
   {key:'literature',label:'文献调研',icon:Search,hint:'让 AI 检索公开文献，勾选后加入论文库'},

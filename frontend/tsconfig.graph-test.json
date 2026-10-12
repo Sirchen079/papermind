@@ -45,6 +45,7 @@
     "src/pages/externalPaperModel.ts",
     "src/pages/literatureModel.ts",
     "src/pages/reviewMapModel.ts",
+    "src/pages/cardsPageModel.ts",
     "src/pages/skillImportModel.ts",
     "src/pages/draftStorageModel.ts"
   ]

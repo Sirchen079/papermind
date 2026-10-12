@@ -14,6 +14,7 @@ export const DEFAULT_PAGE = "home";
 export const KNOWN_PAGES: readonly string[] = [
   "home",
   "research",
+  "cards",
   "wiki",
   "library",
   "literature",
