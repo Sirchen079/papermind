@@ -186,6 +186,11 @@ def test_audit_reads_only_usage_and_does_not_modify_database(tmp_path):
 
 def test_litellm_anthropic_wire_retains_material_boundary_and_normalized_totals(client, monkeypatch):
     """Exercise real SDK transformation against an intercepted HTTP response."""
+    # 测试密闭（R11b）：litellm 会按本机 anthropic_* 环境变量改写 anthropic 请求的
+    # api_base/鉴权头，使请求绕开 respx 拦截的 api.anthropic.com。这里逐项剥离，
+    # 只保留被测 wire 契约本身；不打印任何变量值。
+    for var in ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_BASE', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY'):
+        monkeypatch.delenv(var, raising=False)
     import respx
     from app.ai_ops.paper_prompt import paper_messages
     with Session(get_engine()) as session:

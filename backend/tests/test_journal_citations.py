@@ -181,7 +181,15 @@ def test_legacy_migration_retains_existing_rows_and_is_fresh_schema_compatible(t
     cfg.set_main_option('sqlalchemy.url', str(engine.url))
     command.stamp(cfg, 'f0718b9c2001'); command.upgrade(cfg, 'head')
     with engine.connect() as c:
-        assert c.execute(text('SELECT * FROM paper')).one() == (7, 'Original citation', DOI, None, None, None)
+        # 契约变更（R11b）：R01 迁移 b4c8e2f6a9d1 为 paper 合法新增第 7 列
+        # identity_status（旧行保持 NULL）。原断言用 SELECT * 整行元组比较，
+        # 依赖列数与列序，合法加列即碎；改为按列名显式核验——旧行全部既有字段
+        # 值不变、此前迁移补的列仍为 NULL，且迁移不替旧行回填 identity_status。
+        row = c.execute(text(
+            'SELECT id, title, doi, volume, issue, pages, identity_status FROM paper')).one()
+        assert (row.id, row.title, row.doi) == (7, 'Original citation', DOI)
+        assert (row.volume, row.issue, row.pages) == (None, None, None)
+        assert row.identity_status is None
     # create_all-before-migration startup path: already present columns are safe.
     command.stamp(cfg, 'f0718b9c2001'); command.upgrade(cfg, 'head')
     with engine.connect() as c:
