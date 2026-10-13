@@ -161,7 +161,9 @@ def test_render_keeps_unknown_ids_without_entries():
     assert out == '# 检索\n\n只有 [P999] 一条。\n\n## 引用文献\n\n(正文未引用论文)'
 
 
-def test_papers_for_loads_formatter_dicts():
+def test_papers_for_loads_formatter_dicts(client):
+    # client 提供按用例隔离且已建表的库：无夹具时本用例落在首次导入 app.config
+    # 时冻结的默认库上，跟在任一 client 用例之后会命中空库（P5b 发现）。
     with Session(get_engine()) as s:
         row = Paper(source='manual', title='Paper Five', authors_json='["张三", "李四"]',
                     year=2019, venue='期刊', volume='6', pages='1-9', arxiv_id='1901.00001')

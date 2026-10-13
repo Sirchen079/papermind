@@ -186,6 +186,14 @@ def export(review_id:str,kind:str='markdown',style:str='',session:Session=Depend
     from app.reviews import references
     row=invoke(service.get,session,review_id)
     if kind=='coverage':return PlainTextResponse(service.coverage(session,review_id),media_type='application/x-ndjson')
+    if kind=='docx':
+        from urllib.parse import quote as urlquote
+        from fastapi.responses import Response
+        from app.reviews import export_docx
+        cn_name='专题综述.docx'
+        body=export_docx.render_review_docx(session,review_id,style if style in references.STYLES else 'gbt')
+        headers={'Content-Disposition':f'attachment; filename="review.docx"; filename*=UTF-8\'\'{urlquote(cn_name)}'}
+        return Response(body,media_type='application/vnd.openxmlformats-officedocument.wordprocessingml.document',headers=headers)
     if style in references.STYLES:
         cited=references.papers_for(session,references.first_appearance_ids(row.content))
         return PlainTextResponse(references.render_styled_markdown(row.content,cited,style),media_type='text/markdown; charset=utf-8')
