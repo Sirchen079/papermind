@@ -49,6 +49,10 @@ class Paper(SQLModel, table=True):
     pdf_path: str | None = None
     full_text: str | None = None
     parse_confidence: float | None = None
+    # R01: 'unconfirmed' when a PDF entry was saved without a confirmed
+    # identity (conflicting/ambiguous/reference-only evidence or lookup
+    # failure). NULL = no marking (confirmed identity or no identity claim).
+    identity_status: str | None = None
     title_norm: str | None = Field(default=None, index=True)
     is_deleted: bool = False
     created_at: datetime = Field(default_factory=utcnow, nullable=False)

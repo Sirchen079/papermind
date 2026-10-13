@@ -154,6 +154,8 @@ def _public(p: Paper) -> dict:
         "doi": p.doi,
         "arxiv_id": p.arxiv_id,
         "parse_confidence": p.parse_confidence,
+        # R01: identity marking for PDF entries saved without confirmed identity.
+        "identity_status": p.identity_status,
         # T9：列表默认按 id DESC（最近导入在前），返回 created_at 供 UI 呈现导入时间。
         "created_at": p.created_at,
         # P11: whether a readable PDF exists (enables the built-in reader entry).
@@ -963,6 +965,9 @@ async def ingest_pdf(file: UploadFile = File(...), session: Session = Depends(ge
         pdf_bytes=data,
     )
     ctx = _analysis_ctx(session)
+    # R01: 冲突/弱证据/查询失败的降级条目标记为身份未确认，独立保存。
+    identity_status = ('unconfirmed'
+                       if receipt.get('status') in ('unconfirmed', 'unavailable') else None)
     try:
         paper = await run_in_threadpool(
             persist_fetched,
@@ -970,6 +975,7 @@ async def ingest_pdf(file: UploadFile = File(...), session: Session = Depends(ge
             client=ctx[0] if ctx else None,
             provider=ctx[1] if ctx else None,
             model_id=ctx[2] if ctx else None,
+            identity_status=identity_status,
         )
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc

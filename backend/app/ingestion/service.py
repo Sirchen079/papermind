@@ -73,11 +73,14 @@ def persist_fetched(
     provider: Provider | None = None,
     model_id: str | None = None,
     target_paper_id: int | None = None,
+    identity_status: str | None = None,
 ) -> Paper:
     """Dedup, parse PDF, optionally AI-summarize, and persist a FetchedPaper.
 
     AI summarization runs only when ``client``/``provider``/``model_id`` are all
     provided (graceful degradation when no provider is configured — R11).
+    ``identity_status`` (R01) marks *new* entries whose identity could not be
+    confirmed ('unconfirmed'); existing records are never re-tagged here.
     """
     pdf_path = None
     text, conf = None, None
@@ -131,6 +134,8 @@ def persist_fetched(
                 return existing
             raise ValueError("这篇论文已有不同内容的 PDF，已保留原文。请将新版本作为独立论文导入。")
     paper = existing if existing is not None else Paper(source=fetched.source, source_ref=fetched.source_ref)
+    if existing is None and identity_status:
+        paper.identity_status = identity_status
     # A PDF upload landing on an existing paper fills only empty bibliographic
     # fields (same curated protection as import_paper_pdf); other import paths
     # keep their previous merge behavior.
