@@ -182,7 +182,11 @@ def revision_changes(review_id:str,version:int,session:Session=Depends(get_sessi
     return invoke(changes.read,session,review_id,version)
 
 @router.get('/{review_id}/export')
-def export(review_id:str,kind:str='markdown',session:Session=Depends(get_session)):
+def export(review_id:str,kind:str='markdown',style:str='',session:Session=Depends(get_session)):
+    from app.reviews import references
     row=invoke(service.get,session,review_id)
     if kind=='coverage':return PlainTextResponse(service.coverage(session,review_id),media_type='application/x-ndjson')
+    if style in references.STYLES:
+        cited=references.papers_for(session,references.first_appearance_ids(row.content))
+        return PlainTextResponse(references.render_styled_markdown(row.content,cited,style),media_type='text/markdown; charset=utf-8')
     return PlainTextResponse(row.content,media_type='text/markdown')
