@@ -3,9 +3,11 @@
 导入后的技能与内置 Nature 技能走完全相同的路径：catalog() 合并目录 ->
 load_builtin_skill -> read_builtin_skill_resource。文件复制到应用级导入根目录，
 只读取不执行——导入包里的脚本永远不会被运行。导入先写临时目录再原子替换，
-失败不留半截内容。
+失败不留半截内容。目录条目（catalog.json）的读改写由 _catalog_lock 串行化，
+导入、原地更新与删除共用同一把锁。
 """
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import io
@@ -59,6 +61,37 @@ _cache = None  # ((catalog 路径, mtime), 目录内容)
 
 def root() -> Path:
     return paths.imported_skills_dir()
+
+
+# 目录提交是跨线程的读改写。生产写入者是单进程多线程（desktop 与 launcher 都
+# 是单 worker uvicorn，同步接口在线程池里执行），进程内用线程锁排队；线程锁外
+# 再加 OS 文件锁兜底——机制与整体备份锁（archive.application._backup_lock）一致
+# （Windows msvcrt / POSIX fcntl，锁文件在导入根目录内，进程崩溃由 OS 释放），
+# 让意外的第二进程也覆盖不到彼此。锁范围因此同时覆盖线程内并发与多进程部署。
+# 下载、解压、复制、哈希等耗时准备都在锁外完成。
+_catalog_thread_lock = threading.Lock()
+
+
+@contextmanager
+def _catalog_lock():
+    base = root()
+    base.mkdir(parents=True, exist_ok=True)
+    with _catalog_thread_lock:
+        handle = (base / '.catalog.lock').open('a+b')
+        try:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                raise ValueError('技能目录正被其他导入或删除占用，请稍后重试') from exc
+            yield
+        finally:
+            handle.close()
 
 
 def catalog() -> dict:
@@ -140,7 +173,7 @@ def import_github(url: str) -> dict:
         family = _build_family(staging, source=source,
             source_key=f'github:{owner.lower()}/{repo.lower()}/{subpath or ""}',
             revision=revision, name=label, base_slug=_slug(label))
-        _commit(family, staging)
+        _commit(family, staging, _slug(label))
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -163,7 +196,7 @@ def import_folder(path: str) -> dict:
         family = _build_family(staging, source=str(source),
             source_key='folder:' + os.path.normcase(str(source)),
             revision='local', name=source.name, base_slug=_slug(source.name))
-        _commit(family, staging)
+        _commit(family, staging, _slug(source.name))
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -181,7 +214,7 @@ def import_zip(data: bytes, filename: str = 'upload.zip') -> dict:
         family = _build_family(staging, source='zip:' + name,
             source_key='zip:' + name.lower(), revision='zip',
             name=stem, base_slug=_slug(stem))
-        _commit(family, staging)
+        _commit(family, staging, _slug(stem))
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
         raise
@@ -189,22 +222,27 @@ def import_zip(data: bytes, filename: str = 'upload.zip') -> dict:
 
 
 def remove(family_id: str) -> None:
-    """删除一个导入 family 的文件与目录条目；不存在时抛 LookupError。"""
-    current = catalog()
-    if family_id not in {f['id'] for f in current['families']}:
-        raise LookupError('导入技能不存在')
-    dest = root() / family_id
-    trash = None
-    if dest.exists():
-        trash = root() / ('.trash-' + uuid.uuid4().hex)
-        dest.rename(trash)
-    try:
-        _write_catalog({'format': CATALOG_FORMAT,
-                        'families': [f for f in current['families'] if f['id'] != family_id]})
-    except BaseException:
-        if trash is not None and trash.exists():
-            trash.rename(dest)
-        raise
+    """删除一个导入 family 的文件与目录条目；不存在时抛 LookupError。
+
+    与导入/更新共用 _catalog_lock：锁内重读目录再判断目标，写回基于最新
+    目录过滤，不复活已删除记录，也不覆盖并发导入刚写入的条目。
+    """
+    with _catalog_lock():
+        current = catalog()
+        if family_id not in {f['id'] for f in current['families']}:
+            raise LookupError('导入技能不存在')
+        dest = root() / family_id
+        trash = None
+        if dest.exists():
+            trash = root() / ('.trash-' + uuid.uuid4().hex)
+            dest.rename(trash)
+        try:
+            _write_catalog({'format': CATALOG_FORMAT,
+                            'families': [f for f in current['families'] if f['id'] != family_id]})
+        except BaseException:
+            if trash is not None and trash.exists():
+                trash.rename(dest)
+            raise
     if trash is not None:
         shutil.rmtree(trash, ignore_errors=True)
 
@@ -693,6 +731,20 @@ def _with_family(current: dict, family: dict) -> dict:
     return {'format': CATALOG_FORMAT, 'families': families}
 
 
+def _retitle(family: dict, family_id: str) -> None:
+    """锁内重定 family id 后，原位同步 skills 的 id/entry 前缀。
+
+    准备阶段的 id 来自锁外快照，可能已被并发导入占用；提交前以锁内重判为准。
+    """
+    old = family['id']
+    if family_id == old:
+        return
+    family['id'] = family_id
+    for skill in family['skills']:
+        skill['id'] = family_id + skill['id'][len(old):]
+        skill['entry'] = family_id + skill['entry'][len(old):]
+
+
 def _write_catalog(data: dict) -> None:
     global _cache
     base = root()
@@ -707,21 +759,28 @@ def _write_catalog(data: dict) -> None:
     _cache = None
 
 
-def _commit(family: dict, staging: Path) -> None:
-    """先替换目录再原子写目录条目；失败回滚，不留半截内容。"""
-    base = root()
-    dest = base / family['id']
-    backup = None
-    if dest.exists():
-        backup = base / ('.backup-' + uuid.uuid4().hex)
-        dest.rename(backup)
-    try:
-        staging.rename(dest)
-        _write_catalog(_with_family(catalog(), family))
-    except BaseException:
-        shutil.rmtree(dest, ignore_errors=True)
-        if backup is not None and backup.exists():
-            backup.rename(dest)
-        raise
-    if backup is not None:
-        shutil.rmtree(backup, ignore_errors=True)
+def _commit(family: dict, staging: Path, base_slug: str) -> None:
+    """在目录锁内重读目录、重判目标，再替换目录并原子写目录条目。
+
+    下载/解压等准备在锁外；本函数串行执行“读目录 → 定 family id → 换目录 →
+    写目录”，并发导入/更新/删除都走同一把锁，后提交者基于最新目录合并，
+    不再覆盖先提交者的条目；失败回滚，不留半截内容。
+    """
+    with _catalog_lock():
+        _retitle(family, _family_id_for(family['source_key'], 'import-' + _slug(base_slug)))
+        base = root()
+        dest = base / family['id']
+        backup = None
+        if dest.exists():
+            backup = base / ('.backup-' + uuid.uuid4().hex)
+            dest.rename(backup)
+        try:
+            staging.rename(dest)
+            _write_catalog(_with_family(catalog(), family))
+        except BaseException:
+            shutil.rmtree(dest, ignore_errors=True)
+            if backup is not None and backup.exists():
+                backup.rename(dest)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)

@@ -3,8 +3,11 @@
 导入后的技能与内置 Nature 技能走同一条发现-加载-读取路径；导出（GitHub）
 在测试里用 respx 伪造，不访问真实网络。
 """
+from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 import re
+import threading
 import time
 
 import httpx
@@ -552,3 +555,185 @@ def test_github_single_skill_subpath_is_named_after_its_directory(client, import
     body = response.json()
     assert body['id'] == 'import-pdf-extract' and body['name'] == 'pdf-extract'
     assert [s['id'] for s in body['skills']] == ['import-pdf-extract/pdf-extract']
+
+
+# --- 并发与故障回滚（R03）---------------------------------------------------
+
+
+def catalog_ids():
+    return sorted(f['id'] for f in importer.catalog()['families'])
+
+
+def files_match_catalog(family):
+    """目录条目声明的文件清单与磁盘实际内容（哈希）一致。"""
+    files, _total = importer._inventory(importer.root() / family['id'])
+    return files == family['files']
+
+
+def no_leftovers():
+    """导入根目录内不留半截的临时目录/临时文件（.catalog.lock 是常驻锁文件）。"""
+    return [p.name for p in importer.root().iterdir()
+            if p.name.startswith(('.staging-', '.backup-', '.trash-', '.catalog-'))]
+
+
+def test_concurrent_imports_keep_both_catalog_entries_and_files(tmp_path, imported_dir, monkeypatch):
+    """两个不同包并发导入成功后，目录和文件都要保留两份且均可读取。
+
+    复现旧缺陷：catalog() 读旧值 → 合并 → 写回之间没有保护，两次独立导入
+    都读到同一份旧目录，各自报成功但后写者把先写者的目录项覆盖掉。
+    停钉点选在 _write_catalog（旧实现中位于“读目录并合并”之后、“写回”之前），
+    用事件精确编排先后，不依赖 sleep。新实现下第二方被目录锁挡在临界区外，
+    第二个停钉事件不会到来，按有界等待（2 秒，远小于锁让位窗口）判定已串行化，
+    放行第一方后第二方接着提交。
+    """
+    source_a = make_folder(tmp_path, 'pack-a')
+    source_b = make_folder(tmp_path, 'pack-b')
+    first_ready, second_ready = threading.Event(), threading.Event()
+    release_first, release_second = threading.Event(), threading.Event()
+    real_write = importer._write_catalog
+    state = {'writes': 0, 'overlapped': False}
+
+    def interleave(data):
+        state['writes'] += 1
+        if state['writes'] == 1:
+            first_ready.set()
+            state['overlapped'] = second_ready.wait(2)
+            assert release_first.wait(10)
+        elif state['writes'] == 2:
+            second_ready.set()
+            assert release_second.wait(10)
+        real_write(data)
+
+    monkeypatch.setattr(importer, '_write_catalog', interleave)
+    results, errors = {}, {}
+
+    def do_import(key, source):
+        try:
+            results[key] = importer.import_folder(str(source))
+        except BaseException as exc:  # 原样带回主线程断言
+            errors[key] = exc
+
+    thread_a = threading.Thread(target=do_import, args=('a', source_a))
+    thread_a.start()
+    assert first_ready.wait(10), '第一个导入未到达写回点'
+    thread_b = threading.Thread(target=do_import, args=('b', source_b))
+    thread_b.start()
+    if state['overlapped']:
+        assert second_ready.wait(10), '第二个导入未到达写回点'
+    release_first.set()
+    release_second.set()
+    thread_a.join(30)
+    thread_b.join(30)
+    assert not errors, errors
+    assert catalog_ids() == ['import-pack-a', 'import-pack-b']
+    for family in importer.catalog()['families']:
+        assert files_match_catalog(family)
+        assert (importer.root() / family['id'] / 'pdf-extract' / 'SKILL.md').is_file()
+    assert no_leftovers() == []
+
+
+def test_concurrent_same_name_packs_get_distinct_readable_families(tmp_path, imported_dir):
+    """同名包（不同来源）并发：各自成立且可读，不能互相顶掉。"""
+    sources = [make_folder(tmp_path / 'one', 'pack'), make_folder(tmp_path / 'two', 'pack')]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        families = list(pool.map(lambda src: importer.import_folder(str(src)), sources))
+    ids = sorted(family['id'] for family in families)
+    assert len(set(ids)) == 2  # 同名不同来源分得不同 id
+    assert catalog_ids() == ids
+    for family in importer.catalog()['families']:
+        assert files_match_catalog(family)
+
+
+def test_concurrent_same_source_updates_keep_single_entry_and_others(tmp_path, imported_dir):
+    """同来源并发更新：目录恰好一条且内容一致，其他包不受影响。"""
+    source = make_folder(tmp_path, 'pack-a')
+    other = make_folder(tmp_path, 'pack-c')
+    importer.import_folder(str(source))
+    importer.import_folder(str(other))
+    skill_md = source / 'pdf-extract' / 'SKILL.md'
+    skill_md.write_text(skill_md.read_text(encoding='utf-8').replace('从 PDF 提取正文', '并发更新版'),
+                        encoding='utf-8')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: importer.import_folder(str(source)), range(2)))
+    families = {f['id']: f for f in importer.catalog()['families']}
+    assert set(families) == {'import-pack-a', 'import-pack-c'}  # 不多不少，其他包没被挤掉
+    assert files_match_catalog(families['import-pack-a'])
+    assert '并发更新版' in (importer.root() / 'import-pack-a' / 'pdf-extract' / 'SKILL.md').read_text(encoding='utf-8')
+    assert no_leftovers() == []
+
+
+def test_import_and_remove_interleave_neither_resurrects_nor_loses(tmp_path, imported_dir):
+    """导入与删除交错：已删除记录不复活，无关记录不丢失，文件随之增删。"""
+    source_a = make_folder(tmp_path, 'pack-a')
+    source_b = make_folder(tmp_path, 'pack-b')
+    source_c = make_folder(tmp_path, 'pack-c')
+    importer.import_folder(str(source_a))
+    importer.import_folder(str(source_c))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        import_future = pool.submit(importer.import_folder, str(source_b))
+        remove_future = pool.submit(importer.remove, 'import-pack-a')
+        import_future.result(30)
+        remove_future.result(30)
+    assert catalog_ids() == ['import-pack-b', 'import-pack-c']
+    assert not (importer.root() / 'import-pack-a').exists()
+    assert (importer.root() / 'import-pack-b' / 'pdf-extract' / 'SKILL.md').is_file()
+    assert no_leftovers() == []
+
+
+def test_commit_write_failure_keeps_installed_and_cleans_temp(tmp_path, imported_dir, monkeypatch):
+    """目录条目写回失败：已安装包仍可用，报错，且不留半截目录/临时文件。"""
+    source_a = make_folder(tmp_path, 'pack-a')
+    importer.import_folder(str(source_a))
+
+    def broken(data):
+        raise OSError('磁盘写入失败')
+
+    monkeypatch.setattr(importer, '_write_catalog', broken)
+    with pytest.raises(OSError):
+        importer.import_folder(str(make_folder(tmp_path, 'pack-b')))
+    families = {f['id']: f for f in importer.catalog()['families']}
+    assert set(families) == {'import-pack-a'}
+    assert files_match_catalog(families['import-pack-a'])
+    assert not (importer.root() / 'import-pack-b').exists()
+    assert [p.name for p in importer.root().iterdir() if p.name.startswith('.')] == ['.catalog.lock']
+
+
+def test_remove_write_failure_keeps_family_usable(tmp_path, imported_dir, monkeypatch):
+    """删除时写回失败：回滚目录条目与文件，原包仍可读取、可再次删除。"""
+    source = make_folder(tmp_path, 'pack-a')
+    importer.import_folder(str(source))
+    real_write = importer._write_catalog
+
+    def broken(data):
+        raise OSError('磁盘写入失败')
+
+    monkeypatch.setattr(importer, '_write_catalog', broken)
+    with pytest.raises(OSError):
+        importer.remove('import-pack-a')
+    monkeypatch.setattr(importer, '_write_catalog', real_write)  # 显式还原，不用 undo()（会连夹具的 env 一起回退）
+    families = importer.catalog()['families']
+    assert [f['id'] for f in families] == ['import-pack-a']
+    assert files_match_catalog(families[0])
+    assert no_leftovers() == []
+    importer.remove('import-pack-a')  # 失败后原包仍可正常删除
+    assert importer.catalog()['families'] == []
+
+
+def test_dir_replace_failure_keeps_previous_pack(tmp_path, imported_dir, monkeypatch):
+    """目录替换失败：旧包原样保留、目录条目不变，不留备份/暂存残留。"""
+    source = make_folder(tmp_path, 'pack-a')
+    importer.import_folder(str(source))
+    real_rename = Path.rename
+
+    def failing_rename(self, target):
+        if self.name.startswith('.staging-') and Path(target).name == 'import-pack-a':
+            raise OSError('目录替换失败')
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, 'rename', failing_rename)
+    with pytest.raises(OSError):
+        importer.import_folder(str(source))  # 同来源更新需要先挪旧目录再替换
+    families = importer.catalog()['families']
+    assert [f['id'] for f in families] == ['import-pack-a']
+    assert files_match_catalog(families[0])
+    assert no_leftovers() == []
