@@ -30,7 +30,7 @@ def test_pdf_analysis_does_not_block_other_requests(monkeypatch):
             papers_api.ingest_pdf(UploadFile(BytesIO(b"pdf"), filename="test.pdf"), session=object()),
             other_request(),
         )
-        assert result == {"id": 1}
+        assert result["id"] == 1  # P1b 起响应含 identity 识别块,此处只验并发与 id
 
     asyncio.run(check())
     assert events == ["other_request", "analysis_finished"]
