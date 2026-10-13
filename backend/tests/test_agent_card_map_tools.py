@@ -298,15 +298,23 @@ def test_read_literature_map_reports_missing_running_and_failed(client):
     assert missing['error'] == '综述任务不存在'
 
 
-def test_artifact_tools_are_read_only_sources():
+def test_artifact_tools_are_read_only_sources(client):
     # Card and map reads are generated/derived material, like read_review:
     # they must not become citable original-text sources.
     review_id, ids = _seed_map_review()
     with Session(get_engine()) as s:
         card_out = get_tool('get_paper_card').run(s, paper_id=ids[0])
         map_out = get_tool('read_literature_map').run(s, review_id=review_id)
-    assert tool_sources(Session(get_engine()), 'get_paper_card', card_out) == []
-    assert tool_sources(Session(get_engine()), 'read_literature_map', map_out) == []
+    # The empty source lists below must not pass vacuously on error stubs:
+    # first check both tools returned real derived content.
+    card_data = json.loads(card_out)
+    assert card_data['card_status'] == 'done'
+    assert card_data['card']['problem']['quote'] == 'We restore the wavefield.'
+    map_data = json.loads(map_out)
+    assert map_data['status'] == 'ready' and map_data['themes_total'] == 5
+    with Session(get_engine()) as s:
+        assert tool_sources(s, 'get_paper_card', card_out) == []
+        assert tool_sources(s, 'read_literature_map', map_out) == []
 
 
 def test_artifact_tools_registered_with_declared_parameters():
