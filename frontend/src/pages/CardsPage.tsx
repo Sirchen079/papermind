@@ -3,7 +3,7 @@ import { useWorkspace } from '../workspaceContext';
 import { Shell } from '../components/layout/Shell';
 import { ReviewListPicker } from '../components/ReviewListPicker';
 import { createReviewRequest, type PaperCardEntry, type ReviewMapDetail, type ReviewMapPaper } from '../reviewsApi';
-import { cardFieldRows, cardToMarkdown, filterCards } from './cardsPageModel';
+import { cardCheckSummary, cardFieldRows, cardRowQuoteLabel, cardRowStatusText, cardToMarkdown, filterCards } from './cardsPageModel';
 import type { NavLocation } from './navigationModel';
 
 type ReviewSummary = { id: string; question: string; status: string };
@@ -92,11 +92,19 @@ export default function CardsPage({ params, onNavigate, onOpenPaper }: { params:
           {filtered.map(entry => {
             const meta = metaById.get(entry.paper_id);
             const rows = cardFieldRows(entry.card);
+            const checkSummary = cardCheckSummary(entry.card);
             return <details key={entry.paper_id} className="space-y-2 border rounded p-2" style={{ borderColor: 'var(--border)' }}>
               <summary className="cursor-pointer">[P{entry.paper_id}] {meta?.year ? `${meta.year} ` : ''}{entry.title}{meta?.venue ? ` · ${meta.venue}` : ''}</summary>
-              <p className="text-xs text-muted">卡片状态：{entry.status}{entry.warning ? ` · ${entry.warning}` : ''}</p>
+              <p className="text-xs text-muted">卡片状态：{entry.status}{checkSummary ? ` · ${checkSummary}` : ''}{entry.warning ? ` · ${entry.warning}` : ''}</p>
               {meta?.doi && <p className="text-xs"><a className="underline" href={`https://doi.org/${meta.doi}`} target="_blank" rel="noreferrer">{meta.doi}</a></p>}
-              {rows.length ? rows.map(row => <p key={row.label} className="text-sm"><strong>{row.label}：</strong>{row.value}{row.quote && <span className="block text-xs text-muted">原文：“{row.quote}”</span>}</p>) : <p className="text-sm text-muted">这篇论文还没有精读卡片。</p>}
+              {rows.length ? rows.map(row => {
+                const status = cardRowStatusText(row);
+                return <p key={row.label} className="text-sm"><strong>{row.label}：</strong>{row.value}
+                  {' '}<span className="text-xs" style={{ color: row.problem ? 'var(--warning, #b45309)' : 'var(--muted, #6b7280)' }}>{status}</span>
+                  {row.page !== undefined && <button className="btn-ghost text-xs" onClick={() => onOpenPaper(entry.paper_id, row.page)}>查看原文</button>}
+                  {row.quote && <span className="block text-xs text-muted">{cardRowQuoteLabel(row)}：“{row.quote}”</span>}
+                </p>;
+              }) : <p className="text-sm text-muted">这篇论文还没有精读卡片。</p>}
               <div className="flex flex-wrap gap-2">
                 <button className="btn-ghost" onClick={() => download(cardToMarkdown(entry, meta), `P${entry.paper_id}-精读卡片.md`)}>导出卡片</button>
                 <button className="btn-ghost" onClick={() => onOpenPaper(entry.paper_id)}>打开论文</button>
