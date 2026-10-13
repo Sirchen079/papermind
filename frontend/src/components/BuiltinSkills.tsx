@@ -1,23 +1,30 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWorkspace } from '../workspaceContext';
+import { nextSelectionAfterCatalogRefresh, refreshResourcePath } from '../pages/skillResourceModel';
 
 type Skill={id:string;slug:string;description:string;version:string;files:number};
 type Family={id:string;name:string;source:string;revision:string;file_count:number;skills:Skill[];imported?:boolean;license?:string|null};
 type Resource={text?:string;binary?:boolean;next_start:number|null;download_url:string;total_chars?:number};
 
-export function BuiltinSkills(){
+// revision：父页面在技能包导入/更新/删除成功后递增的失效信号；目录与资源仍只由
+// 本组件拉取，revision 变化使两个 effect 重新拉取（generation 防竞态保持不变）。
+export function BuiltinSkills({revision=0}:{revision?:number}){
   const {base}=useWorkspace();
   const [families,setFamilies]=useState<Family[]>([]),[selected,setSelected]=useState('');
   const [files,setFiles]=useState<string[]>([]),[path,setPath]=useState('SKILL.md'),[filter,setFilter]=useState('');
   const [resource,setResource]=useState<Resource|null>(null),[error,setError]=useState('');
-  const generation=useRef(0);
+  const generation=useRef(0),prevSelected=useRef('');
   async function request<T,>(suffix:string):Promise<T>{const r=await fetch(base+'/builtin-skills'+suffix);if(!r.ok)throw new Error('技能资源读取失败');return r.json();}
-  useEffect(()=>{let alive=true;request<Family[]>('').then(x=>{if(alive)setFamilies(x);}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[base]);
-  useEffect(()=>{const g=++generation.current;setResource(null);setFiles([]);setPath('SKILL.md');setFilter('');setError('');if(!selected)return;
-    Promise.all([request<string[]>('/resources?skill_id='+encodeURIComponent(selected)),request<Resource>('/resource?'+new URLSearchParams({skill_id:selected,path:'SKILL.md'}))])
-    .then(([f,r])=>{if(g===generation.current){setFiles(f);setResource(r);}}).catch(e=>{if(g===generation.current)setError(e.message);});
+  useEffect(()=>{let alive=true;request<Family[]>('').then(x=>{if(!alive)return;setFamilies(x);setSelected(cur=>nextSelectionAfterCatalogRefresh(cur,x));}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[base,revision]);
+  useEffect(()=>{const prior=prevSelected.current;prevSelected.current=selected;const same=selected!==''&&prior===selected;const g=++generation.current;setError('');
+    if(!same){setResource(null);setFiles([]);setPath('SKILL.md');setFilter('');}
+    if(!selected)return;
+    void (async()=>{try{const f=await request<string[]>('/resources?skill_id='+encodeURIComponent(selected));if(g!==generation.current)return;
+      const target=same?refreshResourcePath(path,f):'SKILL.md';if(same&&target!==path)setPath(target);
+      const r=await request<Resource>('/resource?'+new URLSearchParams({skill_id:selected,path:target}));
+      if(g===generation.current){setFiles(f);setResource(r);}}catch(e){if(g===generation.current)setError((e as Error).message);}})();
     return()=>{++generation.current;};
-  },[selected,base]);
+  },[selected,base,revision]);
   async function read(nextPath:string,start=0){const g=++generation.current;setError('');if(!start)setResource(null);setPath(nextPath);
     try{const r=await request<Resource>('/resource?'+new URLSearchParams({skill_id:selected,path:nextPath,start:String(start)}));
       if(g===generation.current)setResource(old=>({...r,text:start?(old?.text??'')+(r.text??''):r.text}));

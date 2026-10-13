@@ -49,6 +49,8 @@ export default function Skills() {
   const [importsError, setImportsError] = useState("");
   const [importBusy, setImportBusy] = useState("");
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
+  // 技能包变更成功后递增：作为失效信号传给科研技能库面板，触发其重新拉取目录与资源。
+  const [catalogRevision, setCatalogRevision] = useState(0);
   const [githubUrl, setGithubUrl] = useState("");
   const [githubTouched, setGithubTouched] = useState(false);
   const [folderPath, setFolderPath] = useState("");
@@ -86,6 +88,7 @@ export default function Skills() {
 
   async function refreshAfterImport(result: { skills_added?: number; skills: { name: string }[] }, verb: string) {
     toast.success(verb === "更新" ? `已更新，共 ${result.skills.length} 个技能。` : `已导入 ${result.skills_added ?? result.skills.length} 个技能。`);
+    setCatalogRevision((n) => n + 1);
     await Promise.all([loadImports(), load()]);
   }
 
@@ -160,6 +163,7 @@ export default function Skills() {
     try {
       await api.deleteSkillImport(f.id);
       toast.success("已删除导入的技能包。");
+      setCatalogRevision((n) => n + 1);
       await Promise.all([loadImports(), load()]);
     } catch (e: any) {
       toast.error(e.message);
@@ -248,7 +252,7 @@ export default function Skills() {
           </button>
         }
       />
-      <BuiltinSkills />
+      <BuiltinSkills revision={catalogRevision} />
       <section className="card space-y-4" aria-label="导入技能包">
         <div>
           <h2 className="text-lg font-semibold">导入技能包</h2>

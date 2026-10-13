@@ -49,6 +49,7 @@
     "src/pages/cardsPageModel.ts",
     "src/pages/mapPageModel.ts",
     "src/pages/skillImportModel.ts",
+    "src/pages/skillResourceModel.ts",
     "src/pages/draftStorageModel.ts",
     "src/pages/providerSetupModel.ts"
   ]
