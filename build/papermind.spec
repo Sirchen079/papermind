@@ -24,6 +24,8 @@ import importlib
 
 from PyInstaller.utils.hooks import (
     collect_all,
+    collect_data_files,
+    collect_dynamic_libs,
     collect_submodules,
     copy_metadata,
 )
@@ -46,10 +48,27 @@ for module in ("webview", "proxy_tools", "bottle", "pythonnet", "clr_loader", "c
     importlib.import_module(module)
     hiddenimports.append(module)
 
+# Packages whose collection is required for the frozen MCP server (the S3
+# external interface) to work; if collecting any of them fails, the build must
+# fail instead of shipping a bundle that silently lacks MCP (R06).
+MCP_CRITICAL = frozenset((
+    "mcp_types",
+    "sse_starlette",
+    "opentelemetry",
+    "jsonschema",
+    "httpx2",
+    "httpcore2",
+    "jwt",
+    "win32job",
+    "win32api",
+    "win32con",
+    "pywintypes",
+))
+
 # Packages whose runtime dynamic imports / C extensions / data files the
 # static analysis tends to miss. collect_all pulls modules + datas + binaries
-# for each; failures (e.g. a package not installed) are ignored so a partial
-# environment still produces a build with a clear warning.
+# for each; failures for optional extras are ignored with a warning, while
+# failures for the desktop shell or MCP-critical deps abort the build.
 for pkg in (
     "litellm",
     "sqlite_vec",
@@ -88,6 +107,10 @@ for pkg in (
     except Exception as exc:  # pragma: no cover - environment dependent
         if pkg == "webview":
             raise RuntimeError("Cannot build without the desktop dependencies") from exc
+        if pkg in MCP_CRITICAL:
+            raise RuntimeError(
+                f"Cannot build without {pkg!r}: required by the frozen MCP server"
+            ) from exc
         print(f"[spec] collect_all({pkg!r}) failed: {exc}")
         continue
     datas += d
@@ -98,14 +121,22 @@ for pkg in (
 # imports typer (the `mcp[cli]` extra, not a PaperMind dependency). Collect the
 # package with the CLI subpackage filtered out instead; the library modules
 # (server/client/shared/os/cli are not imported by PaperMind) come along.
-try:
-    datas += collect_data_files("mcp")
-    binaries += collect_dynamic_libs("mcp")
-    hiddenimports += collect_submodules(
-        "mcp", filter=lambda name: not name.startswith("mcp.cli"), on_error="ignore"
+# Any error here must fail the build (R06): before the fix an unimported
+# helper raised NameError that was caught and printed, silently skipping the
+# whole MCP collection. An empty dynamic-lib list is legal (mcp is pure
+# Python) and is not treated as a failure.
+mcp_datas = collect_data_files("mcp")
+mcp_binaries = collect_dynamic_libs("mcp")
+mcp_hiddenimports = collect_submodules(
+    "mcp", filter=lambda name: not name.startswith("mcp.cli"), on_error="ignore"
+)
+if not mcp_hiddenimports:
+    raise RuntimeError(
+        "collect_submodules('mcp') returned no modules; the frozen MCP server would be broken"
     )
-except Exception as exc:  # pragma: no cover - environment dependent
-    print(f"[spec] collecting 'mcp' failed: {exc}")
+datas += mcp_datas
+binaries += mcp_binaries
+hiddenimports += mcp_hiddenimports
 
 # Read-only bundled resources. Destination dirs line up with app/paths.py.
 datas += [
