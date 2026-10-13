@@ -8,7 +8,8 @@ import { ReviewParagraphEditor } from '../components/ReviewParagraphEditor';
 import {createReviewRequest,type LibraryReviewDetail as Review,type ReviewSource as Source} from '../reviewsApi';
 import type { NavLocation } from './navigationModel';
 import {formatTokenEstimate,type ReviewEstimate} from './reviewComposerModel';
-import type { Paper } from '../api';
+import {localToken,type Paper} from '../api';
+import {parseApiErrorMessage} from './apiErrorModel';
 
 const labels:Record<string,string>={draft:'待开始',running:'正在生成',ready:'已生成',partial:'部分完成',paused:'已暂停',needs_input:'等待材料或模型',done:'已分析',fallback:'保留已有材料',missing:'缺少可读材料',pending:'待分析'};
 
@@ -18,6 +19,7 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
   const [topic,setTopic]=useState(''),[whole,setWhole]=useState(true),[selected,setSelected]=useState<number[]>([]),[mapFirst,setMapFirst]=useState(true);
   const [query,setQuery]=useState(''),[offset,setOffset]=useState(0),[items,setItems]=useState<Paper[]>([]),[total,setTotal]=useState(0);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[filter,setFilter]=useState(''),[page,setPage]=useState(0);
+  const [citeStyle,setCiteStyle]=useState<'gbt'|'apa'>('gbt'),[exporting,setExporting]=useState(false);
   const [source,setSource]=useState<Source|null>(null),[editor,setEditor]=useState<string|null>(null),[editVersion,setEditVersion]=useState(0);
   const [estimate,setEstimate]=useState<ReviewEstimate|null>(null);
   const [editSelection,setEditSelection]=useState<{id:string;version:number;request:number}|null>(null);
@@ -82,6 +84,9 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
   }
   function download(text:string,name:string,type='text/markdown'){const url=URL.createObjectURL(new Blob([text],{type:type+';charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   async function coverage(){try{const res=await fetch(`${base}/reviews/${id}/export?kind=coverage`);if(!res.ok)throw new Error('覆盖清单下载失败');download(await res.text(),'综述材料清单.jsonl','application/x-ndjson');}catch(e){setError((e as Error).message);}}
+  // 卡 P5c：综述导出按所选引用格式（GB/T 7714 / APA）向后端取内容，带 X-Local-Token（参照 api.ts downloadBackup 模式）。
+  async function downloadReview(){try{const res=await fetch(`${base}/reviews/${id}/export?kind=markdown&style=${citeStyle}`,{headers:{'X-Local-Token':localToken()}});if(!res.ok)throw new Error(parseApiErrorMessage(res.status,await res.text()));download(await res.text(),'专题综述.md');}catch(e){setError((e as Error).message);}}
+  async function exportReviewDocx(){if(exporting)return;setExporting(true);setError('');try{const res=await fetch(`${base}/reviews/${id}/export?kind=docx&style=${citeStyle}`,{headers:{'X-Local-Token':localToken()}});if(!res.ok)throw new Error(parseApiErrorMessage(res.status,await res.text()));const url=URL.createObjectURL(await res.blob());const a=document.createElement('a');a.href=url;a.download='专题综述.docx';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){setError((e as Error).message);}finally{setExporting(false);}}
   const filtered=(job?.papers??[]).filter(p=>!filter||p.title.toLowerCase().includes(filter.toLowerCase())||String(p.paper_id)===filter);
   const running=job?.status==='running';
   const estimateText=estimate?formatTokenEstimate(estimate):'';
@@ -109,7 +114,8 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
         <p className="text-xs text-muted">论文材料整理进度 · 完成后继续综合与写作</p>
         <progress className="w-full" aria-label="论文材料整理进度" value={job.counts.total-job.counts.pending} max={job.counts.total||1}/><p className="text-sm text-muted">共 {job.counts.total} 篇 · 已分析 {job.counts.done} · 保留材料 {job.counts.fallback} · 缺少材料 {job.counts.missing} · 复用 {job.counts.reused}</p></>}
         {job.error&&<p className="text-sm text-amber-700">{job.error}</p>}<div className="flex flex-wrap gap-2">{running?<button className="btn-ghost" disabled={busy} onClick={()=>action('stop')}>暂停</button>:<button className="btn-primary" disabled={busy} onClick={()=>action('run')}>{job.content?'更新综述 / 重试未完成内容':job.status==='draft'?'生成综述正文':'继续生成'}</button>}
-          <button className="btn-ghost" disabled={!job.content} onClick={()=>download(job.content,'专题综述.md')}>下载综述</button><button className="btn-ghost" onClick={coverage}>下载材料清单</button>
+          <label className="flex items-center gap-1 text-sm text-muted">引用格式<select className="input w-auto" aria-label="引用格式" value={citeStyle} onChange={e=>setCiteStyle(e.target.value as 'gbt'|'apa')}><option value="gbt">GB/T 7714</option><option value="apa">APA</option></select></label>
+          <button className="btn-ghost" disabled={!job.content} onClick={downloadReview}>下载综述</button><button className="btn-ghost" disabled={!job.content||exporting} onClick={exportReviewDocx}>{exporting?'正在导出…':'导出 Word'}</button><button className="btn-ghost" onClick={coverage}>下载材料清单</button>
           {!running&&job.content&&editor===null&&<button className="btn-ghost" onClick={()=>{setEditor(job.content);setEditVersion(job.version);}}>编辑正文</button>}</div>
       </section>
       <ReviewMap reviewId={job.id} onOpenPaper={onOpenPaper} onResearch={researchFromMap} onCreateIdea={ideaFromMap}/>
