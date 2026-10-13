@@ -86,6 +86,11 @@ import {
   ENRICH_METADATA_CAP,
   FETCH_FULLTEXT_CAP,
   buildPaperIdsPayload,
+  combineBulkResultMessage,
+  enrichHasUpdates,
+  fulltextHasAttachments,
+  responseIsCurrent,
+  selectionMatchesPaper,
   summarizeEnrichResults,
   summarizeFulltextResults,
 } from "./libraryEnrichModel";
@@ -429,6 +434,10 @@ export default function Library({
   const [serverQuery, setServerQuery] = useState("");
   const searchSeqRef = useRef(0);
   const searchFirstRunRef = useRef(true);
+  // R07：批量改动完成后的刷新需要"当下"的查询与已加载范围；闭包捕获的旧值
+  // 会把新查询结果覆盖回去，或把期间「加载更多」扩大的范围截断。
+  const serverQueryRef = useRef(serverQuery);
+  const papersLengthRef = useRef(papers.length);
   const [sort, setSort] = useState<"imported" | "year_desc" | "year_asc" | "title">("imported");
   const [analyzing, setAnalyzing] = useState(false);
   const [view, setView] = useState<"library" | "matrix" | "thesis">("library");
@@ -573,6 +582,13 @@ export default function Library({
     return () => window.clearTimeout(timer);
   }, [query]);
 
+  // R07：让刷新用的 ref 与当前查询/已加载范围保持同步（批量操作 await 期间
+  // 用户可能切换查询或加载更多）。
+  useEffect(() => {
+    serverQueryRef.current = serverQuery;
+    papersLengthRef.current = papers.length;
+  }, [serverQuery, papers.length]);
+
   // T9：serverQuery 变化 → 服务端全库搜索第一页；seq 防竞态（旧响应直接丢弃）。
   // 首次挂载且无查询时跳过（初始加载由 load() 负责，避免重复请求）。
   useEffect(() => {
@@ -641,17 +657,26 @@ export default function Library({
     }
   }
 
-  async function refreshOrganization(paperId?: number) {
+  // R07：返回本次刷新是否套用（false=期间发起了更新的查询/刷新，旧快照丢弃）。
+  // 与 load()/搜索共用序号防护，并取"当下"的查询与已加载范围；批量书目/全文
+  // 操作完成后也走这里刷新。详情只在仍选中同一篇时套用，慢响应不覆盖新选中的
+  // 论文（含期间关闭详情的情况）。
+  async function refreshOrganization(paperId?: number): Promise<boolean> {
+    const seq = ++searchSeqRef.current;
     const [nextPapers, nextTags, nextCollections, nextSelected] = await Promise.all([
-      fetchPapersUpTo(papers.length, serverQuery),
+      fetchPapersUpTo(papersLengthRef.current, serverQueryRef.current),
       api.listTags(),
       api.listCollections(),
       paperId ? api.getPaper(paperId) : Promise.resolve(null),
     ]);
+    if (!responseIsCurrent(seq, searchSeqRef.current)) return false;
     setPapers(nextPapers);
     setTags(nextTags);
     setCollections(nextCollections);
-    if (nextSelected) setSelected(nextSelected);
+    if (nextSelected) {
+      setSelected((cur) => (selectionMatchesPaper(cur?.id, nextSelected.id) ? nextSelected : cur));
+    }
+    return true;
   }
 
   useEffect(() => {
@@ -1548,7 +1573,20 @@ export default function Library({
     }
   }
 
+  // R07：批量改动成功后刷新当前列表与打开的详情（复用 refreshOrganization：
+  // 含序号防护，保留搜索/筛选/已加载范围；详情仅在仍选中同一篇时套用）。
+  // 返回最终提示——业务统计始终保留，刷新失败/stale 只附加说明，不要求重跑操作。
+  async function refreshAfterBulkChange(opMsg: string): Promise<string> {
+    try {
+      const applied = await refreshOrganization(selected?.id);
+      return combineBulkResultMessage(opMsg, applied ? "refreshed" : "stale");
+    } catch {
+      return combineBulkResultMessage(opMsg, "failed");
+    }
+  }
+
   // P1c：批量按 DOI 补全书目信息/摘要（后端单次上限 200）。
+  // R07：有真实更新时同步刷新列表与详情，不刷新浏览器即可看到新题名/作者。
   async function runBulkEnrichMetadata() {
     if (enrichBusy) return;
     const paperIds = buildPaperIdsPayload(bulkSelectedPaperIds, ENRICH_METADATA_CAP);
@@ -1562,7 +1600,8 @@ export default function Library({
     setError(null);
     try {
       const res = await api.enrichMetadata(paperIds);
-      setBulkMsg(summarizeEnrichResults(res.counts));
+      const msg = summarizeEnrichResults(res.counts);
+      setBulkMsg(enrichHasUpdates(res.counts) ? await refreshAfterBulkChange(msg) : msg);
     } catch (e: any) {
       toast.error(e.message);
     } finally {
@@ -1571,6 +1610,8 @@ export default function Library({
   }
 
   // P1c：批量获取开放获取全文（后端单次上限 50）。
+  // R07：后端为同步附接（attached=PDF 已下载入库），提示按真实 counts 展示；
+  // 有附接时刷新列表与详情，has_pdf 的阅读入口与文档处理进度（既有机制）随之出现。
   async function runBulkFetchOpenFulltext() {
     if (fulltextBusy) return;
     const paperIds = buildPaperIdsPayload(bulkSelectedPaperIds, FETCH_FULLTEXT_CAP);
@@ -1584,7 +1625,8 @@ export default function Library({
     setError(null);
     try {
       const res = await api.fetchOpenFulltext(paperIds);
-      setBulkMsg(summarizeFulltextResults(res.counts));
+      const msg = summarizeFulltextResults(res.counts);
+      setBulkMsg(fulltextHasAttachments(res.counts) ? await refreshAfterBulkChange(msg) : msg);
     } catch (e: any) {
       toast.error(e.message);
     } finally {
