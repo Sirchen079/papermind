@@ -21,6 +21,7 @@
 以下数量区分统计，不混算。运行环境均为新建隔离目录（PAPERMIND_DATA_DIR/DB_PATH/MASTER_KEY_PATH、禁用技能自动加载）。
 
 - 定向回归（任务书 21 文件）：收集 350（返工基线 317，净增 33），349 通过 / 1 失败，1451 秒。审查基线原有 5 项失败（test_concurrent_catalog 1 项、test_final_acceptance_fixes 2 项、test_papers_api::test_pdf_upload、test_agent_card_map_tools 1 项）不再以相同原因出现。
+- R11b 定向复验（a9fecd5，同一隔离方式新目录，环境保留 ANTHROPIC_BASE_URL 等 GLM 代理变量）：任务书 21 文件收集 350 / 350 通过 / 0 失败，911 秒；两修复文件单独复跑 15+13 全过，pip check 通过。
 - 全量后端：收集 1629，1626 通过 / 2 失败 / 1 跳过，4509 秒。2 项失败见「已知限制」，均不在原失败之列、待用户裁决。
 - 前端：npm test 248/248 通过（返工基线 223，净增 25），退出码 0；npm run build 退出码 0（仅既有 chunk 体积警告）。
 - pip check：通过，无损坏依赖。
@@ -32,8 +33,8 @@
 ## 已知限制与未验证项
 
 - **安装升级：未验证。** 安装器（Inno Setup，PrivilegesRequired=lowest）默认安装到当前用户 Programs 目录并覆盖同名既有安装，写入 HKCU 卸载注册表项，CloseApplications=force 会强制关闭运行中的实例，旧安装目录数据迁移涉及 %LOCALAPPDATA%\PaperMind。本机无可验证安全隔离的测试实例/虚拟机，且该数据路径属禁改范围，因此未编译安装器、未在任何默认位置试装。数据保留与迁移契约仅在测试套件的迁移用例中覆盖。
-- **全量后端 2 项失败（均待用户裁决，不属原 5 项失败）：**
-  1. test_journal_citations::test_legacy_migration_retains_existing_rows_and_is_fresh_schema_compatible——R01 迁移（b4c8e2f6a9d1）为 paper 表新增 identity_status 列后，该测试对旧库迁移行的精确列数断言未同步；断言中旧数据本身保留，仅多出一列 NULL。需一张小卡更新测试契约。
-  2. test_prompt_cache_optimization::test_litellm_anthropic_wire_retains_material_boundary_and_normalized_totals——本机存在 GLM 代理环境变量 ANTHROPIC_BASE_URL，litellm 据此把 anthropic 请求指向 open.bigmodel.cn，respx 仅拦截 api.anthropic.com 导致断言「请求未被 mock」。清除该变量后整文件 13/13 通过，生产代码未改动。测试运行环境需剥离该类变量，或为该测试固定 api_base。
+- **全量后端曾有的 2 项测试契约失败已由 R11b 修复（a9fecd5，均为测试文件改动，生产代码零改动）：**
+  1. test_journal_citations::test_legacy_migration_retains_existing_rows_and_is_fresh_schema_compatible——新契约不再依赖列数与列序：按列名显式核验旧库迁移行全部既有字段值不变、此前迁移补的列仍为 NULL，并新增断言 R01 迁移（b4c8e2f6a9d1）不为旧行回填 identity_status。
+  2. test_prompt_cache_optimization::test_litellm_anthropic_wire_retains_material_boundary_and_normalized_totals——测试内剥离 ANTHROPIC_BASE_URL/ANTHROPIC_API_BASE/ANTHROPIC_AUTH_TOKEN/ANTHROPIC_API_KEY 环境变量，对机器环境密闭；对 api.anthropic.com wire 格式、材料边界与归一化 token 总数的断言原样保留。
 - 真实模型输出与科研内容准确性未验收；独立第三方复核未完成。
 - 未推送、未创建 release、未覆盖用户安装；本地候选版本未公开发布。
