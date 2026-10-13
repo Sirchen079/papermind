@@ -1,5 +1,6 @@
 """P5a: GB/T 7714 与 APA 规范引用著录（纯函数 + 导出端点 style 参数）。"""
 import itertools
+import re
 
 from sqlmodel import Session
 
@@ -129,12 +130,133 @@ def test_render_gbt_renumbers_body_and_rebuilds_references():
     assert materials == '本次范围 2 篇；完成模型分析 2 篇。\n'
 
 
-def test_render_apa_lines_carry_no_index_prefix():
-    out = references.render_styled_markdown(CONTENT, PAPERS, 'apa')
-    entries = out.split('\n\n## 引用文献\n\n', 1)[1].split('\n\n## 材料范围\n\n')[0]
+APA_YEAR = r'\d{4}[a-z]?|n\.d\.(?:-[a-z])?'
+
+
+def _apa_marks(text: str) -> list[str]:
+    """文内引用中「作者, 年份[后缀]」的年份部分，用于与列表双向对照。"""
+    return re.findall(r'\([^(),]+(?: & [^(),]+| et al\.)?, (' + APA_YEAR + r')\)', text)
+
+
+def _apa_list_years(text: str) -> list[str]:
+    """参考列表条目中的年份标签（含括号），用于与文内引用双向对照。"""
+    return re.findall(r'\((?:' + APA_YEAR + r')\)', text)
+
+
+def test_render_apa_body_cites_match_list_entries():
+    # R04 回归：旧实现把正文 [Pn] 改成 [1]/[2]，而 APA 列表没有编号，无法对应。
+    # 契约变更：原 test_render_apa_lines_carry_no_index_prefix 只断言列表条目且按
+    # 正文首现排序；修复后正文为作者—年份、列表按 APA 作者字母序，此为更强契约。
+    content = ('# 检索\n\n正文 [P2] 与 [P5]，重复 [P2]。\n\n'
+               '## 引用文献\n\n- [P2] Paper Two\n- [P5] Paper Five\n\n')
+    out = references.render_styled_markdown(content, PAPERS, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert '[1]' not in out and '[2]' not in out
+    assert '[P2]' not in body and '[P5]' not in body
+    assert body == '# 检索\n\n正文 (Einstein, 2020) 与 (张三, 2019)，重复 (Einstein, 2020)。'
+    # 列表按 APA 作者字母序（Einstein 在张三前），不按正文首现顺序；重复引用同标签。
     assert entries.splitlines() == [
-        '张三 (2019). Paper Five. arXiv: 1901.00001',
+        'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc',
+        '张三 (2019). Paper Five. arXiv: 1901.00001']
+    assert _apa_marks(body) == ['2020', '2019', '2020']
+    assert _apa_list_years(entries) == ['(2020)', '(2019)']
+
+
+def test_render_apa_in_text_author_counts():
+    papers = {
+        1: dict(title='One', authors=['Ada Smith'], year=2020, venue=None, volume=None,
+                issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Two', authors=['Ada Smith', 'Lee Jones'], year=2021, venue=None,
+                volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        3: dict(title='Three', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2022,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n单独 [P1]、两名 [P2]、多名 [P3]。\n\n## 引用文献\n\n'
+    body = references.render_styled_markdown(content, papers, 'apa').split('\n\n## 引用文献\n\n')[0]
+    assert '(Smith, 2020)' in body
+    assert '(Smith & Jones, 2021)' in body
+    assert '(Smith et al., 2022)' in body
+
+
+def test_render_apa_same_author_year_suffixes_shared_with_body():
+    papers = {
+        1: dict(title='Alpha Result', authors=['Ada Smith'], year=2020, venue=None,
+                volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Follow-up', authors=['Ada Smith'], year=2020, venue=None,
+                volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        3: dict(title='Earlier Work', authors=['Ada Smith'], year=2019, venue=None,
+                volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        4: dict(title='Undated Note', authors=['Ada Smith'], year=None, venue=None,
+                volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        5: dict(title='Undated Draft', authors=['Ada Smith'], year=None, venue=None,
+                volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n[P1] 与 [P2] 同作者同年，先 [P3]，未标年份 [P4] 与 [P5]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert '(Smith, 2020a)' in body and '(Smith, 2020b)' in body and '(Smith, 2019)' in body
+    assert '(Smith, n.d.-a)' in body and '(Smith, n.d.-b)' in body
+    # 列表顺序与后缀均按 APA：同作者年份升序、无年份最前；同年组内按题名分 a/b。
+    assert entries.splitlines() == [
+        'Smith, A. (n.d.-a). Undated Draft.',
+        'Smith, A. (n.d.-b). Undated Note.',
+        'Smith, A. (2019). Earlier Work.',
+        'Smith, A. (2020a). Alpha Result.',
+        'Smith, A. (2020b). Beta Follow-up.']
+    # 后缀一致性：正文与列表的年份标签一一对应，不是只看条目字符串。
+    assert _apa_marks(body) == ['2020a', '2020b', '2019', 'n.d.-b', 'n.d.-a']
+    assert _apa_list_years(entries) == [
+        '(n.d.-a)', '(n.d.-b)', '(2019)', '(2020a)', '(2020b)']
+
+
+def test_render_apa_multi_author_same_first_author_shares_suffixes():
+    papers = {
+        1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Pool', authors=['Ada Smith', 'Rae Lane', 'Pia Moore'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n两项 [P1] 与 [P2] 文内都缩写成 Smith et al.。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    # 文内形式相同（均为 Smith et al., 2020），按列表顺序共享 a/b 后缀才可一一对应。
+    assert '(Smith et al., 2020a)' in body and '(Smith et al., 2020b)' in body
+    assert entries.splitlines() == [
+        'Smith, A., Jones, L., & Kerr, M. (2020a). Alpha Meta.',
+        'Smith, A., Lane, R., & Moore, P. (2020b). Beta Pool.']
+    assert _apa_marks(body) == ['2020a', '2020b']
+
+
+def test_render_apa_missing_author_or_year_marked_not_fabricated():
+    papers = {
+        1: dict(title='Anonymous Report', authors=[], year=2021, venue=None, volume=None,
+                issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Dated Later', authors=['Bo Chu'], year=None, venue=None, volume=None,
+                issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n缺作者 [P1]，缺年份 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    # 缺项如实呈现：无作者用题名代替、无年份用 n.d.，不编造作者或年份。
+    assert '缺作者 (Anonymous Report, 2021)，缺年份 (Chu, n.d.)。' in body
+    assert entries.splitlines() == [
+        'Anonymous Report. (2021).',
+        'Chu, B. (n.d.). Dated Later.']
+
+
+def test_render_apa_keeps_unknown_marks_without_entries():
+    content = ('# 检索\n\n已收录 [P2]，未收录 [P999]。\n\n'
+               '## 引用文献\n\n- [P2] Paper Two\n- [P999] Ghost\n\n')
+    out = references.render_styled_markdown(content, PAPERS, 'apa')
+    # 未知来源局部保留可见标记：不消失、不编造条目、不使整份导出失败；
+    # 已收录引用正常解析，两者互不影响。
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == '# 检索\n\n已收录 (Einstein, 2020)，未收录 [P999]。'
+    assert entries.splitlines() == [
         'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc']
+    only_unknown = references.render_styled_markdown(
+        '# 检索\n\n只有 [P999] 一条。\n\n## 引用文献\n\n- [P999] Ghost\n\n', PAPERS, 'apa')
+    assert only_unknown == '# 检索\n\n只有 [P999] 一条。\n\n## 引用文献\n\n(正文未引用论文)'
 
 
 def test_render_inserts_section_before_materials_when_refs_missing():
@@ -210,7 +332,12 @@ def test_export_endpoint_styles(client):
     assert entries[1] == '[2] EINSTEIN A. Paper Two[J]. Venue, 2020, 12(3): 45-52. DOI: 10.1234/abc.'
     apa = client.get('/api/reviews/ref-export/export', params={'style': 'apa'})
     assert apa.status_code == 200
-    entries = apa.text.split('\n\n## 引用文献\n\n', 1)[1].split('\n\n## 材料范围\n\n')[0].splitlines()
-    assert entries[0] == '张三 (2019). Paper Five. arXiv: 1901.00001'
-    assert entries[1] == ('Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. '
-                          'https://doi.org/10.1234/abc')
+    apa_body, apa_rest = apa.text.split('\n\n## 引用文献\n\n', 1)
+    # 契约变更(R04)：APA 文内引用是作者—年份（可与列表对应），不再是数字编号；
+    # 列表按 APA 作者字母序（Einstein 在张三前），旧断言按首现排序正是缺陷。
+    assert f'[P{ids[0]}]' not in apa_body and '(张三, 2019)' in apa_body
+    assert '(Einstein, 2020)' in apa_body
+    entries = apa_rest.split('\n\n## 材料范围\n\n')[0].splitlines()
+    assert entries == [
+        'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc',
+        '张三 (2019). Paper Five. arXiv: 1901.00001']

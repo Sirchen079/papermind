@@ -101,6 +101,24 @@ def test_export_docx_apa_citations_differ_from_gbt(client):
     assert '[J]' in gbt_xml and 'DOI: 10.1234/abc.' in gbt_xml
 
 
+def test_export_docx_apa_body_cites_match_reference_paragraphs(client):
+    # R04 回归：APA 导出中正文引用与参考列表必须是同一套作者—年份，不得是数字编号。
+    seed_review(client)
+    resp, xml = fetch_docx(client, style='apa')
+    paras = paragraphs(resp.content)
+    by_text = {p.text: p for p in paras}
+    assert '[1]' not in xml and '[P' not in xml
+    assert by_text['正文先引 (张三, 2019) 再引 (Einstein, 2020)。'].text == \
+        '正文先引 (张三, 2019) 再引 (Einstein, 2020)。'
+    assert [(r.text, bool(r.bold)) for r in by_text['正文先引 (张三, 2019) 再引 (Einstein, 2020)。'].runs] == [
+        ('正文先引 (张三, 2019) ', False), ('再引', True), (' (Einstein, 2020)。', False)]
+    assert by_text['引用一句 (张三, 2019)。'].text == '引用一句 (张三, 2019)。'
+    # 列表按 APA 作者字母序；正文两个文内引用均可在列表中按「作者, 年份」唯一定位。
+    assert [p.text for p in paras if p.text.startswith(('Einstein,', '张三 ('))] == [
+        'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc',
+        '张三 (2019). Paper Five. 中文期刊. https://doi.org/10.5678/def']
+
+
 def test_export_docx_unknown_style_falls_back_to_gbt(client):
     seed_review(client)
     _, xml = fetch_docx(client, style='chicago')

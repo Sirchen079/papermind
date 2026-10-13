@@ -157,6 +157,88 @@ def _apa_reference(paper: dict) -> str:
     return ' '.join(segments)
 
 
+# APA 作者—年份文内引用（第 7 版规则）：1 名作者用姓氏，2 名用 A & B，
+# 3 名及以上用「A et al.」；无作者以题名代替；无年份记 n.d.（§8.17）。
+def _apa_surname(name: str) -> str:
+    """文内引用只用姓氏；复用 format_author 的解析（CJK 与单词名原样保留）。"""
+    return format_author(name, 'apa').split(',')[0].strip()
+
+
+def _apa_surnames(paper: dict) -> list[str]:
+    return [surname for surname in (_apa_surname(n) for n in paper.get('authors') or [])
+            if surname]
+
+
+_LEADING_ARTICLE = re.compile('^(?:a|an|the)\\s+', re.IGNORECASE)
+
+
+def _apa_title_key(paper: dict) -> str:
+    """题名排序键（小写、忽略冠词）；无作者条目按题名参与排序（§9.44）。"""
+    return _LEADING_ARTICLE.sub('', _text(paper.get('title')).lower())
+
+
+def _apa_year_key(paper: dict) -> tuple:
+    """同作者按年份升序，无年份在最前（§9.44）。"""
+    year = _text(paper.get('year'))
+    if not year:
+        return (0, 0, '')
+    try:
+        return (1, int(year), '')
+    except ValueError:
+        return (2, 0, year)
+
+
+def _apa_sort_key(paper: dict) -> tuple:
+    """列表顺序：全体作者姓氏字母序（单作者天然排前），随后年份、题名（§9.44–9.46）。
+
+    姓氏序列整体作为一个元素，避免不同作者人数的键在年份位上跨类型比较。
+    """
+    surnames = tuple(surname.lower() for surname in _apa_surnames(paper))
+    head = (surnames,) if surnames else ((_apa_title_key(paper),),)
+    return head + (_apa_year_key(paper), _apa_title_key(paper))
+
+
+def _apa_in_text_authors(paper: dict) -> str:
+    surnames = _apa_surnames(paper)
+    if not surnames:
+        return _text(paper.get('title'))
+    if len(surnames) == 1:
+        return surnames[0]
+    if len(surnames) == 2:
+        return f'{surnames[0]} & {surnames[1]}'
+    return f'{surnames[0]} et al.'
+
+
+def _apa_entries(ordered: list[int], papers: dict[int, dict]) -> tuple[dict[int, str], list[str]]:
+    """作者—年份映射：文内引用与列表条目共用同一套映射。
+
+    同一「文内作者部分 + 年份」组（含多名作者缩写成同一 et al. 形式的情况）按
+    列表顺序追加 a/b 后缀，组内顺序由题名（或第二作者）字母序决定（§9.47、8.19），
+    因此正文后缀与列表后缀天然一致。返回 (pid → 文内引用, APA 顺序的列表条目)。
+    """
+    rows = sorted(((_apa_sort_key(papers[pid]), pid) for pid in ordered))
+    sizes: dict[tuple[str, str], int] = {}
+    for _, pid in rows:
+        paper = papers[pid]
+        group = (_apa_in_text_authors(paper), _text(paper.get('year')) or 'n.d.')
+        sizes[group] = sizes.get(group, 0) + 1
+    seen: dict[tuple[str, str], int] = {}
+    marks: dict[int, str] = {}
+    lines = []
+    for _, pid in rows:
+        paper = papers[pid]
+        author = _apa_in_text_authors(paper)
+        year = _text(paper.get('year')) or 'n.d.'
+        nth = seen.get((author, year), 0)
+        seen[(author, year)] = nth + 1
+        if sizes[(author, year)] > 1:
+            letter = chr(ord('a') + nth)
+            year = f'{year}-{letter}' if year == 'n.d.' else f'{year}{letter}'
+        marks[pid] = f'({author}, {year})'
+        lines.append(format_reference(dict(paper, year=year), 'apa'))
+    return marks, lines
+
+
 def format_reference(paper: dict, style: str, index: int | None = None) -> str:
     """One entry; `index` only adds the GB/T `[n] ` prefix (APA ignores it)."""
     _check_style(style)
@@ -198,7 +280,11 @@ def papers_for(session: Session, ids: list[int]) -> dict[int, dict]:
 
 
 def render_styled_markdown(content: str, papers: dict[int, dict], style: str) -> str:
-    """Renumber body `[Pn]` marks by first appearance and rebuild the reference list."""
+    """Rewrite body `[Pn]` marks per style and rebuild the reference list.
+
+    GB/T 按正文首现顺序编号为 `[n]`；APA 改写为作者—年份文内引用，并与列表
+    共用同一套作者—年份—消歧映射。未收录的 `[Pn]` 原样保留、不产生条目。
+    """
     _check_style(style)
     body, marker, rest = content.partition(REF_HEADING)
     materials = ''
@@ -212,12 +298,16 @@ def render_styled_markdown(content: str, papers: dict[int, dict], style: str) ->
         if cut != -1:
             materials, body = body[cut:], body[:cut]
     ordered = [pid for pid in first_appearance_ids(body) if pid in papers]
-    numbers = {pid: n for n, pid in enumerate(ordered, start=1)}
-    for pid, n in numbers.items():
-        body = body.replace(f'[P{pid}]', f'[{n}]')
-    if ordered:
-        lines = [format_reference(papers[pid], style, index=numbers[pid]) for pid in ordered]
+    if style == 'apa':
+        marks, lines = _apa_entries(ordered, papers)
+        for pid, mark in marks.items():
+            body = body.replace(f'[P{pid}]', mark)
     else:
+        numbers = {pid: n for n, pid in enumerate(ordered, start=1)}
+        for pid, n in numbers.items():
+            body = body.replace(f'[P{pid}]', f'[{n}]')
+        lines = [format_reference(papers[pid], style, index=numbers[pid]) for pid in ordered]
+    if not ordered:
         lines = ['(正文未引用论文)']
     rendered = body.rstrip('\n') + '\n\n## 引用文献\n\n' + '\n'.join(lines)
     if materials:
