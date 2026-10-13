@@ -1,3 +1,4 @@
+import json
 import logging
 from io import BytesIO
 from pathlib import Path
@@ -10,8 +11,9 @@ from sqlmodel import Session, select
 
 from app.db.engine import get_engine
 from app.knowledge.recommend import OPENALEX
-from app.models import Model, Paper, Provider, Summary
+from app.models import Model, Paper, PaperDocument, Provider, Summary
 from app.providers.client import CompletionResult
+from test_documents import finish
 
 BIBTEX = "@article{x, title = {Paper One}, author = {Alice and Bob}, year = {2024}, abstract = {A study of paper things.}}"
 
@@ -519,21 +521,77 @@ ER  -
     assert body[0]["arxiv_id"] == "1706.03762"
 
 
-def test_pdf_upload(client):
+def _text_pdf(text: str) -> bytes:
     doc = fitz.open()
     page = doc.new_page()
-    page.insert_text((72, 72), "A test paper on transformers and attention. ")
+    page.insert_text((72, 72), text)
     buf = BytesIO()
     doc.save(buf)
     doc.close()
+    return buf.getvalue()
+
+
+def test_pdf_upload(client, env, monkeypatch):
+    """上传受理与解析完成是两个阶段：受理时保存+关联+任务入队可观察；转换完成
+    后才能验证解析输出与 confidence 契约；失败时有可观察的拒绝，不半保存。"""
+    from app.reading import documents
+    # 扣住转换线程池：任务入队但不执行，受理阶段断言完全确定、无竞态。
+    scheduled = []
+
+    class _QueuedOnly:
+        def submit(self, fn, *args):
+            scheduled.append((fn, args))
+
+    monkeypatch.setattr(documents, "_pool", _QueuedOnly())
+
+    data = _text_pdf("A test paper on transformers and attention. ")
     res = client.post(
         "/api/papers/pdf",
-        files={"file": ("t.pdf", buf.getvalue(), "application/pdf")},
+        files={"file": ("t.pdf", data, "application/pdf")},
     )
     assert res.status_code == 200
     body = res.json()
     assert body["source"] == "pdf"
-    assert body["parse_confidence"] is not None
+    pid = body["id"]
+    # 受理阶段：记录已保存、原文落在库根内且字节完整、转换任务已登记未执行。
+    with Session(get_engine()) as s:
+        paper = s.get(Paper, pid)
+        saved = Path(paper.pdf_path).resolve()
+        assert saved.is_relative_to((env / "data" / "pdfs").resolve())
+        assert saved.read_bytes() == data
+        assert paper.full_text is None  # 解析异步入队，受理 ≠ 解析完成
+        task = s.get(PaperDocument, pid)
+        assert task is not None and task.status == "queued"
+        assert json.loads(task.followup_json)["ingest"] is True
+    assert len(scheduled) == 1
+    # 完成阶段：执行入队的真实转换任务，验证解析输出与 confidence 契约。
+    run, args = scheduled[0]
+    run(*args)
+    state = finish(client, pid)
+    assert state["status"] == "ready" and state["has_markdown"]
+    detail = client.get(f"/api/papers/{pid}").json()
+    assert "transformers and attention" in detail["full_text"]
+    # auto 流水线发布的是页面派生文本，不标未校准的置信度——None 是契约值而非缺失。
+    assert detail["parse_confidence"] is None
+    # manual 模式保留原生文本层提取：同步给出解析结果和校准 confidence。
+    assert client.put("/api/settings/pdf_ingest_mode", json={"value": "manual"}).status_code == 200
+    manual = client.post(
+        "/api/papers/pdf",
+        files={"file": ("m.pdf", _text_pdf("Manual mode confidence source text. "), "application/pdf")},
+    )
+    assert manual.status_code == 200
+    assert manual.json()["parse_confidence"] is not None
+    manual_detail = client.get(f"/api/papers/{manual.json()['id']}").json()
+    assert "Manual mode confidence source text" in manual_detail["full_text"]
+    # 失败阶段：损坏文件被 422 明确拒绝，不产生半保存的记录。
+    total_before = client.get("/api/papers").json()["total"]
+    bad = client.post(
+        "/api/papers/pdf",
+        files={"file": ("broken.pdf", b"not a pdf", "application/pdf")},
+    )
+    assert bad.status_code == 422
+    assert "无法解析 PDF" in bad.json()["detail"]
+    assert client.get("/api/papers").json()["total"] == total_before
 
 
 def test_pdf_upload_keeps_saved_file_inside_pdf_dir(client, env):

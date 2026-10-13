@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import time
 
 from sqlmodel import Session, select
@@ -57,20 +58,47 @@ def test_concurrent_manual_models_keep_one_default(client):
     assert sum(row['role_default'] == 'chat' for row in client.get('/api/models').json()) == 1
 
 
-def test_concurrent_pdf_uploads_share_one_complete_original(client, tmp_path):
+def test_concurrent_pdf_uploads_share_one_complete_original(client, env):
+    # 原文必须落在隔离 settings.data_dir/pdfs 内：读取保护（app/reading/documents.py
+    # 的 paper_path）只认可该根下的路径，写到其他目录会在转换入队时被 422 拒绝。
     import fitz
     from app.ingestion.service import persist_fetched
     from app.ingestion.sources import FetchedPaper
+    from app.reading.documents import paper_path
+    pdf_dir = env / 'data' / 'pdfs'
     with fitz.open() as doc:
         doc.new_page().insert_text((72,72), 'Concurrent synthetic PDF')
         data = doc.tobytes()
     def ingest(i):
         with Session(get_engine()) as session:
-            return persist_fetched(session, FetchedPaper(source='pdf', title=f'renamed-{i}.pdf', pdf_bytes=data), tmp_path / 'pdfs').id
+            return persist_fetched(session, FetchedPaper(source='pdf', title=f'renamed-{i}.pdf', pdf_bytes=data), pdf_dir).id
     with ThreadPoolExecutor(max_workers=6) as pool:
         ids = list(pool.map(ingest, range(6)))
     assert len(set(ids)) == 1
-    assert [path.read_bytes() for path in (tmp_path / 'pdfs').glob('*.pdf')] == [data]
+    files = list(pdf_dir.glob('*.pdf'))
+    assert [path.read_bytes() for path in files] == [data]
+    with Session(get_engine()) as session:
+        stored_paper, resolved, _ = paper_path(session, ids[0])
+        assert Path(stored_paper.pdf_path).resolve() == files[0].resolve()
+        assert resolved == files[0].resolve()  # 读取保护接受该原文：可解析且位于库根内
+
+
+def test_document_start_rejects_original_outside_library_root(client, tmp_path):
+    """路径保护不放宽：库外原文在启动转换时仍被 422 拒绝，不允许读任意路径。"""
+    import fitz
+    outside = tmp_path / 'outside.pdf'
+    with fitz.open() as doc:
+        doc.new_page().insert_text((72, 72), 'outside library root')
+        outside.write_bytes(doc.tobytes())
+    with Session(get_engine()) as session:
+        paper = Paper(source='pdf', title='Outside root paper', pdf_path=str(outside))
+        session.add(paper)
+        session.commit()
+        session.refresh(paper)
+        pid = paper.id
+    res = client.post(f'/api/papers/{pid}/document', json={})
+    assert res.status_code == 422
+    assert '找不到 PDF 原文' in res.json()['detail']
 
 
 def test_concurrent_external_add_is_idempotent_and_queues_once(client):

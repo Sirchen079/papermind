@@ -16,7 +16,13 @@ from app.reports.pptx import report_pptx_bytes
 
 
 def _context():
-    return object(), Provider(id=1, name="qa", base_url="http://127.0.0.1", api_key_enc=""), "qa-model"
+    # pick_llm 的真实契约是 (ProviderClient, Provider, model_id)：生产路径会调用
+    # client._configured_effort(provider, model) 计算输出预算，因此替身必须是真实
+    # ProviderClient（沿用 test_input_cache/test_prompt_cache_optimization 的构造方式），
+    # 不能用裸 object()。run_agent 仍由各测试自行 mock，不会发生真实模型调用。
+    from app.providers.client import ProviderClient
+    client = ProviderClient(lambda: Session(get_engine()), None)
+    return client, Provider(id=1, name="qa", base_url="http://127.0.0.1", api_key_enc=""), "qa-model"
 
 
 @pytest.mark.parametrize("endpoint", ["messages", "messages/stream"])
