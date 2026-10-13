@@ -38,8 +38,8 @@ def seed_review(client):
     return ids, content
 
 
-def fetch_docx(client, **params):
-    resp = client.get('/api/reviews/docx-export/export', params={'kind': 'docx', **params})
+def fetch_docx(client, review_id='docx-export', **params):
+    resp = client.get(f'/api/reviews/{review_id}/export', params={'kind': 'docx', **params})
     assert resp.status_code == 200, resp.text
     assert resp.headers['content-type'] == DOCX_MEDIA
     assert resp.headers['content-disposition'] == DISPOSITION
@@ -134,3 +134,29 @@ def test_render_review_docx_cleans_control_characters(client):
         Session(get_engine()), 'docx-clean')))
     assert '标题 带控制符' in text
     assert '\x0c' not in text and '\x00' not in text
+
+
+def test_export_docx_keeps_sections_after_references_both_styles(client):
+    # R05 回归：文献节之后的附录不能被当成节内旧条目替换掉；附录在
+    # 材料范围之前时旧实现同样丢弃。导出不写回原稿。
+    with Session(get_engine()) as s:
+        row = Paper(source='manual', title='Paper Five', authors_json='["张三"]',
+                    year=2019, arxiv_id='1901.00001')
+        s.add(row);s.commit();pid = row.id
+        content = (f'正文先引 [P{pid}]。\n\n## 引用文献\n\n- [P{pid}] Paper Five\n\n'
+                   '## Appendix\n\nKEEP THIS TEXT\n\n## 材料范围\n\n本次范围 1 篇。\n')
+        s.add(LibraryReview(id='docx-appendix', question='附录保留', status='ready',
+                            content=content, version=1))
+        s.commit()
+    for style in ('gbt', 'apa'):
+        resp, xml = fetch_docx(client, review_id='docx-appendix', style=style)
+        paras = paragraphs(resp.content)
+        by_text = {p.text: p for p in paras}
+        assert by_text['Appendix'].style.name == 'Heading 2'
+        assert by_text['KEEP THIS TEXT'].text == 'KEEP THIS TEXT'
+        assert by_text['材料范围'].style.name == 'Heading 2'
+        # 附录仍位于参考列表之后、材料范围之前。
+        order = [p.text for p in paras]
+        assert order.index('Appendix') < order.index('材料范围')
+    with Session(get_engine()) as s:
+        assert s.get(LibraryReview, 'docx-appendix').content == content

@@ -283,6 +283,92 @@ def test_render_keeps_unknown_ids_without_entries():
     assert out == '# 检索\n\n只有 [P999] 一条。\n\n## 引用文献\n\n(正文未引用论文)'
 
 
+def test_render_keeps_appendix_after_references_both_styles():
+    # R05 回归：旧实现 partition('\n## 引用文献') 把文献节之后的全部内容当成
+    # 节内旧条目一并替换，附录从导出结果里消失；只允许替换文献节自身的内容范围。
+    content = ('正文 [P5]。\n\n'
+               '## 引用文献\n\n- [P5] old\n\n'
+               '## Appendix\n\nKEEP THIS TEXT\n')
+    gbt = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert gbt == ('正文 [1]。\n\n## 引用文献\n\n'
+                   '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n\n'
+                   '## Appendix\n\nKEEP THIS TEXT\n')
+    apa = references.render_styled_markdown(content, PAPERS, 'apa')
+    assert apa == ('正文 (张三, 2019)。\n\n## 引用文献\n\n'
+                   '张三 (2019). Paper Five. arXiv: 1901.00001\n\n'
+                   '## Appendix\n\nKEEP THIS TEXT\n')
+
+
+def test_render_preserves_multiple_sections_and_materials_after_references():
+    # R05 回归：文献节之后到「材料范围」之间的章节同样不能丢；材料范围
+    # 只在自己的位置保留，不再充当文献节的截断点。
+    content = ('正文 [P5] 与 [P2]。\n\n'
+               '## 引用文献\n\n- [P5] old\n- [P2] old\n\n'
+               '## 讨论\n\n讨论内容。\n\n'
+               '## Appendix\n\nKEEP THIS TEXT\n\n'
+               '## 材料范围\n\n本次范围 2 篇。\n')
+    out = references.render_styled_markdown(content, PAPERS, 'gbt')
+    head, rest = out.split('\n\n## 引用文献\n\n', 1)
+    entries, tail = rest.split('\n\n## 讨论\n\n', 1)
+    assert head == '正文 [1] 与 [2]。'
+    assert entries == ('[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n'
+                       '[2] EINSTEIN A. Paper Two[J]. Venue, 2020, 12(3): 45-52. DOI: 10.1234/abc.')
+    # 参考节之后的章节逐字保留（含原顺序）。
+    assert tail == ('讨论内容。\n\n## Appendix\n\nKEEP THIS TEXT\n\n'
+                    '## 材料范围\n\n本次范围 2 篇。\n')
+
+
+def test_render_stops_at_higher_level_heading_after_references():
+    # 同级或更高级标题都终止文献节：一级标题同样不能被当成节内容替换掉。
+    content = '正文 [P5]。\n\n## 引用文献\n\n- [P5] old\n\n# 新章\n\n保留。\n'
+    out = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert out == ('正文 [1]。\n\n## 引用文献\n\n'
+                   '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n\n'
+                   '# 新章\n\n保留。\n')
+
+
+def test_render_replaces_reference_section_with_internal_h3_headings():
+    # 参考节内部的三级标题属于节内容：随节一起替换，不会把节提前切断。
+    content = ('正文 [P2]。\n\n## 引用文献\n\n### 期刊\n\n- [P2] old\n\n'
+               '### 更多\n\n- 无\n\n## 材料范围\n\n本次范围 1 篇。\n')
+    out = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert out == ('正文 [1]。\n\n## 引用文献\n\n'
+                   '[1] EINSTEIN A. Paper Two[J]. Venue, 2020, 12(3): 45-52. DOI: 10.1234/abc.\n\n'
+                   '## 材料范围\n\n本次范围 1 篇。\n')
+
+
+def test_render_ignores_reference_heading_inside_code_fence_and_inline():
+    # R05 回归：代码围栏内的「## 引用文献」与行内同名文本不是文献节；
+    # 旧实现从围栏处截断，围栏闭合符与其后的正文全部丢失。
+    content = ('正文 [P5]。\n\n```markdown\n## 引用文献\n- [P999] 示例\n```\n\n'
+               '行内提到 ## 引用文献 不算节。\n')
+    out = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert '```markdown\n## 引用文献\n- [P999] 示例\n```' in out
+    assert '行内提到 ## 引用文献 不算节。' in out
+    # 末尾只追加一节真实文献节（围栏与行内同名文本都不构成 `\n\n## 引用文献\n\n`）。
+    assert out.count('\n\n## 引用文献\n\n') == 1
+    assert out.endswith('\n\n## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+
+
+def test_render_finds_real_section_after_earlier_fence_mention():
+    # 围栏里的同名标题在前时，真实文献节仍应被找到并替换。
+    content = ('```text\n## 引用文献\n```\n\n正文 [P5]。\n\n'
+               '## 引用文献\n\n- [P5] old\n\n## 材料范围\n\n本次范围 1 篇。\n')
+    out = references.render_styled_markdown(content, PAPERS, 'gbt')
+    head, rest = out.split('\n\n## 引用文献\n\n', 1)
+    entries, materials = rest.split('\n\n## 材料范围\n\n', 1)
+    assert head == '```text\n## 引用文献\n```\n\n正文 [1]。'
+    assert entries == '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.'
+    assert materials == '本次范围 1 篇。\n'
+
+
+def test_render_without_reference_section_appends_exactly_once():
+    out = references.render_styled_markdown('正文 [P5]。\n', PAPERS, 'gbt')
+    assert out == ('正文 [1]。\n\n## 引用文献\n\n'
+                   '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    assert out.count('## 引用文献') == 1
+
+
 def test_papers_for_loads_formatter_dicts(client):
     # client 提供按用例隔离且已建表的库：无夹具时本用例落在首次导入 app.config
     # 时冻结的默认库上，跟在任一 client 用例之后会命中空库（P5b 发现）。
@@ -341,3 +427,29 @@ def test_export_endpoint_styles(client):
     assert entries == [
         'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc',
         '张三 (2019). Paper Five. arXiv: 1901.00001']
+
+
+def test_export_endpoint_keeps_appendix_and_does_not_touch_source(client):
+    # R05 回归：文献节后的附录在两种风格的 Markdown 导出中都保留，
+    # 且导出不写回、不污染数据库原稿。
+    with Session(get_engine()) as s:
+        row = Paper(source='manual', title='Paper Five', authors_json='["张三"]',
+                    year=2019, arxiv_id='1901.00001')
+        s.add(row);s.commit();pid = row.id
+        content = (f'正文引 [P{pid}]。\n\n## 引用文献\n\n- [P{pid}] Paper Five\n\n'
+                   '## Appendix\n\nKEEP THIS TEXT\n')
+        s.add(LibraryReview(id='appendix-export', question='附录保留', status='ready',
+                            content=content, version=1))
+        s.commit()
+    gbt = client.get('/api/reviews/appendix-export/export', params={'style': 'gbt'})
+    assert gbt.status_code == 200
+    assert gbt.text == (f'正文引 [1]。\n\n## 引用文献\n\n'
+                        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n\n'
+                        '## Appendix\n\nKEEP THIS TEXT\n')
+    apa = client.get('/api/reviews/appendix-export/export', params={'style': 'apa'})
+    assert apa.status_code == 200
+    assert apa.text == (f'正文引 (张三, 2019)。\n\n## 引用文献\n\n'
+                        '张三 (2019). Paper Five. arXiv: 1901.00001\n\n'
+                        '## Appendix\n\nKEEP THIS TEXT\n')
+    with Session(get_engine()) as s:
+        assert s.get(LibraryReview, 'appendix-export').content == content

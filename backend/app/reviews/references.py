@@ -17,8 +17,10 @@ STYLES = ('gbt', 'apa')
 _REF_MARK = re.compile(r'\[P(\d+)\]')
 # 假名 / CJK 扩展 A / CJK 统一表意 / 兼容表意 / 谚文：命中即视为中日韩姓名原样保留。
 _CJK = re.compile('[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uac00-\\ud7af]')
-REF_HEADING = '\n## 引用文献'
 MATERIAL_HEADING = '\n## 材料范围'
+# 文献节标题行：整行恰为 `## 引用文献`（行中/围栏内同名文本不算）。
+_REF_HEADING_LINE = '## 引用文献'
+_FENCE_MARKS = ('```', '~~~')
 
 
 def _check_style(style: str) -> str:
@@ -279,19 +281,51 @@ def papers_for(session: Session, ids: list[int]) -> dict[int, dict]:
     }
 
 
+def _ref_section_bounds(content: str) -> tuple[int, int] | None:
+    """真实 `## 引用文献` 节的边界 `(标题行起点, 节终点)`，无文献节返回 None。
+
+    逐行扫描并跳过代码围栏（与 `app.rag.markdown_chunker`、`app.reports.pptx`
+    同一围栏习惯）：围栏内及行中出现的同名标题不是文献节。起点是标题行自身
+    （正文以其前一行为止，标题行由渲染统一重排）；终点是下一个同级/更高级
+    标题行（`#` 或 `##`）的行首，`###` 及更深层标题属于节内容，其后的章节
+    一律不属于文献节。
+    """
+    start = end = None
+    offset = 0
+    fence = ''
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if fence:
+            if stripped.startswith(fence):
+                fence = ''
+        elif stripped.startswith(_FENCE_MARKS):
+            fence = stripped[:3]
+        elif start is None:
+            if line.startswith('#') and line.rstrip() == _REF_HEADING_LINE:
+                start = offset
+        elif line.startswith(('# ', '## ')):
+            end = offset
+            break
+        offset += len(line)
+    if start is None:
+        return None
+    return start, len(content) if end is None else end
+
+
 def render_styled_markdown(content: str, papers: dict[int, dict], style: str) -> str:
     """Rewrite body `[Pn]` marks per style and rebuild the reference list.
 
     GB/T 按正文首现顺序编号为 `[n]`；APA 改写为作者—年份文内引用，并与列表
     共用同一套作者—年份—消歧映射。未收录的 `[Pn]` 原样保留、不产生条目。
+    只替换文献节自身的内容范围：其后的同级/更高级标题及全部非文献内容
+    （附录、讨论等）原样保留；「材料范围」节的既有拼接行为不变。
     """
     _check_style(style)
-    body, marker, rest = content.partition(REF_HEADING)
-    materials = ''
-    if marker:
-        cut = rest.find(MATERIAL_HEADING)
-        if cut != -1:
-            materials, rest = rest[cut:], rest[:cut]
+    bounds = _ref_section_bounds(content)
+    materials = tail = ''
+    if bounds is not None:
+        start, end = bounds
+        body, tail = content[:start], content[end:]
     else:
         body = content
         cut = body.find(MATERIAL_HEADING)
@@ -310,6 +344,8 @@ def render_styled_markdown(content: str, papers: dict[int, dict], style: str) ->
     if not ordered:
         lines = ['(正文未引用论文)']
     rendered = body.rstrip('\n') + '\n\n## 引用文献\n\n' + '\n'.join(lines)
+    if tail:
+        rendered += '\n\n' + tail
     if materials:
         rendered += '\n\n' + materials.lstrip('\n')
     return rendered
