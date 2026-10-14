@@ -233,9 +233,49 @@ def test_export_docx_rewrites_appendix_citations_both_styles(client):
         assert s.get(LibraryReview, 'docx-o01').content == content
 
 
+def test_export_docx_four_space_pseudo_close_and_code_ids_both_styles(client):
+    # S02/S03 回归（Markdown/DOCX 共享渲染路径）：四空格伪闭合不终止围栏，
+    # 代码示例与 Results 保留；只在代码中出现的 [P2] 不进书目、不占首现号。
+    with Session(get_engine()) as s:
+        rows = [Paper(source='manual', title='Paper Five', authors_json='["张三"]',
+                      year=2019, arxiv_id='1901.00001'),
+                Paper(source='manual', title='Paper Two', authors_json='["Albert Einstein"]',
+                      year=2020, venue='Venue', volume='12', issue='3', pages='45-52',
+                      doi='10.1234/abc')]
+        s.add_all(rows);s.commit();ids = [r.id for r in rows]
+        content = (f'Body [P{ids[0]}].\n\n```text\n    ```\n## 引用文献\n'
+                   f'Example [P{ids[1]}] is not a citation.\n```\n\n## Results\nKEEP RESULTS\n')
+        s.add(LibraryReview(id='docx-s02', question='围栏保护', status='ready',
+                            content=content, version=1))
+        s.commit()
+    entries = {'gbt': '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.',
+               'apa': '张三 (2019). Paper Five. arXiv: 1901.00001'}
+    for style in ('gbt', 'apa'):
+        resp, xml = fetch_docx(client, review_id='docx-s02', style=style)
+        texts = [p.text for p in paragraphs(resp.content)]
+        by_text = {p.text: p for p in paragraphs(resp.content)}
+        assert by_text['Results'].style.name == 'Heading 2'
+        assert 'KEEP RESULTS' in texts
+        # 围栏内的字面 [Pn] 不改写、不进书目（DOCX 有意按纯文本呈现代码块）。
+        assert f'Example [P{ids[1]}] is not a citation.' in texts
+        assert 'Paper Two' not in xml
+        body_mark = 'Body [1].' if style == 'gbt' else 'Body (张三, 2019).'
+        assert body_mark in texts
+        # 围栏内的字面标题与追加的真实文献节各渲染一个「引用文献」。
+        assert texts.count('引用文献') == 2
+        assert entries[style] in texts
+        # 原有内容在前，追加的文献节在后（顺序保留）。
+        assert texts.index('KEEP RESULTS') < texts.index(entries[style])
+    with Session(get_engine()) as s:
+        assert s.get(LibraryReview, 'docx-s02').content == content
+
+
 def test_export_docx_apa_et_al_collision_expands_authors_not_suffixes(client):
     # F05（W03 回归，Markdown/DOCX 共享渲染路径）：不同作者组缩写碰撞在 DOCX
     # 中同样展开后续姓氏消歧，正文与列表都不加年份字母。
+    # S04 校正（第三轮）：三作者组展开两人后只余一人，et al. 至少替代两人
+    # （Purdue OWL），必须列全——旧预期 (Smith, Jones, et al., 2020) 违反该条，
+    # 按规范改为 (Smith, Jones, & Kerr, 2020)；覆盖保留，仅校正期望值。
     with Session(get_engine()) as s:
         rows = [Paper(source='manual', title='Alpha Meta',
                       authors_json='["Ada Smith", "Lee Jones", "Mo Kerr"]', year=2020),
@@ -247,10 +287,10 @@ def test_export_docx_apa_et_al_collision_expands_authors_not_suffixes(client):
                             content=content, version=1))
         s.commit()
     resp, xml = fetch_docx(client, review_id='docx-f05', style='apa')
-    assert '(Smith, Jones, et al., 2020)' in xml and '(Smith, Lane, et al., 2020)' in xml
     assert '2020a' not in xml and '2020b' not in xml
-    assert 'Smith et al.' not in xml
-    # 含 & 的条目在 document.xml 里被转义，用段落文本断言列表内容。
+    assert 'et al.' not in xml
+    # 含 & 的正文引用与条目在 document.xml 里被转义，用段落文本断言内容。
     texts = [p.text for p in paragraphs(resp.content)]
+    assert '两项 (Smith, Jones, & Kerr, 2020) 与 (Smith, Lane, & Moore, 2020)。' in texts
     assert 'Smith, A., Jones, L., & Kerr, M. (2020). Alpha Meta.' in texts
     assert 'Smith, A., Lane, R., & Moore, P. (2020). Beta Pool.' in texts

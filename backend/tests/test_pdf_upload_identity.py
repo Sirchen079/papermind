@@ -565,3 +565,212 @@ def test_unconfirmed_upload_same_bytes_still_dedups(client, monkeypatch):
     assert second.status_code == 200
     assert second.json()["id"] == first["id"]
     assert total_papers(client) == 1
+
+
+# --- 正文提及被引题名+DOI 不得自证身份、不得误挂 PDF -------------------------
+
+BASELINE_BIBTEX = ("@article{baseline, title={Established Baseline Work}, "
+                   "author={B. Beta}, year={2018}, doi={10.1234/body-title}}")
+RELATED_BIBTEX = ("@article{related, title={Related Earlier Study}, "
+                  "author={R. Researcher}, year={2017}, doi={10.1234/body-ref}}")
+
+INTRO_MENTION_PAGES = [
+    ["Actual Independent New Study", "Introduction",
+     "We compare against Established Baseline Work (doi:10.1234/body-title).",
+     "Our contribution is a different method."],
+]
+
+
+def test_intro_cited_title_and_doi_saves_independent_unconfirmed(client, monkeypatch):
+    # 正文提及被引题名+DOI（无 metadata title，mock Crossref）：
+    # 新 PDF 不得挂到被引记录下，旧记录与磁盘字节保持不变。
+    baseline = client.post("/api/papers/bibtex", json={"bibtex": BASELINE_BIBTEX}).json()[0]
+    mock_crossref_map(monkeypatch, {
+        "10.1234/body-title": {"title": "Established Baseline Work", "year": 2018},
+    })
+    raw = make_pages_pdf(INTRO_MENTION_PAGES)
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != baseline["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unconfirmed"
+    assert body["identity"]["reason"] == "unverified_title"
+    assert total_papers(client) == 2
+    baseline_now = get_paper(client, baseline["id"])
+    assert baseline_now["title"] == "Established Baseline Work"
+    assert baseline_now["doi"] == "10.1234/body-title"
+    assert baseline_now["has_pdf"] is False
+    with Session(get_engine()) as session:
+        fresh = session.get(Paper, body["id"])
+        assert fresh.doi is None
+        assert Path(fresh.pdf_path).read_bytes() == raw
+
+
+def test_reference_doi_with_body_mention_saves_independent_unconfirmed(client, monkeypatch):
+    # 正文句提及被引题名、DOI 印在参考文献节（mock Crossref）：
+    # 新文档独立保存 unconfirmed，被引记录原样不动。
+    related = client.post("/api/papers/bibtex", json={"bibtex": RELATED_BIBTEX}).json()[0]
+    mock_crossref_map(monkeypatch, {
+        "10.1234/body-ref": {"title": "Related Earlier Study", "year": 2017},
+    })
+    raw = make_pages_pdf([
+        ["Actual Independent New Study", "Introduction",
+         "We extend Related Earlier Study with a new dataset."],
+        ["References", "A. Author. Related Earlier Study. doi:10.1234/body-ref"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != related["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unconfirmed"
+    assert body["identity"]["reason"] == "unverified_title"
+    assert total_papers(client) == 2
+    related_now = get_paper(client, related["id"])
+    assert related_now["title"] == "Related Earlier Study"
+    assert related_now["doi"] == "10.1234/body-ref"
+    assert related_now["has_pdf"] is False
+    with Session(get_engine()) as session:
+        fresh = session.get(Paper, body["id"])
+        assert fresh.doi is None
+        assert Path(fresh.pdf_path).read_bytes() == raw
+
+
+def test_intro_cited_title_does_not_attach_to_record_with_pdf(client, monkeypatch):
+    # 已有 PDF 的被引记录保护：正文提及其题名+DOI 的新文档不得并入，
+    # 被引记录的 PDF 字节保持不动，新文档独立保存。
+    client.post("/api/papers/bibtex", json={"bibtex": BASELINE_BIBTEX})
+    mock_crossref_map(monkeypatch, {
+        "10.1234/body-title": {"title": "Established Baseline Work", "year": 2018},
+    })
+    cited_pdf = make_pdf("Established Baseline Work\nBody. doi:10.1234/body-title")
+    first = upload(client, cited_pdf, "baseline.pdf").json()
+    assert first["has_pdf"] is True
+    raw = make_pages_pdf(INTRO_MENTION_PAGES)
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != first["id"]
+    assert body["identity_status"] == "unconfirmed"
+    assert total_papers(client) == 2
+    with Session(get_engine()) as session:
+        kept = Path(session.get(Paper, first["id"]).pdf_path).read_bytes()
+    assert kept == cited_pdf
+
+
+def test_head_standalone_cited_title_line_saves_independent_unconfirmed(client, monkeypatch):
+    # 被引题名单独成行、位于首页头部第 3 行，仍只是文献提及；
+    # 自身题名只认首个非空内容行起的完整前缀，正文开始后不能跳行匹配。
+    related = client.post("/api/papers/bibtex", json={"bibtex": RELATED_BIBTEX}).json()[0]
+    mock_crossref_map(monkeypatch, {
+        "10.1234/body-ref": {"title": "Related Earlier Study", "year": 2017},
+    })
+    raw = make_pages_pdf([
+        ["Actual New Study", "Introduction", "Related Earlier Study",
+         "We extend this work with a new dataset. doi:10.1234/body-ref"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != related["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unconfirmed"
+    assert body["identity"]["reason"] == "unverified_title"
+    assert total_papers(client) == 2
+    assert get_paper(client, related["id"])["has_pdf"] is False
+    with Session(get_engine()) as session:
+        assert Path(session.get(Paper, body["id"]).pdf_path).read_bytes() == raw
+
+
+def test_metadata_doi_with_cited_arxiv_hit_saves_independent_unconfirmed(client, monkeypatch):
+    # 查询命中的是正文被引 arXiv id（body 来源）：即使 metadata subject 携带
+    # 另一个 DOI，也必须过标题核验，不得把上传挂到被引 arXiv 记录下。
+    old = client.post("/api/papers/manual", json={
+        "title": "Attention Old Work", "arxiv_id": "1706.03762"}).json()
+    def cited_hit(arxiv_id):
+        return FetchedPaper(source="arxiv", source_ref=arxiv_id,
+                            title="Attention Old Work", authors=["D. Dao"],
+                            arxiv_id=arxiv_id), {
+            "status": "retrieved", "source": "arxiv", "identifier": arxiv_id}
+    monkeypatch.setattr("app.ingestion.sources.fetch_arxiv_metadata", cited_hit)
+    monkeypatch.setattr("app.ingestion.sources.fetch_crossref",
+                        lambda doi: pytest.fail("crossref must not run when arXiv verified"))
+    raw = make_pdf("Actual Independent New Study\nIntroduction\n"
+                   "We build on arXiv:1706.03762.",
+                   meta={"subject": "doi:10.1234/meta"})
+    res = upload(client, raw, "ours.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != old["id"]
+    assert body["doi"] is None
+    assert body["arxiv_id"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unconfirmed"
+    assert body["identity"]["reason"] == "unverified_title"
+    assert total_papers(client) == 2
+    assert get_paper(client, old["id"])["has_pdf"] is False
+    with Session(get_engine()) as session:
+        assert Path(session.get(Paper, body["id"]).pdf_path).read_bytes() == raw
+
+
+def test_metadata_doi_query_confirms_despite_cited_arxiv_outage(client, monkeypatch):
+    # 查询成功的是 metadata 来源 DOI：其自身声明成立，不被另一个查询失败的
+    # 正文被引 arXiv 候选拖入未确认；被引 arXiv id 也不得随行写入。
+    record = client.post("/api/papers/bibtex", json={"bibtex": (
+        "@article{meta, title={Metadata Declared Work}, author={M. Meta}, "
+        "year={2021}, doi={10.1234/meta}}")}).json()[0]
+    def outage(arxiv_id):
+        return None, {"status": "unavailable", "source": "arxiv",
+                      "identifier": arxiv_id, "error_type": "TimeoutError"}
+    monkeypatch.setattr("app.ingestion.sources.fetch_arxiv_metadata", outage)
+    mock_crossref_map(monkeypatch, {
+        "10.1234/meta": {"title": "Metadata Declared Work", "year": 2021},
+    })
+    raw = make_pdf("Actual Independent New Study\nIntroduction\n"
+                   "We build on arXiv:1706.03762.",
+                   meta={"subject": "doi:10.1234/meta"})
+    res = upload(client, raw, "ours.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] == record["id"]
+    assert body["title"] == "Metadata Declared Work"
+    assert body["doi"] == "10.1234/meta"
+    assert body["arxiv_id"] is None
+    assert body["identity"]["status"] == "retrieved"
+    assert body["identity"]["source"] == "crossref"
+    assert body["identity_status"] is None
+    assert total_papers(client) == 1
+
+
+def test_arxiv_confirmation_does_not_publish_unverified_body_doi(client, monkeypatch):
+    # 标识边界：arXiv 自身声明确认后，正文里被引论文的 DOI 不得随行写入记录、
+    # 参与去重把上传挂到被引论文下；只有检索记录自身携带的标识可发布。
+    cited = client.post("/api/papers/bibtex", json={"bibtex": (
+        "@article{cited, title={Cited Earlier Work}, author={C. Cited}, "
+        "year={2019}, doi={10.1234/cited-doi}}")}).json()[0]
+    def fetch_arxiv(arxiv_id, client=None, download_pdf=True):
+        assert not download_pdf
+        return FetchedPaper(source="arxiv", source_ref=arxiv_id,
+                            title="Actual New Paper", authors=["A. Author"],
+                            arxiv_id=arxiv_id)
+    monkeypatch.setattr("app.ingestion.sources.fetch_arxiv", fetch_arxiv)
+    monkeypatch.setattr("app.ingestion.sources.fetch_crossref",
+                        lambda doi: pytest.fail("crossref must not run when arXiv verified"))
+    raw = make_pages_pdf([
+        ["Actual New Paper", "We build on doi:10.1234/cited-doi.",
+         "arXiv:2601.00001v1"],
+    ])
+    res = upload(client, raw, "mixed.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != cited["id"]
+    assert body["title"] == "Actual New Paper"
+    assert body["arxiv_id"] == "2601.00001v1"
+    assert body["doi"] is None
+    assert body["identity"]["status"] == "retrieved"
+    assert get_paper(client, cited["id"])["has_pdf"] is False
+    assert total_papers(client) == 2

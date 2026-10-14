@@ -46,6 +46,10 @@ _REFERENCES_HEADING_RE = re.compile(
     r'参考文献|參考文獻|文献)\s*[:：]?\s*$',
     re.IGNORECASE | re.MULTILINE,
 )
+# How many leading non-empty lines may jointly form the document's own title
+# when no metadata title exists; matching never starts later than the first
+# non-empty content line.
+_TITLE_MAX_LINES = 4
 # Candidate provenance, strongest first: publisher metadata > document body >
 # reference list. Identity usable for auto-merge is decided from this later
 # (see verify_upload_identity); extraction only reports what it saw.
@@ -241,34 +245,56 @@ def _self_declared_text(text: str) -> str:
     return text[:heading.start()] if heading else (text or '')
 
 
-def _merge_conflict(candidate: dict, verified) -> str | None:
+def _title_area_match(text: str, verified_norm: str) -> bool:
+    """True when the verified title is the document's own leading title block:
+    the first non-empty line of the pre-reference text, optionally joined with
+    the following lines up to :data:`_TITLE_MAX_LINES`, normalizes exactly to
+    it. Anything else — a title deeper in the page, or in unrecognized layouts
+    — returns False and degrades to 'unverified_title', never to a merge.
+    """
+    if not verified_norm:
+        return False
+    lines: list[str] = []
+    for raw in _self_declared_text(text).splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lines.append(line)
+        if len(lines) >= _TITLE_MAX_LINES:
+            break
+    joined = ''
+    for line in lines:
+        joined = normalize_title(f'{joined} {line}')
+        if joined == verified_norm:
+            return True
+        if len(joined) > len(verified_norm):
+            break
+    return False
+
+
+def _merge_conflict(candidate: dict, verified,
+                    queried_kind: str | None = None) -> str | None:
     """``None`` when the retrieved metadata may auto-merge, else a reason code.
 
-    A lookup hit only proves the record exists, not that it matches this
-    upload. Merging additionally requires self-declared evidence: the
-    candidate itself comes from the PDF metadata, the document's own metadata
-    title equals the retrieved title, or the retrieved title appears in the
-    body BEFORE the reference list. A title found only inside the reference
-    list is the cited work describing itself, and a single body candidate is
-    never exempt from this check (W01/F01).
+    The gate is driven by the provenance of the identifier actually queried:
+    a ``metadata``-kind candidate (the PDF's own metadata) is self-declared
+    and needs no further evidence; a body/reference candidate additionally
+    needs the document's own metadata title to equal the retrieved title, or
+    the retrieved title to be the leading title block of the first page. A
+    title merely mentioned in the body, or printed only in the reference
+    list, is a citation — not this document's name.
     """
     verified_title = (verified.title or '').strip()
     pdf_title = (candidate.get('title') or '').strip()
     if pdf_title and verified_title and \
             normalize_title(pdf_title) != normalize_title(verified_title):
         return 'title_conflict'
-    candidates = candidate.get('doi_candidates', []) + candidate.get('arxiv_candidates', [])
-    values = {c.get('doi') or c.get('arxiv_id') for c in candidates}
-    selected = candidate.get('doi') or candidate.get('arxiv_id')
-    selected_kind = (candidate.get('doi_kind') if candidate.get('doi')
-                     else candidate.get('arxiv_kind'))
-    ambiguous = len(values) > 1
-    if selected and (selected_kind != 'metadata' or ambiguous):
+    if queried_kind != 'metadata':
         verified_norm = normalize_title(verified_title)
         pdf_match = bool(pdf_title and verified_title
                          and normalize_title(pdf_title) == verified_norm)
-        body_norm = normalize_title(_self_declared_text(candidate.get('text') or ''))
-        if not pdf_match and (not verified_norm or verified_norm not in body_norm):
+        if not pdf_match and not _title_area_match(candidate.get('text') or '',
+                                                   verified_norm):
             return 'unverified_title'
     return None
 
@@ -306,14 +332,18 @@ def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dic
     confirmed = False
     try:
         verified = None
+        queried_kind = None
         if fields['arxiv_id']:
             from app.ingestion.sources import fetch_arxiv_metadata
             verified, receipt = fetch_arxiv_metadata(fields['arxiv_id'])
+            queried_kind = candidate.get('arxiv_kind')
         if verified is None and fields['doi']:
             from app.ingestion.sources import lookup_doi_metadata
             verified, receipt = lookup_doi_metadata(fields['doi'])
+            if verified is not None:
+                queried_kind = candidate.get('doi_kind')
         if verified is not None:
-            conflict = _merge_conflict(candidate, verified)
+            conflict = _merge_conflict(candidate, verified, queried_kind)
             if conflict is not None:
                 # The record the lookup hit is not provably this document:
                 # keep the PDF's own values, withhold the contested identifiers
@@ -328,11 +358,16 @@ def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dic
                 fields['title'] = verified.title or fields['title']
                 if verified.authors:
                     fields['authors'] = [str(author) for author in verified.authors]
-                for field in ('abstract', 'year', 'venue', 'volume', 'issue', 'pages',
-                              'doi', 'arxiv_id'):
+                for field in ('abstract', 'year', 'venue', 'volume', 'issue', 'pages'):
                     value = getattr(verified, field)
                     if value:
                         fields[field] = value
+                # Only the verified record's own identifiers may be published:
+                # the lookup confirmed one identifier, and any further candidate
+                # seen in the text (e.g. a cited work's DOI) stays unverified and
+                # must not ride along into dedup or the saved record.
+                fields['doi'] = getattr(verified, 'doi', None) or None
+                fields['arxiv_id'] = getattr(verified, 'arxiv_id', None) or None
     except Exception as exc:  # noqa: BLE001 — verification must never block an upload
         receipt = {**receipt, 'status': 'unavailable', 'error_type': type(exc).__name__}
     if not confirmed:

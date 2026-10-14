@@ -239,6 +239,10 @@ def test_render_apa_et_al_collision_expands_authors_not_year_suffixes():
     # 组须展开足够多后续姓氏消歧。新契约更强：文内展开、正文与列表全年份无 a/b、
     # 列表按作者字母序。修复前实际输出为 (Smith et al., 2020a)/(Smith et al.,
     # 2020b) 且两条列表条目带 2020a/2020b。
+    # S04 校正（第三轮）：旧预期 (Smith, Jones, et al., 2020) 让 et al. 只替代
+    # 剩下的一名作者，违反 Purdue OWL「et al. should always be a substitute for
+    # more than one name」——展开两人后只余一人时必须列全，按规范改为
+    # (Smith, Jones, & Kerr, 2020)；覆盖保留，仅按规范校正期望值。
     papers = {
         1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
                 venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
@@ -248,8 +252,8 @@ def test_render_apa_et_al_collision_expands_authors_not_year_suffixes():
     content = '# 综述\n\n不同作者组两项 [P1] 与 [P2]，默认缩写形式相同。\n\n## 引用文献\n\n'
     out = references.render_styled_markdown(content, papers, 'apa')
     body, entries = out.split('\n\n## 引用文献\n\n', 1)
-    assert '(Smith, Jones, et al., 2020)' in body and '(Smith, Lane, et al., 2020)' in body
-    assert 'Smith et al.' not in body
+    assert '(Smith, Jones, & Kerr, 2020)' in body and '(Smith, Lane, & Moore, 2020)' in body
+    assert 'et al.' not in body
     assert '2020a' not in out and '2020b' not in out
     # 列表排序：姓氏序列 ('smith','jones','kerr') < ('smith','lane','moore')。
     assert entries.splitlines() == [
@@ -300,6 +304,8 @@ def test_render_apa_same_surname_same_initials_fall_back_to_given_names():
 def test_render_apa_mixed_group_collision_keeps_letters_within_same_group():
     # F05 组合（W03 回归）：同一完整作者组两项同年（保留 a/b）与另一组同年
     # 缩写碰撞（展开消歧、无字母）同时出现，互不干扰。
+    # S04 校正（第三轮）：展开后只余一名作者时须列全（et al. 至少替代两人，
+    # Purdue OWL），故 Smith, Jones, et al. 改为列全三人 Smith, Jones, & Kerr。
     papers = {
         1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
                 venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
@@ -311,12 +317,158 @@ def test_render_apa_mixed_group_collision_keeps_letters_within_same_group():
     content = '# 综述\n\n[P1]、[P2] 同组，[P3] 另一组。\n\n## 引用文献\n\n'
     out = references.render_styled_markdown(content, papers, 'apa')
     body, entries = out.split('\n\n## 引用文献\n\n', 1)
-    assert '(Smith, Jones, et al., 2020a)' in body and '(Smith, Jones, et al., 2020b)' in body
-    assert '(Smith, Lane, et al., 2020)' in body
+    assert '(Smith, Jones, & Kerr, 2020a)' in body and '(Smith, Jones, & Kerr, 2020b)' in body
+    assert '(Smith, Lane, & Moore, 2020)' in body
     assert entries.splitlines() == [
         'Smith, A., Jones, L., & Kerr, M. (2020a). Alpha Meta.',
         'Smith, A., Jones, L., & Kerr, M. (2020b). Beta Meta.',
         'Smith, A., Lane, R., & Moore, P. (2020). Gamma Pool.']
+
+
+def test_render_apa_expansion_lists_all_when_et_al_would_replace_one():
+    # S04 回归：et al. 至少要替代两名作者（Purdue OWL「Since et al. is plural,
+    # it should always be a substitute for more than one name」）。三作者组展开
+    # 两人后只余一人，必须列全三人不写 et al.；四作者组展开两人仍余两人，可以
+    # 继续用 et al.。修复前输出 (Smith, Jones, et al., 2024) 等错误样式。
+    papers = {
+        1: dict(title='Alpha Meta', authors=['Alice Smith', 'Bob Jones', 'Carol Doe'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+        2: dict(title='Beta Pool', authors=['Alice Smith', 'David Brown', 'Emma Roe'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+        3: dict(title='Gamma Study', authors=['Alice Smith', 'Bob Jones', 'Carol Doe', 'Dan Eve'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+        4: dict(title='Delta Study', authors=['Alice Smith', 'Bob Brown', 'Carol Roe', 'Dan Fox'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n三作者 [P1] 与 [P2]，四作者 [P3] 与 [P4]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == ('# 综述\n\n三作者 (Smith, Jones, & Doe, 2024) 与 '
+                    '(Smith, Brown, & Roe, 2024)，'
+                    '四作者 (Smith, Jones, et al., 2024) 与 (Smith, Brown, et al., 2024)。')
+    assert '2024a' not in out and '2024b' not in out
+    # 列表排序：姓氏序列 ('smith','brown',...) < ('smith','jones',...)，同序列
+    # 短者在前；列表条目照 APA 一贯列全作者，不受文内消歧影响。
+    assert entries.splitlines() == [
+        'Smith, A., Brown, D., & Roe, E. (2024). Beta Pool.',
+        'Smith, A., Brown, B., Roe, C., & Fox, D. (2024). Delta Study.',
+        'Smith, A., Jones, B., & Doe, C. (2024). Alpha Meta.',
+        'Smith, A., Jones, B., Doe, C., & Eve, D. (2024). Gamma Study.']
+
+
+def test_render_apa_same_surname_initials_across_years():
+    # S04 补充回归：同姓不同人规则不受年份限制——Purdue OWL 示例 (E. Johnson,
+    # 2001; L. Johnson, 1998) 本身就是不同年份。John Smith 2023 与 Amy Smith
+    # 2024 同样要加名首字母；旧实现按「默认形式 + 相同年份」分组，跨年份时不
+    # 消歧，错误输出 (Smith, 2023)/(Smith, 2024)。
+    papers = {
+        1: dict(title='Alpha Study', authors=['John Smith'], year=2023,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Study', authors=['Amy Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n跨年份同姓 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == '# 综述\n\n跨年份同姓 (J. Smith, 2023) 与 (A. Smith, 2024)。'
+    assert '2023a' not in out and '2024b' not in out
+    assert entries.splitlines() == [
+        'Smith, J. (2023). Alpha Study.',
+        'Smith, A. (2024). Beta Study.']
+
+
+def test_render_apa_same_surname_initials_with_different_default_forms():
+    # S04 补充（第三轮预审）：同姓不同首作者的全局规则也不受默认显示形式限制
+    # ——John Smith 单作者（Smith）与 Amy Smith+Lee Jones 双作者（Smith &
+    # Jones）默认形式不同、年份不同，首作者仍是同姓不同人，都要加名首字母。
+    papers = {
+        1: dict(title='Alpha Study', authors=['John Smith'], year=2023,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Study', authors=['Amy Smith', 'Lee Jones'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n同姓跨形式 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == '# 综述\n\n同姓跨形式 (J. Smith, 2023) 与 (A. Smith & Jones, 2024)。'
+    assert '2023a' not in out and '2024b' not in out
+    assert entries.splitlines() == [
+        'Smith, J. (2023). Alpha Study.',
+        'Smith, A., & Jones, L. (2024). Beta Study.']
+
+
+def test_render_apa_same_first_author_different_years_keeps_et_al():
+    # S04 补充（第三轮预审）：同首作者、不同作者组、不同年份——年份本身已可
+    # 区分，不属于 §8.18 的同年缩写碰撞，不展开作者（展开反而造出多余的全名
+    # 列表）；保持正常 et al.，也不加年份字母。
+    papers = {
+        1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2023,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Pool', authors=['Ada Smith', 'Rae Lane', 'Pia Moore'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n同首作者跨年 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == '# 综述\n\n同首作者跨年 (Smith et al., 2023) 与 (Smith et al., 2024)。'
+    assert '2023a' not in out and '2024b' not in out
+    assert entries.splitlines() == [
+        'Smith, A., Jones, L., & Kerr, M. (2023). Alpha Meta.',
+        'Smith, A., Lane, R., & Moore, P. (2024). Beta Pool.']
+
+
+def test_render_apa_subgroups_expand_alongside_same_surname_person():
+    # 复审轮1回归：同年同形式碰撞组内既有同首作者的不同组、又有同姓另一人时，
+    # 不能因首作者身份不一致而放弃展开——按首作者身份分子组各自展开，再与全局
+    # 首字母样式组合：Alice 的两组列全区分，John 走 (J. Smith et al.)；三篇形式
+    # 互异、不加年份字母。修复前前两篇都是 (A. Smith et al., 2024) 且无 a/b
+    # （完整作者组不同不字母），正文引用无法对应到具体条目。
+    papers = {
+        1: dict(title='Alpha Meta', authors=['Alice Smith', 'Bob Jones', 'Carol Doe'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+        2: dict(title='Beta Pool', authors=['Alice Smith', 'David Brown', 'Emma Roe'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+        3: dict(title='Gamma Study', authors=['John Smith', 'Zoe West', 'Tim East'],
+                year=2024, venue=None, volume=None, issue=None, pages=None,
+                doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n同首作者 [P1] 与 [P2]，同姓另一人 [P3]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == ('# 综述\n\n同首作者 (A. Smith, Jones, & Doe, 2024) 与 '
+                    '(A. Smith, Brown, & Roe, 2024)，同姓另一人 (J. Smith et al., 2024)。')
+    assert '2024a' not in out and '2024b' not in out
+    # 列表排序：姓氏序列 ('smith','brown',...) < ('smith','jones',...) < ('smith','west',...)。
+    assert entries.splitlines() == [
+        'Smith, A., Brown, D., & Roe, E. (2024). Beta Pool.',
+        'Smith, A., Jones, B., & Doe, C. (2024). Alpha Meta.',
+        'Smith, J., West, Z., & East, T. (2024). Gamma Study.']
+
+
+def test_render_apa_same_surname_initials_sequences_differ():
+    # 复审轮1回归：首字母序列不同即可区分——John A Smith 与 John B Smith 用
+    # (J. A. Smith, 2024)/(J. B. Smith, 2024)，不必退到全名；首字母序列完全
+    # 相同（Jane/June Smith）才是全名回退（见上一用例）。
+    papers = {
+        1: dict(title='Alpha Study', authors=['John A Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Study', authors=['John B Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n中名不同 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert body == '# 综述\n\n中名不同 (J. A. Smith, 2024) 与 (J. B. Smith, 2024)。'
+    assert '2024a' not in out and '2024b' not in out
+    assert entries.splitlines() == [
+        'Smith, J. A. (2024). Alpha Study.',
+        'Smith, J. B. (2024). Beta Study.']
 
 
 def test_render_apa_missing_author_or_year_marked_not_fabricated():
@@ -557,6 +709,98 @@ def test_render_never_touches_marks_inside_code_fences_or_unknown_marks():
     assert '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.' in entries
     assert '[2] EINSTEIN A. Paper Two' in entries
     assert tail == 'Extra evidence [2].\n\n```text\nliteral [P999] stays\n```\n'
+
+
+def test_render_four_space_pseudo_close_keeps_code_and_results_both_styles():
+    # S02 回归：四空格缩进的 ``` 不是闭合围栏（CommonMark 0.31.2：闭合围栏
+    # 最多 3 空格缩进），其后整个「## 引用文献」仍是代码内容；旧实现剥掉全部
+    # 缩进后误闭合，把代码示例连同 Results 当文献节整体替换掉。
+    content = ('Body [P5].\n\n```text\n    ```\n## 引用文献\nKEEP CODE EXAMPLE\n'
+               '```\n\n## Results\nKEEP RESULTS\n')
+    kept = '```text\n    ```\n## 引用文献\nKEEP CODE EXAMPLE\n```\n\n## Results\nKEEP RESULTS'
+    gbt = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert gbt == ('Body [1].\n\n' + kept +
+                   '\n\n## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    apa = references.render_styled_markdown(content, PAPERS, 'apa')
+    assert apa == ('Body (张三, 2019).\n\n' + kept +
+                   '\n\n## 引用文献\n\n张三 (2019). Paper Five. arXiv: 1901.00001')
+
+
+def test_render_fence_close_indent_rules_spaces_tabs_long_and_tilde():
+    # S02 边界：0-3 空格缩进的闭合合法；4 空格或含 tab 的缩进（tab 不折算为
+    # 一个空格，按制表位至少 4 列）不是闭合，更长的记号也救不了；~ 围栏同一规则。
+    three = '正文 [P5]。\n\n```text\n   ```\n## 引用文献\n- [P5] old\n'
+    assert references.render_styled_markdown(three, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n```text\n   ```\n\n## 引用文献\n\n'
+        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    four = ('正文 [P5]。\n\n```text\n    ```\n    `````\n代码。\n```\n\n'
+            '## 引用文献\n- [P5] old\n')
+    assert references.render_styled_markdown(four, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n```text\n    ```\n    `````\n代码。\n```\n\n'
+        '## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    tab = '正文 [P5]。\n\n```text\n\t```\n## 引用文献\nold\n```\n'
+    assert references.render_styled_markdown(tab, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n```text\n\t```\n## 引用文献\nold\n```\n\n'
+        '## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    tilde = '正文 [P5]。\n\n~~~~\n    ~~~~\n## 引用文献\nold\n~~~~\n\n## 后文\nKEEP\n'
+    out = references.render_styled_markdown(tilde, PAPERS, 'gbt')
+    assert '~~~~\n    ~~~~\n## 引用文献\nold\n~~~~' in out and 'KEEP' in out
+    assert out.count('\n\n## 引用文献\n\n') == 1
+    # 开围栏同样保留缩进含义：四空格缩进的 ``` 不是开启（是缩进代码块），
+    # 其后的「## 引用文献」仍是真实文献节。
+    open4 = '正文 [P5]。\n\n    ```\n## 引用文献\n- [P5] old\n'
+    assert references.render_styled_markdown(open4, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n    ```\n\n## 引用文献\n\n'
+        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+
+
+def test_render_code_block_ids_not_collected_both_styles():
+    # S03-A 回归：只在代码围栏中出现的 [P2] 不是引用——不进书目、不占编号；
+    # 旧实现 _map_outside_fences(content, identity) 原样返回全文，first_
+    # appearance_ids 把代码里的 [P2] 一并收集成第二条书目。
+    content = 'Body [P5].\n\n```text\nExample [P2] is not a citation.\n```\n'
+    gbt = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert 'Example [P2] is not a citation.' in gbt
+    assert 'Paper Two' not in gbt and '[2]' not in gbt
+    assert gbt == ('Body [1].\n\n```text\nExample [P2] is not a citation.\n```\n\n'
+                   '## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    apa = references.render_styled_markdown(content, PAPERS, 'apa')
+    assert 'Paper Two' not in apa and 'Einstein' not in apa
+    assert apa == ('Body (张三, 2019).\n\n```text\nExample [P2] is not a citation.\n```\n\n'
+                   '## 引用文献\n\n张三 (2019). Paper Five. arXiv: 1901.00001')
+
+
+def test_render_code_before_body_does_not_take_first_number_both_styles():
+    # S03-B 回归：代码示例先于正文时，其中的 [P2] 不占首现号——正文首引
+    # [P5] 编号 [1] 而非 [2]，书目仅 P5。旧实现把代码 [P2] 当首现，正文被
+    # 编成 [2] 且书目多出未被正文引用的一条。
+    content = '```text\nExample [P2].\n```\n\nBody [P5].\n'
+    gbt = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert gbt == ('```text\nExample [P2].\n```\n\nBody [1].\n\n## 引用文献\n\n'
+                   '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    assert 'Paper Two' not in gbt
+    apa = references.render_styled_markdown(content, PAPERS, 'apa')
+    assert apa == ('```text\nExample [P2].\n```\n\nBody (张三, 2019).\n\n## 引用文献\n\n'
+                   '张三 (2019). Paper Five. arXiv: 1901.00001')
+    assert 'Einstein' not in apa
+
+
+def test_render_atx_optional_closing_hashes_and_text_after_hashes():
+    # 同区域规范缺口（CommonMark 0.31.2 §4.3）：标题文本后可选的 # 闭合序列
+    # （前有空白、后仅空白）——`## 引用文献 ##` 是同一标题；# 前无空白或其后
+    # 还有其他文本时属于标题内容，不是文献节。
+    closed = '正文 [P5]。\n\n## 引用文献 ##\n- [P5] old\n\n## 材料范围\n\n本次范围 1 篇。\n'
+    assert references.render_styled_markdown(closed, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n## 引用文献\n\n'
+        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n\n'
+        '## 材料范围\n\n本次范围 1 篇。\n')
+    glued = '正文 [P5]。\n\n## 引用文献#\n- [P5] old\n'
+    assert references.render_styled_markdown(glued, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n## 引用文献#\n- [1] old\n\n## 引用文献\n\n'
+        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    trailing = '正文 [P5]。\n\n## 引用文献 # x\nold\n'
+    out = references.render_styled_markdown(trailing, PAPERS, 'gbt')
+    assert out.count('\n\n## 引用文献\n\n') == 1 and '## 引用文献 # x' in out
 
 
 def test_render_without_reference_section_appends_exactly_once():

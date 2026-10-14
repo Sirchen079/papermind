@@ -24,6 +24,8 @@ _REF_HEADING_TITLE = '引用文献'
 _FENCE_OPEN = re.compile('(`{3,}|~{3,})')
 # ATX 标记：1-6 个 # 后须跟空白或行尾，`#标签` 之类的行内文本不是标题。
 _ATX_MARK = re.compile('(#{1,6})(?=[ \\t]|$)')
+# ATX 标题的可选闭合序列：# 前须有空白，其后仅空白（CommonMark 0.31.2 §4.3）。
+_ATX_CLOSE = re.compile(r'[ \t]#+[ \t]*(?:\r?\n)?$')
 
 
 def _check_style(style: str) -> str:
@@ -214,9 +216,14 @@ def _apa_in_text_authors(paper: dict) -> str:
     return f'{surnames[0]} et al.'
 
 
-# —— 文内消歧三规则（APA 7 §8.18–8.20；Purdue OWL In-Text Citations: Author/Authors）：
-# 同一完整作者组同年多篇 → 年份字母 a/b；不同作者组缩写碰撞（同首作者）→ 展开足够
-# 多的后续姓氏再加 et al.；同姓不同人 → 首作者加名首字母，首字母再撞则用全名。——
+# —— 文内消歧三规则（APA 7 §8.18–8.20；Purdue OWL In-Text Citations: Author/Authors），
+# 相互独立、可叠加：
+# · 年份字母（§8.19）：同一完整作者组同年多篇 → 按列表序追加 a/b；
+# · 展开消歧（§8.18）：同首作者的不同作者组**同年**缩写碰撞 → 展开足够多的后续
+#   姓氏，et al. 至少替代两人、只余一人须列全；不同年份的引用已由年份区分，不展开；
+# · 首字母（§8.20）：首作者同姓不同人是**全文**属性，不限年份与默认缩写形式
+#   （Purdue 示例 (E. Johnson, 2001; L. Johnson, 1998) 就是跨年）→ 相关条目首
+#   作者加名首字母，首字母再撞则用全名。——
 def _apa_name_parts(name: str) -> tuple[str, str]:
     """(姓氏, 名) 拆分，与 format_author 同规则；CJK 与单词名没有名。"""
     text = (name or '').strip()
@@ -257,11 +264,15 @@ def _apa_author_display(part: tuple[str, str], initials: bool = False,
 def _apa_form(parts: list[tuple[str, str]], shown: int, first_initials: bool = False,
               first_full: bool = False) -> str:
     """列举前 shown 位作者的文内作者部分：仍有剩余才用 et al.（et al. 至少替代
-    两人，全列时不带）；两名作者总是全部列出。首作者可按需加名首字母或全名。"""
+    两人——只余一名未列作者时列全，全列时不带 et al.；Purdue OWL「et al. should
+    always be a substitute for more than one name」）；两名作者总是全部列出。
+    首作者可按需加名首字母或全名。"""
     if not parts:
         return ''
     if len(parts) == 2:
         shown = max(shown, 2)
+    if len(parts) - shown == 1:
+        shown = len(parts)
     heads = [_apa_author_display(part, index == 0 and first_initials,
                                  index == 0 and first_full)
              for index, part in enumerate(parts[:shown])]
@@ -276,64 +287,96 @@ def _apa_form(parts: list[tuple[str, str]], shown: int, first_initials: bool = F
     return ', '.join(heads) + ', et al.'
 
 
-def _apa_disambiguated_forms(pids: list[int], papers: dict[int, dict]) -> dict[int, str]:
-    """同一「默认文内形式 + 年份」碰撞组内各条目的消歧形式；组内只有单一完整
-    作者组（该走年份字母规则）时返回 {}。
+def _apa_surname_styles(ordered: list[int], papers: dict[int, dict]) -> dict[str, str]:
+    """8.20 同姓池（全文范围、不限年份与默认缩写形式）：首作者同姓而身份不同的，
+    其全部条目的首作者加名首字母；首字母序列也相同（或无名可取，如 CJK）时才退
+    到全名——John A Smith 与 John B Smith 用 J. A. / J. B. 即可区分。
+    返回 首作者姓氏(小写) → 'initials' | 'full'。"""
+    pool: dict[str, set[tuple[str, str]]] = {}
+    for pid in ordered:
+        parts = _apa_author_parts(papers[pid])
+        if parts:
+            surname, given = parts[0]
+            pool.setdefault(surname.lower(), set()).add((surname.lower(), given.lower()))
+    styles: dict[str, str] = {}
+    for surname, identities in pool.items():
+        if len(identities) < 2:
+            continue
+        marks = {tuple(_initials(given)) for _, given in identities}
+        styles[surname] = 'full' if len(marks) < len(identities) else 'initials'
+    return styles
 
-    首作者为同一人 → 展开后续姓氏至可区分（§8.18）；首作者同姓不同人 → 首作者
-    加名首字母，首字母也相同再退到全名（§8.20）；连全名也无法区分（同名同姓）
-    时保持原形式、由年份字母兜底——记录为边界。
-    """
+
+def _apa_expansion_shown(pids: list[int], papers: dict[int, dict]) -> dict[int, int]:
+    """同年 + 同默认文内形式碰撞组的展开位数（§8.18 只解决同年缩写歧义：不同
+    年份的引用已由年份区分，不展开）。组内按**首作者身份**分子组：子组内完整
+    作者组唯一（不同的首作者由 8.20 全局首字母规则区分）不展开；同一首作者名
+    下有多个作者组的子组整组展到可区分为止。et al. 至少替代两人、只余一人列全
+    由 _apa_form 保证；子组展开失败（后续姓氏也无法区分）保持原形式——边界。"""
     parts = {pid: _apa_author_parts(papers[pid]) for pid in pids}
     identities = {pid: _apa_identity(papers[pid]) for pid in pids}
-    if len(set(identities.values())) == 1:
-        return {}
-    if len({identities[pid][:1] for pid in pids}) == 1:
-        tries = [(shown, False, False)
-                 for shown in range(2, max(map(len, parts.values())) + 1)]
-        tries += [(1, True, False), (1, False, True)]
-    else:
-        tries = [(1, True, False), (1, False, True)]
-    for shown, first_initials, first_full in tries:
-        forms = {pid: _apa_form(parts[pid], shown, first_initials, first_full)
-                 for pid in pids}
-        if len(set(forms.values())) == len(set(identities.values())):
-            return forms
-    return {}
+    clusters: dict[tuple, list[int]] = {}
+    for pid in pids:
+        clusters.setdefault(identities[pid][:1], []).append(pid)
+    shown: dict[int, int] = {}
+    for members in clusters.values():
+        distinct = {identities[pid] for pid in members}
+        if len(distinct) == 1:
+            continue
+        for try_shown in range(2, max(len(parts[pid]) for pid in members) + 1):
+            forms = {pid: _apa_form(parts[pid], try_shown) for pid in members}
+            if len(set(forms.values())) == len(distinct):
+                shown.update(dict.fromkeys(members, try_shown))
+                break
+    return shown
 
 
 def _apa_entries(ordered: list[int], papers: dict[int, dict]) -> tuple[dict[int, str], list[str]]:
     """作者—年份映射：文内引用与列表条目共用同一套映射。
 
-    年份字母的分组键是**完整作者组身份 + 年份**（§8.19），不再是「文内缩写形式
-    + 年份」——旧键会把不同作者组碰巧缩写成同一 et al. 的情况误当同组同年。同一
-    完整作者组同年的不同作品按列表顺序追加 a/b（组内顺序由题名或第二作者字母序
-    决定，§9.47），正文与列表后缀一致；不同作者组缩写碰撞先展开消歧再判重，列表
-    条目不因此加年份字母。返回 (pid → 文内引用, APA 顺序的列表条目)。
+    三条消歧规则相互独立（APA 7 §8.18–8.20）：
+    ① 年份字母按**完整作者组身份 + 年份**分组（§8.19；无作者条目以题名代表其
+       作者组），同年多篇按列表顺序追加 a/b（组内顺序由题名或第二作者字母序决
+       定，§9.47），正文与列表后缀一致；
+    ② 同年 + 同默认文内形式的缩写碰撞组内，首作者为同一人的不同作者组展开后续
+       姓氏消歧；不同年份由年份本身区分，不展开（§8.18）；
+    ③ 首作者同姓不同人按全文姓氏池统一处理，不受年份与默认形式限制（§8.20），
+       相关条目首作者加名首字母、首字母相同再退全名。
+    列表条目照 APA 一贯列全作者，不因文内消歧展开，也不因此加年份字母。
+    返回 (pid → 文内引用, APA 顺序的列表条目)。
     """
     rows = sorted(((_apa_sort_key(papers[pid]), pid) for pid in ordered))
     years = {pid: _text(papers[pid].get('year')) or 'n.d.' for _, pid in rows}
+    styles = _apa_surname_styles(ordered, papers)
     groups: dict[tuple[str, str], list[int]] = {}
     for _, pid in rows:
         groups.setdefault((_apa_in_text_authors(papers[pid]), years[pid]), []).append(pid)
-    forms: dict[int, str] = {}
+    shown: dict[int, int] = {}
     for pids in groups.values():
-        forms.update(_apa_disambiguated_forms(pids, papers))
+        shown.update(_apa_expansion_shown(pids, papers))
+    forms: dict[int, str] = {}
     for _, pid in rows:
-        forms.setdefault(pid, _apa_in_text_authors(papers[pid]))
-    sizes: dict[tuple[str, str], int] = {}
+        parts = _apa_author_parts(papers[pid])
+        if not parts:
+            forms[pid] = _apa_in_text_authors(papers[pid])
+            continue
+        style = styles.get(parts[0][0].lower())
+        forms[pid] = _apa_form(parts, shown.get(pid, 1),
+                               style == 'initials', style == 'full')
+    letters = {pid: (_apa_identity(papers[pid]) or (_apa_title_key(papers[pid]),), years[pid])
+               for _, pid in rows}
+    sizes: dict[tuple, int] = {}
     for _, pid in rows:
-        group = (forms[pid], years[pid])
-        sizes[group] = sizes.get(group, 0) + 1
-    seen: dict[tuple[str, str], int] = {}
+        sizes[letters[pid]] = sizes.get(letters[pid], 0) + 1
+    seen: dict[tuple, int] = {}
     marks: dict[int, str] = {}
     lines = []
     for _, pid in rows:
         author = forms[pid]
         year = years[pid]
-        nth = seen.get((author, year), 0)
-        seen[(author, year)] = nth + 1
-        if sizes[(author, year)] > 1:
+        nth = seen.get(letters[pid], 0)
+        seen[letters[pid]] = nth + 1
+        if sizes[letters[pid]] > 1:
             letter = chr(ord('a') + nth)
             year = f'{year}-{letter}' if year == 'n.d.' else f'{year}{letter}'
         marks[pid] = f'({author}, {year})'
@@ -382,68 +425,101 @@ def papers_for(session: Session, ids: list[int]) -> dict[int, dict]:
 
 
 def _atx_heading(line: str) -> tuple[int, str] | None:
-    """行的 ATX 标题 `(级别, 文本)`；≤3 空格缩进合法，4+ 空格是缩进代码块非标题。"""
+    """行的 ATX 标题 `(级别, 文本)`；≤3 空格缩进合法，4+ 空格是缩进代码块非标题；
+    文本后可选的 `#` 闭合序列（前有空白、后仅空白）按规范剥除，`## 引用文献 ##`
+    是同一标题，而 `引用文献#`、`引用文献 # x` 的 # 属于标题内容。"""
     rest = line.lstrip(' ')
     if len(line) - len(rest) > 3:
         return None
     mark = _ATX_MARK.match(rest)
     if mark is None:
         return None
-    return len(mark.group(1)), rest[mark.end():].strip()
+    return len(mark.group(1)), _ATX_CLOSE.sub('', rest[mark.end():]).strip()
+
+
+def _fence_state(line: str, fence: str) -> str:
+    """逐行推进围栏状态机（节边界扫描与引用收集/改写共用的唯一规则来源）。
+
+    开/闭围栏都只认 ≤3 个前导空格（CommonMark 0.31.2 §4.5；tab 不折算为一个
+    空格，按制表位至少 4 列，含 tab 缩进的行不构成围栏行）；开启须 ≥3 个同
+    字符围栏记号，反引号围栏的信息串不得再含反引号；闭合须同字符、个数不小于
+    开启，其后仅允许空白。返回该行之后的围栏状态。"""
+    rest = line.lstrip(' ')
+    if len(line) - len(rest) > 3:
+        return fence
+    run = _FENCE_OPEN.match(rest)
+    if run is None:
+        return fence
+    mark = run.group(1)
+    if fence:
+        if (mark[0] == fence[0] and len(mark) >= len(fence)
+                and not rest[run.end():].strip()):
+            return ''
+        return fence
+    if mark[0] == '~' or '`' not in rest[run.end():]:
+        return mark
+    return fence
+
+
+def _walk_outside_fences(content: str, visit) -> None:
+    """对每条不在代码围栏内部的行回调 `visit(offset, line)`（围栏开合行与
+    内部行都不回调），offset 是该行在 content 中的起点。_ref_section_bounds
+    的标题判定与 render_styled_markdown 的引用收集/改写共用这一个遍历和
+    _fence_state 一套规则，防止两个状态机漂移。"""
+    fence = ''
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        state = _fence_state(line, fence)
+        if fence or state:
+            fence = state
+        else:
+            visit(offset, line)
+        offset += len(line)
 
 
 def _ref_section_bounds(content: str) -> tuple[int, int] | None:
     """真实 `## 引用文献` 节的边界 `(标题行起点, 节终点)`，无文献节返回 None。
 
     逐行扫描并按 CommonMark 规则跳过代码围栏（`app.rag.markdown_chunker`、
-    `app.reports.pptx` 的围栏习惯更宽松，这里需要更强的边界保证）：开围栏记录
-    完整的字符与长度，闭合围栏须同一字符、个数不小于开启长度，行内其余内容
-    不参与判定；反引号开围栏的信息串不得再含反引号。因此四反引号外层围栏内
-    的三反引号与字面量标题不会被误判，围栏内及行中同名标题也不是文献节。
-    起点是标题行自身（正文以其前一行为止，标题行由渲染统一重排），合法缩进
-    标题（≤3 空格）同样识别；终点是下一个同级/更高级标题行（`#` 或 `##`，
-    ≤3 空格缩进）的行首，`###` 及更深层标题属于节内容。
+    `app.reports.pptx` 的围栏习惯更宽松，这里需要更强的边界保证），围栏判定
+    见 `_fence_state`：四空格或含 tab 缩进的伪闭合、字符或长度不符的闭合都
+    不终止围栏，围栏内及行中同名标题也不是文献节。起点是标题行自身（正文以
+    其前一行为止，标题行由渲染统一重排），合法缩进标题（≤3 空格）同样识别；
+    终点是下一个同级/更高级标题行（`#` 或 `##`，≤3 空格缩进）的行首，`###`
+    及更深层标题属于节内容。
     """
     start = end = None
-    offset = 0
-    fence = ''
-    for line in content.splitlines(keepends=True):
-        stripped = line.strip()
-        if fence:
-            if stripped == fence[0] * len(stripped) and len(stripped) >= len(fence):
-                fence = ''
-        elif (run := _FENCE_OPEN.match(stripped)) and (
-                run.group(1)[0] == '~' or '`' not in stripped[run.end():]):
-            fence = run.group(1)
-        elif heading := _atx_heading(line):
-            if start is None:
-                if heading == (2, _REF_HEADING_TITLE):
-                    start = offset
-            elif heading[0] <= 2:
-                end = offset
-                break
-        offset += len(line)
+
+    def visit(offset: int, line: str) -> None:
+        nonlocal start, end
+        if end is not None:
+            return
+        heading = _atx_heading(line)
+        if heading is None:
+            return
+        if start is None:
+            if heading == (2, _REF_HEADING_TITLE):
+                start = offset
+        elif heading[0] <= 2:
+            end = offset
+
+    _walk_outside_fences(content, visit)
     if start is None:
         return None
     return start, len(content) if end is None else end
 
 
 def _map_outside_fences(content: str, replace) -> str:
-    """逐行应用 replace，跳过围栏开合行与围栏内部（围栏规则与
-    _ref_section_bounds 一致）：代码示例中的字面 [Pn] 是文本，不是引用。"""
+    """逐行重组全文：非围栏行应用 replace，围栏开合行与内部行逐字保留
+    （围栏判定同样出自 `_fence_state`，与 `_walk_outside_fences` 一套规则）：
+    代码示例原样进入导出结果，其中的字面 [Pn] 是文本，不是引用。"""
     out = []
     fence = ''
     for line in content.splitlines(keepends=True):
-        stripped = line.strip()
-        if fence:
-            if stripped == fence[0] * len(stripped) and len(stripped) >= len(fence):
-                fence = ''
-        elif (run := _FENCE_OPEN.match(stripped)) and (
-                run.group(1)[0] == '~' or '`' not in stripped[run.end():]):
-            fence = run.group(1)
-        else:
-            line = replace(line)
-        out.append(line)
+        was = fence
+        state = _fence_state(line, fence)
+        fence = state
+        out.append(line if (was or state) else replace(line))
     return ''.join(out)
 
 
@@ -469,10 +545,17 @@ def render_styled_markdown(content: str, papers: dict[int, dict], style: str) ->
         cut = body.find(MATERIAL_HEADING)
         if cut != -1:
             materials, body = body[cut:], body[:cut]
-    keep = lambda line: line
+    # 收集走非围栏行的回调遍历（S03）：只在代码围栏中出现的 [Pn] 不是引用，
+    # 不进书目、不占首现号；文献节之前的正文与其后 tail 按首现顺序合并。
+    marks: list[int] = []
+
+    def _collect(offset: int, line: str) -> None:
+        marks.extend(int(found.group(1)) for found in _REF_MARK.finditer(line))
+
+    _walk_outside_fences(body, _collect)
+    _walk_outside_fences(tail, _collect)
     ordered: list[int] = []
-    for pid in first_appearance_ids(_map_outside_fences(body, keep)
-                                    + _map_outside_fences(tail, keep)):
+    for pid in marks:
         if pid in papers and pid not in ordered:
             ordered.append(pid)
     if style == 'apa':

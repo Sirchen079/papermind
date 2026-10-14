@@ -226,10 +226,102 @@ def test_metadata_title_match_confirms_without_body_print():
 
 
 def test_metadata_candidate_is_self_declared():
-    # 候选来自 PDF 元数据（subject/keywords）即自身声明，无需正文题名复核。
+    # 查询命中的候选来自 PDF 元数据（subject/keywords）即自身声明，无需正文题名复核。
     candidate = _merge_candidate(
         "Anything.", doi='10.1234/meta', doi_kind='metadata',
         doi_candidates=[{'doi': '10.1234/meta', 'kind': 'metadata',
                          'labeled': False}])
     assert _merge_conflict(
-        candidate, SimpleNamespace(title="Whatever Else")) is None
+        candidate, SimpleNamespace(title="Whatever Else"),
+        queried_kind='metadata') is None
+
+
+def test_metadata_candidate_does_not_exempt_body_arxiv_query():
+    # metadata 来源的另一个候选不能豁免 body 来源 arXiv 查询的标题核验：
+    # 判定只看实际查询成功的标识来源。
+    candidate = _merge_candidate(
+        "Actual Independent New Study\nIntroduction\nWe build on arXiv:1706.03762.",
+        doi='10.1234/meta', doi_kind='metadata',
+        doi_candidates=[{'doi': '10.1234/meta', 'kind': 'metadata', 'labeled': True}],
+        arxiv_id='1706.03762', arxiv_kind='body',
+        arxiv_candidates=[{'arxiv_id': '1706.03762', 'kind': 'body', 'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Attention Old Work"),
+        queried_kind='body') == 'unverified_title'
+
+
+# --- 节前正文的题名提及不是首页标题区的自身声明（查询来源驱动） --------------
+
+def test_intro_mention_of_cited_title_and_doi_is_not_self_declaration():
+    # 正文句提及被引题名+DOI 属于文献提及，不得当作自身题名放行归并。
+    candidate = _merge_candidate(
+        "Actual Independent New Study\nIntroduction\n"
+        "We compare against Established Baseline Work (doi:10.1234/body-title).\n"
+        "Our contribution is a different method.",
+        doi='10.1234/body-title', doi_kind='body',
+        doi_candidates=[{'doi': '10.1234/body-title', 'kind': 'body',
+                         'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Established Baseline Work")) == \
+        'unverified_title'
+
+
+def test_body_sentence_mention_with_reference_doi_is_not_self_declaration():
+    # 正文句提及被引题名、DOI 印在参考文献节：同样不得放行。
+    candidate = _merge_candidate(
+        "Actual Independent New Study\nIntroduction\n"
+        "We extend Related Earlier Study with a new dataset.\n"
+        "References\nA. Author. Related Earlier Study. doi:10.1234/body-ref",
+        doi='10.1234/body-ref', doi_kind='reference',
+        doi_candidates=[{'doi': '10.1234/body-ref', 'kind': 'reference',
+                         'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Related Earlier Study")) == \
+        'unverified_title'
+
+
+def test_cross_line_title_block_confirms_identity():
+    # 正向：检索题名跨两行印在首页顶部，连续标题行整体规范化一致即自身声明。
+    candidate = _merge_candidate(
+        "Deep Reinforcement\nLearning for Robot Control\nAbstract\nWe study control.",
+        doi='10.1234/self', doi_kind='body',
+        doi_candidates=[{'doi': '10.1234/self', 'kind': 'body', 'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(
+            title="Deep Reinforcement Learning for Robot Control")) is None
+
+
+def test_short_title_inside_sentence_is_not_self_declaration():
+    # 短题名作为正文句中一个词出现：首个非空行的完整前缀不等于题名，不得放行。
+    candidate = _merge_candidate(
+        "Actual Independent New Study\nWe study Bias and variance in small samples.",
+        doi='10.1234/bias', doi_kind='body',
+        doi_candidates=[{'doi': '10.1234/bias', 'kind': 'body', 'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Bias")) == 'unverified_title'
+
+
+def test_cited_title_standalone_line_in_head_is_not_self_declaration():
+    # 被引题名即便单独成行、位于首页头部：匹配只允许首个非空内容行起的
+    # 完整前缀，正文开始后不能再跳到后面的行匹配。
+    candidate = _merge_candidate(
+        "Actual New Study\nIntroduction\nRelated Earlier Study\nWe extend this work.",
+        doi='10.1234/cited', doi_kind='body',
+        doi_candidates=[{'doi': '10.1234/cited', 'kind': 'body', 'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Related Earlier Study")) == \
+        'unverified_title'
+
+
+def test_title_after_body_started_is_not_self_declaration():
+    # 保守边界：题名出现在正文开始之后（非首个非空行的前缀）不作为自身声明，
+    # 降级为未确认独立保存，而非放行归并。
+    filler = "\n".join(
+        f"Filler paragraph line {i} with common words." for i in range(1, 13))
+    candidate = _merge_candidate(
+        f"{filler}\nEstablished Baseline Work\nMore prose.",
+        doi='10.1234/cited', doi_kind='body',
+        doi_candidates=[{'doi': '10.1234/cited', 'kind': 'body', 'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Established Baseline Work")) == \
+        'unverified_title'
