@@ -362,6 +362,75 @@ def test_render_finds_real_section_after_earlier_fence_mention():
     assert materials == '本次范围 1 篇。\n'
 
 
+def test_render_keeps_indented_heading_after_references_both_styles():
+    # F03 反例 A（W02 回归）：≤3 空格缩进仍是合法 ATX 标题，文献节到它为止；
+    # 旧扫描只认行首 `#`/`##`，把缩进附录连同内容整个吞掉。
+    content = ('正文 [P5]。\n\n'
+               '## 引用文献\nold\n\n'
+               '  ## Appendix\nKEEP INDENTED APPENDIX\n')
+    tail = '  ## Appendix\nKEEP INDENTED APPENDIX\n'
+    gbt = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert gbt == ('正文 [1]。\n\n## 引用文献\n\n'
+                   '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n\n' + tail)
+    apa = references.render_styled_markdown(content, PAPERS, 'apa')
+    assert apa == ('正文 (张三, 2019)。\n\n## 引用文献\n\n'
+                   '张三 (2019). Paper Five. arXiv: 1901.00001\n\n' + tail)
+
+
+def test_render_keeps_four_backtick_fence_and_following_sections_both_styles():
+    # F03 反例 B（W02 回归）：外层四反引号围栏内的三反引号不是闭合、其后的
+    # 字面量标题不是文献节；旧实现把开围栏截成 3 个字符，代码示例被改写、
+    # 末尾闭合围栏又重新开围栏吞掉 Results。
+    fenced = ('Intro [P5]。\n\n'
+              '````markdown\n```\n## 引用文献\nDO NOT DELETE THIS CODE EXAMPLE\n````\n\n'
+              '## Results\nKEEP RESULTS\n')
+    example = '````markdown\n```\n## 引用文献\nDO NOT DELETE THIS CODE EXAMPLE\n````\n\n## Results\nKEEP RESULTS'
+    gbt = references.render_styled_markdown(fenced, PAPERS, 'gbt')
+    assert gbt == ('Intro [1]。\n\n' + example +
+                   '\n\n## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    apa = references.render_styled_markdown(fenced, PAPERS, 'apa')
+    assert apa == ('Intro (张三, 2019)。\n\n' + example +
+                   '\n\n## 引用文献\n\n张三 (2019). Paper Five. arXiv: 1901.00001')
+
+
+def test_render_indented_reference_heading_and_indented_code_block_rules():
+    # W02 边界补充：3 空格缩进的「## 引用文献」仍是合法文献节标题；4 空格
+    # 缩进是缩进代码块——既不构成文献节标题，也不终止文献节（属节内容）。
+    indented_ref = '正文 [P5]。\n\n   ## 引用文献\n- [P5] old\n\n## 材料范围\n\n本次范围 1 篇。\n'
+    assert references.render_styled_markdown(indented_ref, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n## 引用文献\n\n'
+        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n\n'
+        '## 材料范围\n\n本次范围 1 篇。\n')
+    code_ref = '正文 [P5]。\n\n    ## 引用文献\n- [P5] old\n'
+    assert references.render_styled_markdown(code_ref, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n    ## 引用文献\n- [1] old\n\n'
+        '## 引用文献\n\n[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+    deep = '正文 [P5]。\n\n## 引用文献\nold\n\n    ## Appendix\nKEEP FOUR SPACES\n'
+    assert references.render_styled_markdown(deep, PAPERS, 'gbt') == (
+        '正文 [1]。\n\n## 引用文献\n\n'
+        '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.')
+
+
+def test_render_tilde_fence_char_length_and_close_rules():
+    # W02 边界补充：~ 围栏同一规则——开围栏记录完整长度，闭合须同字符且
+    # 个数不小于开启长度（更短的不闭合，更长的正常闭合）。
+    tilde = ('正文 [P5]。\n\n'
+             '~~~~\n~~~\n## 引用文献\nNOT A REAL SECTION\n~~~~\n\n'
+             '## Results\nKEEP TILDE RESULTS\n')
+    out = references.render_styled_markdown(tilde, PAPERS, 'gbt')
+    assert '~~~~\n~~~\n## 引用文献\nNOT A REAL SECTION\n~~~~' in out
+    assert '## Results\nKEEP TILDE RESULTS' in out
+    assert out.count('\n\n## 引用文献\n\n') == 1
+    longer_close = '正文 [P5]。\n\n~~~\n代码示例。\n~~~~~\n\n## 后文\nKEEP AFTER TILDE\n'
+    out2 = references.render_styled_markdown(longer_close, PAPERS, 'gbt')
+    assert '~~~\n代码示例。\n~~~~~' in out2 and '## 后文\nKEEP AFTER TILDE' in out2
+    assert out2.count('\n\n## 引用文献\n\n') == 1
+    shorter_close = '正文 [P5]。\n\n~~~~\n~~\n## 引用文献\n示例\n~~~~\n\n## 后文\nKEEP SHORT\n'
+    out3 = references.render_styled_markdown(shorter_close, PAPERS, 'gbt')
+    assert '~~~~\n~~\n## 引用文献\n示例\n~~~~' in out3 and 'KEEP SHORT' in out3
+    assert out3.count('\n\n## 引用文献\n\n') == 1
+
+
 def test_render_without_reference_section_appends_exactly_once():
     out = references.render_styled_markdown('正文 [P5]。\n', PAPERS, 'gbt')
     assert out == ('正文 [1]。\n\n## 引用文献\n\n'

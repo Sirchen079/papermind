@@ -18,9 +18,12 @@ _REF_MARK = re.compile(r'\[P(\d+)\]')
 # 假名 / CJK 扩展 A / CJK 统一表意 / 兼容表意 / 谚文：命中即视为中日韩姓名原样保留。
 _CJK = re.compile('[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff\\uac00-\\ud7af]')
 MATERIAL_HEADING = '\n## 材料范围'
-# 文献节标题行：整行恰为 `## 引用文献`（行中/围栏内同名文本不算）。
-_REF_HEADING_LINE = '## 引用文献'
-_FENCE_MARKS = ('```', '~~~')
+# 文献节标题：标题文本恰为「引用文献」的二级 ATX 标题（围栏内/行中同名文本不算）。
+_REF_HEADING_TITLE = '引用文献'
+# 围栏开启：≥3 个连续 ` 或 ~；反引号围栏的信息串不得再含反引号（CommonMark）。
+_FENCE_OPEN = re.compile('(`{3,}|~{3,})')
+# ATX 标记：1-6 个 # 后须跟空白或行尾，`#标签` 之类的行内文本不是标题。
+_ATX_MARK = re.compile('(#{1,6})(?=[ \\t]|$)')
 
 
 def _check_style(style: str) -> str:
@@ -281,14 +284,28 @@ def papers_for(session: Session, ids: list[int]) -> dict[int, dict]:
     }
 
 
+def _atx_heading(line: str) -> tuple[int, str] | None:
+    """行的 ATX 标题 `(级别, 文本)`；≤3 空格缩进合法，4+ 空格是缩进代码块非标题。"""
+    rest = line.lstrip(' ')
+    if len(line) - len(rest) > 3:
+        return None
+    mark = _ATX_MARK.match(rest)
+    if mark is None:
+        return None
+    return len(mark.group(1)), rest[mark.end():].strip()
+
+
 def _ref_section_bounds(content: str) -> tuple[int, int] | None:
     """真实 `## 引用文献` 节的边界 `(标题行起点, 节终点)`，无文献节返回 None。
 
-    逐行扫描并跳过代码围栏（与 `app.rag.markdown_chunker`、`app.reports.pptx`
-    同一围栏习惯）：围栏内及行中出现的同名标题不是文献节。起点是标题行自身
-    （正文以其前一行为止，标题行由渲染统一重排）；终点是下一个同级/更高级
-    标题行（`#` 或 `##`）的行首，`###` 及更深层标题属于节内容，其后的章节
-    一律不属于文献节。
+    逐行扫描并按 CommonMark 规则跳过代码围栏（`app.rag.markdown_chunker`、
+    `app.reports.pptx` 的围栏习惯更宽松，这里需要更强的边界保证）：开围栏记录
+    完整的字符与长度，闭合围栏须同一字符、个数不小于开启长度，行内其余内容
+    不参与判定；反引号开围栏的信息串不得再含反引号。因此四反引号外层围栏内
+    的三反引号与字面量标题不会被误判，围栏内及行中同名标题也不是文献节。
+    起点是标题行自身（正文以其前一行为止，标题行由渲染统一重排），合法缩进
+    标题（≤3 空格）同样识别；终点是下一个同级/更高级标题行（`#` 或 `##`，
+    ≤3 空格缩进）的行首，`###` 及更深层标题属于节内容。
     """
     start = end = None
     offset = 0
@@ -296,16 +313,18 @@ def _ref_section_bounds(content: str) -> tuple[int, int] | None:
     for line in content.splitlines(keepends=True):
         stripped = line.strip()
         if fence:
-            if stripped.startswith(fence):
+            if stripped == fence[0] * len(stripped) and len(stripped) >= len(fence):
                 fence = ''
-        elif stripped.startswith(_FENCE_MARKS):
-            fence = stripped[:3]
-        elif start is None:
-            if line.startswith('#') and line.rstrip() == _REF_HEADING_LINE:
-                start = offset
-        elif line.startswith(('# ', '## ')):
-            end = offset
-            break
+        elif (run := _FENCE_OPEN.match(stripped)) and (
+                run.group(1)[0] == '~' or '`' not in stripped[run.end():]):
+            fence = run.group(1)
+        elif heading := _atx_heading(line):
+            if start is None:
+                if heading == (2, _REF_HEADING_TITLE):
+                    start = offset
+            elif heading[0] <= 2:
+                end = offset
+                break
         offset += len(line)
     if start is None:
         return None

@@ -160,3 +160,40 @@ def test_export_docx_keeps_sections_after_references_both_styles(client):
         assert order.index('Appendix') < order.index('材料范围')
     with Session(get_engine()) as s:
         assert s.get(LibraryReview, 'docx-appendix').content == content
+
+
+def test_export_docx_keeps_indented_appendix_and_fence_example_both_styles(client):
+    # F03（W02 回归，Markdown/DOCX 共享渲染路径）：缩进附录是文献节终点；
+    # 四反引号围栏示例与字面量标题原样保留，其后的 Results 不被吞掉。
+    with Session(get_engine()) as s:
+        row = Paper(source='manual', title='Paper Five', authors_json='["张三"]',
+                    year=2019, arxiv_id='1901.00001')
+        s.add(row);s.commit();pid = row.id
+        content = (f'正文先引 [P{pid}]。\n\n## 引用文献\n- [P{pid}] old\n\n'
+                   '  ## Appendix\nKEEP INDENTED APPENDIX\n\n'
+                   f'````markdown\n```\n## 引用文献\nDO NOT DELETE {pid}\n````\n\n'
+                   '## Results\nKEEP RESULTS\n')
+        s.add(LibraryReview(id='docx-f03', question='内容保留', status='ready',
+                            content=content, version=1))
+        s.commit()
+    entry = {'gbt': '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.',
+             'apa': '张三 (2019). Paper Five. arXiv: 1901.00001'}
+    for style in ('gbt', 'apa'):
+        resp, _ = fetch_docx(client, review_id='docx-f03', style=style)
+        paras = paragraphs(resp.content)
+        texts = [p.text for p in paras]
+        by_text = {p.text: p for p in paras}
+        assert by_text['Appendix'].style.name == 'Heading 2'
+        assert 'KEEP INDENTED APPENDIX' in texts
+        # 围栏示例逐行保留（DOCX 有意按纯文本呈现代码块）。
+        assert f'DO NOT DELETE {pid}' in texts
+        assert '````markdown' in texts and texts.count('````') == 1
+        # 字面量标题与真实追加的文献节各自渲染一个「引用文献」标题，Results 保留。
+        assert texts.count('引用文献') == 2
+        assert by_text['Results'].style.name == 'Heading 2'
+        assert 'KEEP RESULTS' in texts
+        assert entry[style] in texts
+        if style == 'apa':
+            assert '正文先引 (张三, 2019)。' in texts
+    with Session(get_engine()) as s:
+        assert s.get(LibraryReview, 'docx-f03').content == content
