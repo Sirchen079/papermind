@@ -67,6 +67,16 @@ export function responseIsCurrent(issueSeq: number, latestSeq: number): boolean 
   return issueSeq === latestSeq;
 }
 
+// R07/W04（F04 修复）：共享 loading 的所有权判定。搜索、load() 与批量刷新
+// 共用同一个 loading 状态，结束权明确属于「自己仍是全局最新序号」的那一个
+// 请求：请求结束时（无论成功或失败）仅当序号仍最新才释放；被更新的请求
+// 抢占后，过期响应既不写数据也不动 loading，由抢占了序号的请求在自身结束
+// 时负责解除。否则刷新抢占挂起搜索后，搜索的过期防护不清理、刷新又不管
+// loading，会导致 loading 永久残留（导入按钮持续禁用）。
+export function loadingReleaseBelongsTo(issueSeq: number, latestSeq: number): boolean {
+  return issueSeq === latestSeq;
+}
+
 // R07：详情同步判定——仅当用户仍选中同一篇论文（含详情仍打开）时才套用
 // 慢响应带回的新详情；切换选中或关闭详情后不覆盖新的上下文。
 export function selectionMatchesPaper(

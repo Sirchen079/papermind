@@ -8,6 +8,7 @@ import {
   combineBulkResultMessage,
   enrichHasUpdates,
   fulltextHasAttachments,
+  loadingReleaseBelongsTo,
   responseIsCurrent,
   selectionMatchesPaper,
   summarizeEnrichResults,
@@ -110,4 +111,73 @@ test("combineBulkResultMessage keeps fulltext stats and never fakes read availab
   assert.ok(failed.startsWith("已获取 2 篇公开全文"), "全文成功统计必须保留");
   assert.ok(failed.includes("数据已保存"), "必须明确操作结果已保存");
   assert.ok(failed.includes("刷新失败"), "刷新失败必须与业务结果可区分");
+});
+
+// R07/W04（F04 回归）：共享 loading 的所有权模型。每次发起请求（搜索/load/
+// 批量刷新）setLoading(true) 并登记最新序号；请求结束时（成功或失败）仅当
+// 自己仍是全局最新序号才 setLoading(false)。过期响应既不写数据也不动 loading；
+// 抢占了序号的刷新在自身结束时负责解除。
+test("loadingReleaseBelongsTo grants the shared loading release to the still-latest request only", () => {
+  assert.equal(loadingReleaseBelongsTo(5, 5), true, "仍是最新序号的请求负责解除");
+  assert.equal(loadingReleaseBelongsTo(5, 6), false, "被更新请求抢占后不得再动 loading");
+  assert.equal(loadingReleaseBelongsTo(6, 5), false, "序号不存在的请求不得解除");
+});
+
+test("F04 timeline: refresh overtaking a pending search releases loading and the stale search stays inert", () => {
+  // 验收时序回放：搜索挂起（补全触发的首查）→ 补全完成触发批量刷新（接管序号）
+  // → 刷新先返回 → 原搜索延迟 4 秒返回。所有有效请求结束后 loading 必须为
+  // false，导入抽屉「添加到论文库」才能恢复可用。
+  let latestSeq = 0;
+  let loading = false;
+  const issue = () => { latestSeq += 1; loading = true; return latestSeq; };
+  const finish = (seq) => { if (loadingReleaseBelongsTo(seq, latestSeq)) loading = false; };
+  const searchSeq = issue();
+  assert.equal(loading, true, "搜索发起后共享 loading 置位");
+  const refreshSeq = issue();
+  assert.equal(loading, true, "刷新发起即接管共享 loading");
+  finish(refreshSeq);
+  assert.equal(loading, false, "刷新完成后（它仍是最新序号）必须解除 loading——F04 残留点");
+  finish(searchSeq);
+  assert.equal(loading, false, "过期搜索返回后不得再次置位或残留 loading");
+});
+
+test("F04 timeline: stale search returning before the refresh still ends with loading released", () => {
+  let latestSeq = 0;
+  let loading = false;
+  const issue = () => { latestSeq += 1; loading = true; return latestSeq; };
+  const finish = (seq) => { if (loadingReleaseBelongsTo(seq, latestSeq)) loading = false; };
+  const searchSeq = issue();
+  const refreshSeq = issue();
+  finish(searchSeq);
+  assert.equal(loading, true, "过期搜索先返回时不得解除 loading（刷新仍在进行）");
+  finish(refreshSeq);
+  assert.equal(loading, false, "最后的有效请求（刷新）返回后必须解除 loading");
+});
+
+test("F04 timeline: consecutive interleaved searches leave loading released by the latest one", () => {
+  let latestSeq = 0;
+  let loading = false;
+  const issue = () => { latestSeq += 1; loading = true; return latestSeq; };
+  const finish = (seq) => { if (loadingReleaseBelongsTo(seq, latestSeq)) loading = false; };
+  const first = issue();
+  const second = issue();
+  finish(second);
+  assert.equal(loading, false, "最新搜索完成即解除 loading，不等待被抢占的旧搜索");
+  finish(first);
+  assert.equal(loading, false, "旧搜索随后返回不得再次置位 loading");
+});
+
+test("F04: a failing latest request still releases the shared loading via its finally path", () => {
+  let latestSeq = 0;
+  let loading = false;
+  const issue = () => { latestSeq += 1; loading = true; return latestSeq; };
+  const finish = (seq) => { if (loadingReleaseBelongsTo(seq, latestSeq)) loading = false; };
+  const searchSeq = issue();
+  const refreshSeq = issue();
+  // 刷新请求本身失败：所有权判定只看序号，不看成败——失败也必须解除，
+  // 否则刷新失败同样会让导入按钮永久禁用。
+  finish(refreshSeq);
+  assert.equal(loading, false, "刷新失败（仍是最新序号）也必须解除 loading");
+  finish(searchSeq);
+  assert.equal(loading, false, "过期搜索返回不得再次置位 loading");
 });

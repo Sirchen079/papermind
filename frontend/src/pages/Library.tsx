@@ -89,6 +89,7 @@ import {
   combineBulkResultMessage,
   enrichHasUpdates,
   fulltextHasAttachments,
+  loadingReleaseBelongsTo,
   responseIsCurrent,
   selectionMatchesPaper,
   summarizeEnrichResults,
@@ -569,7 +570,9 @@ export default function Library({
       // 加载失败必须与"论文库为空"区分开，否则用户会误以为需要重新导入。
       setError(e.message);
     } finally {
-      if (seq === searchSeqRef.current) setLoading(false);
+      // W04/F04：共享 loading 的结束权属于仍是最新序号的请求（见
+      // loadingReleaseBelongsTo），三个发起方共用同一判定。
+      if (loadingReleaseBelongsTo(seq, searchSeqRef.current)) setLoading(false);
     }
   }
 
@@ -611,7 +614,7 @@ export default function Library({
         setError(e.message);
       })
       .finally(() => {
-        if (seq === searchSeqRef.current) setLoading(false);
+        if (loadingReleaseBelongsTo(seq, searchSeqRef.current)) setLoading(false);
       });
   }, [serverQuery]);
 
@@ -661,22 +664,31 @@ export default function Library({
   // 与 load()/搜索共用序号防护，并取"当下"的查询与已加载范围；批量书目/全文
   // 操作完成后也走这里刷新。详情只在仍选中同一篇时套用，慢响应不覆盖新选中的
   // 论文（含期间关闭详情的情况）。
+  // W04/F04：刷新与搜索共用共享 loading——发起即接管，结束权属于仍是最新序号
+  // 的请求：刷新抢占了挂起搜索的序号后，由刷新在自身结束时（含失败）解除
+  // loading；挂起搜索随后过期返回，既不写数据也不动 loading。刷新不参与
+  // loading 生命周期会导致 loading 永久残留，导入抽屉按钮持续禁用。
   async function refreshOrganization(paperId?: number): Promise<boolean> {
     const seq = ++searchSeqRef.current;
-    const [nextPapers, nextTags, nextCollections, nextSelected] = await Promise.all([
-      fetchPapersUpTo(papersLengthRef.current, serverQueryRef.current),
-      api.listTags(),
-      api.listCollections(),
-      paperId ? api.getPaper(paperId) : Promise.resolve(null),
-    ]);
-    if (!responseIsCurrent(seq, searchSeqRef.current)) return false;
-    setPapers(nextPapers);
-    setTags(nextTags);
-    setCollections(nextCollections);
-    if (nextSelected) {
-      setSelected((cur) => (selectionMatchesPaper(cur?.id, nextSelected.id) ? nextSelected : cur));
+    setLoading(true);
+    try {
+      const [nextPapers, nextTags, nextCollections, nextSelected] = await Promise.all([
+        fetchPapersUpTo(papersLengthRef.current, serverQueryRef.current),
+        api.listTags(),
+        api.listCollections(),
+        paperId ? api.getPaper(paperId) : Promise.resolve(null),
+      ]);
+      if (!responseIsCurrent(seq, searchSeqRef.current)) return false;
+      setPapers(nextPapers);
+      setTags(nextTags);
+      setCollections(nextCollections);
+      if (nextSelected) {
+        setSelected((cur) => (selectionMatchesPaper(cur?.id, nextSelected.id) ? nextSelected : cur));
+      }
+      return true;
+    } finally {
+      if (loadingReleaseBelongsTo(seq, searchSeqRef.current)) setLoading(false);
     }
-    return true;
   }
 
   useEffect(() => {
