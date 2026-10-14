@@ -49,7 +49,8 @@ def mock_crossref(monkeypatch, doi="10.1038/any"):
 
 def test_upload_with_doi_uses_verified_metadata_not_filename(client, monkeypatch):
     mock_crossref(monkeypatch, "10.1038/s41586-019-1234-5")
-    raw = make_pdf("Intro. doi:10.1038/s41586-019-1234-5")
+    # W01 收紧契约：body 候选必须过题名核验，正文自带检索命中的题名作自身声明。
+    raw = make_pdf("Verified Title\nIntro. doi:10.1038/s41586-019-1234-5")
     res = upload(client, raw, "downloaded-paper-2024.pdf")
     assert res.status_code == 200
     body = res.json()
@@ -64,7 +65,8 @@ def test_upload_with_doi_uses_verified_metadata_not_filename(client, monkeypatch
 
 def test_same_bytes_upload_stays_one_paper(client, monkeypatch):
     mock_crossref(monkeypatch, "10.1038/s41586-019-1234-5")
-    raw = make_pdf("Intro. doi:10.1038/s41586-019-1234-5")
+    # W01：正文含自身题名以满足 body 候选的题名核验（契约收紧，非放宽）。
+    raw = make_pdf("Verified Title\nIntro. doi:10.1038/s41586-019-1234-5")
     first = upload(client, raw, "a.pdf").json()
     second = upload(client, raw, "b.pdf")
     assert second.status_code == 200
@@ -74,9 +76,10 @@ def test_same_bytes_upload_stays_one_paper(client, monkeypatch):
 
 def test_same_doi_different_bytes_keeps_stored_pdf(client, monkeypatch):
     mock_crossref(monkeypatch, "10.1038/merge")
-    first_raw = make_pdf("Study body A. doi:10.1038/merge")
+    # W01：正文含自身题名以满足 body 候选的题名核验（契约收紧，非放宽）。
+    first_raw = make_pdf("Verified Title\nStudy body A. doi:10.1038/merge")
     first = upload(client, first_raw, "a.pdf").json()
-    second = upload(client, make_pdf("Expanded study body B. doi:10.1038/merge"), "b.pdf")
+    second = upload(client, make_pdf("Verified Title\nExpanded study body B. doi:10.1038/merge"), "b.pdf")
     assert second.status_code == 200
     body = second.json()
     assert body["id"] == first["id"]
@@ -92,7 +95,8 @@ def test_pdf_with_known_doi_attaches_to_bibtex_record_without_overwrite(client, 
               "author={Ada Lovelace and Bo Bai}, year={2020}, doi={10.1038/keepme}}")
     first = client.post("/api/papers/bibtex", json={"bibtex": bibtex}).json()[0]
     mock_crossref(monkeypatch, "10.1038/keepme")
-    res = upload(client, make_pdf("Body. doi:10.1038/keepme"), "file.pdf")
+    # W01：正文含自身题名以满足 body 候选的题名核验（契约收紧，非放宽）。
+    res = upload(client, make_pdf("Verified Title\nBody. doi:10.1038/keepme"), "file.pdf")
     assert res.status_code == 200
     body = res.json()
     assert body["id"] == first["id"]
@@ -111,7 +115,10 @@ def test_crossref_outage_creates_paper_with_filename_title(client, monkeypatch):
     assert res.status_code == 200
     body = res.json()
     assert body["title"] == "My Paper Title"
-    assert body["doi"] == "10.1038/slow"
+    # W01/F02 契约收紧：查询失败时未确认 DOI 不写入记录、不参与去重，
+    # 条目独立保存并标记身份未确认（旧断言 doi=='10.1038/slow' 固化的是缺陷行为）。
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
     assert body["identity"]["status"] == "unavailable"
     assert body["identity"]["error_type"] == "TimeoutError"
 
@@ -125,11 +132,12 @@ def test_arxiv_id_stored_and_second_rendition_merges(client, monkeypatch):
     monkeypatch.setattr("app.ingestion.sources.fetch_arxiv", fetch_arxiv)
     monkeypatch.setattr("app.ingestion.sources.fetch_crossref",
                         lambda doi: pytest.fail("crossref must not run when arXiv verified"))
-    first = upload(client, make_pdf("arXiv:2508.17122v7"), "one.pdf").json()
+    # W01：正文含自身题名以满足 body 候选的题名核验（契约收紧，非放宽）。
+    first = upload(client, make_pdf("Arxiv Title\narXiv:2508.17122v7"), "one.pdf").json()
     assert first["arxiv_id"] == "2508.17122v7"
     assert first["title"] == "Arxiv Title"
     assert first["identity"]["source"] == "arxiv" and first["identity"]["status"] == "retrieved"
-    second = upload(client, make_pdf("arXiv:2508.17122v7 with extra body"), "two.pdf")
+    second = upload(client, make_pdf("Arxiv Title\narXiv:2508.17122v7 with extra body"), "two.pdf")
     assert second.status_code == 200
     assert second.json()["id"] == first["id"]
     assert total_papers(client) == 1
@@ -251,7 +259,9 @@ def test_cited_paper_with_pdf_keeps_bytes_and_new_document_survives(client, monk
         "10.1234/cited-paper": {"title": "Cited Earlier Work", "year": 2019},
         "10.1234/actual-paper": {"title": "Actual New Paper", "year": 2026},
     })
-    cited_pdf = make_pdf("Body. doi:10.1234/cited-paper")
+    # W01 契约收紧：body 候选须过题名核验，故被引 PDF 正文带自身题名；
+    # 断言不变（被引记录字节保留、新文档独立、共 2 条）。
+    cited_pdf = make_pdf("Cited Earlier Work\nBody. doi:10.1234/cited-paper")
     first = upload(client, cited_pdf, "cited.pdf").json()
     raw = make_pages_pdf(REPRO_PAGES)
     res = upload(client, raw, "actual-paper.pdf")
@@ -343,3 +353,215 @@ def test_cited_arxiv_id_does_not_hijack_upload(client, monkeypatch):
     assert body["identity"]["status"] == "retrieved"
     assert total_papers(client) == 2
     assert get_paper(client, old["id"])["has_pdf"] is False
+
+
+# --- W01（F01/F02 二次返工）：完整参考文献条目与查询失败路径 ------------------
+
+INDEPENDENT_PAGES = [
+    ["Actual Independent New Study", "This is our own different research."],
+]
+
+
+def test_full_reference_entry_with_cited_title_does_not_self_identify(client, monkeypatch):
+    # F01 主反例：完整参考文献条目（含被引题名+DOI）不能自证上传文档身份；
+    # 被引论文的标题、标识与 PDF 关联必须完全不变，新文档独立可访问。
+    cited = client.post("/api/papers/bibtex", json={"bibtex": CITED_BIBTEX}).json()[0]
+    mock_crossref_map(monkeypatch, {
+        "10.1234/ref-present": {"title": "Cited Earlier Work", "year": 2019},
+    })
+    raw = make_pages_pdf(INDEPENDENT_PAGES + [
+        ["References", "A. Author. Cited Earlier Work. doi:10.1234/ref-present"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != cited["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unconfirmed"
+    assert body["identity"]["reason"] == "unverified_title"
+    assert body["has_pdf"] is True
+    assert total_papers(client) == 2
+    cited_now = get_paper(client, cited["id"])
+    assert cited_now["title"] == "Cited Earlier Work"
+    assert cited_now["doi"] == "10.1234/cited-paper"
+    assert cited_now["has_pdf"] is False
+    with Session(get_engine()) as session:
+        fresh = session.get(Paper, body["id"])
+        assert fresh.doi is None
+        assert Path(fresh.pdf_path).read_bytes() == raw
+
+
+def test_body_citation_doi_is_not_self_identity_without_title_evidence(client, monkeypatch):
+    # F01 附带反例：正文中单个被引 DOI（即便带 doi: 标签）不是文档自身身份，
+    # 不能因“唯一候选”直接归并到库中已有论文。
+    existing = client.post("/api/papers/bibtex", json={"bibtex": (
+        "@article{cited, title={Compared Baseline Method}, author={B. Beta}, "
+        "year={2020}, doi={10.1234/body-citation}}")}).json()[0]
+    mock_crossref_map(monkeypatch, {
+        "10.1234/body-citation": {"title": "Compared Baseline Method", "year": 2020},
+    })
+    raw = make_pdf("We compare with doi:10.1234/body-citation and propose our method.")
+    res = upload(client, raw, "ours.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != existing["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert total_papers(client) == 2
+    assert get_paper(client, existing["id"])["has_pdf"] is False
+    with Session(get_engine()) as session:
+        assert Path(session.get(Paper, body["id"]).pdf_path).read_bytes() == raw
+
+
+def _mock_crossref_timeout(monkeypatch):
+    def timeout(identifier):
+        raise TimeoutError("crossref down")
+    monkeypatch.setattr("app.ingestion.sources.fetch_crossref", timeout)
+
+
+def test_crossref_timeout_saves_independent_unconfirmed_without_doi(client, monkeypatch):
+    # F02：查询超时后未确认标识不得下沉到去重；库中被引论文原样保留。
+    cited = client.post("/api/papers/bibtex", json={"bibtex": CITED_BIBTEX}).json()[0]
+    _mock_crossref_timeout(monkeypatch)
+    raw = make_pages_pdf(INDEPENDENT_PAGES + [
+        ["References", "A. Author. Cited Earlier Work. doi:10.1234/cited-paper"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != cited["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unavailable"
+    assert body["identity"]["error_type"] == "TimeoutError"
+    assert total_papers(client) == 2
+    assert get_paper(client, cited["id"])["has_pdf"] is False
+    with Session(get_engine()) as session:
+        assert Path(session.get(Paper, body["id"]).pdf_path).read_bytes() == raw
+
+
+def test_crossref_none_result_never_merges(client, monkeypatch):
+    # F02 None 分支：查询返回 None（无可用元数据）时标识同样必须隔离。
+    cited = client.post("/api/papers/bibtex", json={"bibtex": CITED_BIBTEX}).json()[0]
+    monkeypatch.setattr("app.ingestion.sources.fetch_crossref", lambda identifier: None)
+    raw = make_pages_pdf(INDEPENDENT_PAGES + [
+        ["References", "A. Author. Cited Earlier Work. doi:10.1234/cited-paper"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != cited["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert total_papers(client) == 2
+    assert get_paper(client, cited["id"])["has_pdf"] is False
+
+
+def test_unexpected_lookup_exception_saves_independent(client, monkeypatch):
+    # F02 异常分支：校验层内部异常同样不得把候选标识用于自动归并。
+    cited = client.post("/api/papers/bibtex", json={"bibtex": CITED_BIBTEX}).json()[0]
+    def boom(doi):
+        raise RuntimeError("unexpected verification failure")
+    monkeypatch.setattr("app.ingestion.sources.lookup_doi_metadata", boom)
+    raw = make_pages_pdf(INDEPENDENT_PAGES + [
+        ["References", "A. Author. Cited Earlier Work. doi:10.1234/cited-paper"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != cited["id"]
+    assert body["doi"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unavailable"
+    assert body["identity"]["error_type"] == "RuntimeError"
+    assert total_papers(client) == 2
+    assert get_paper(client, cited["id"])["has_pdf"] is False
+
+
+def test_timeout_with_cited_pdf_present_keeps_existing_bytes(client, monkeypatch):
+    # F02：库中被引论文已有 PDF 时，其字节不变；新文档独立保存不丢弃。
+    # 先用成功 mock 让被引 PDF 合法并入被引记录，再切换超时 mock 上传新文档
+    #（W01 契约：body 候选须过题名核验，故 PDF 正文带自身题名）。
+    client.post("/api/papers/bibtex", json={"bibtex": CITED_BIBTEX})
+    mock_crossref_map(monkeypatch, {
+        "10.1234/cited-paper": {"title": "Cited Earlier Work", "year": 2019},
+    })
+    cited_pdf = make_pdf("Cited Earlier Work\nBody. doi:10.1234/cited-paper")
+    first = upload(client, cited_pdf, "cited.pdf").json()
+    _mock_crossref_timeout(monkeypatch)
+    raw = make_pages_pdf(INDEPENDENT_PAGES + [
+        ["References", "A. Author. Cited Earlier Work. doi:10.1234/cited-paper"],
+    ])
+    res = upload(client, raw, "independent.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != first["id"]
+    assert body["identity_status"] == "unconfirmed"
+    assert total_papers(client) == 2
+    with Session(get_engine()) as session:
+        kept = Path(session.get(Paper, first["id"]).pdf_path).read_bytes()
+    assert kept == cited_pdf
+
+
+def test_arxiv_timeout_with_reference_only_id_saves_independent(client, monkeypatch):
+    # F02/F01 arXiv 分支：参考文献节内的 arXiv id 查询失败时同样不得归并。
+    old = client.post("/api/papers/manual", json={
+        "title": "Attention Old Work", "arxiv_id": "1706.03762"}).json()
+    def timeout(arxiv_id):
+        raise TimeoutError("arxiv down")
+    monkeypatch.setattr("app.ingestion.sources.fetch_arxiv_metadata", timeout)
+    raw = make_pages_pdf([
+        ["Some study text without identifiers in the body."],
+        ["References", "D. Dao. Attention Old Work. arXiv:1706.03762"],
+    ])
+    res = upload(client, raw, "ext.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["id"] != old["id"]
+    assert body["arxiv_id"] is None
+    assert body["identity_status"] == "unconfirmed"
+    assert body["identity"]["status"] == "unavailable"
+    assert total_papers(client) == 2
+    assert get_paper(client, old["id"])["has_pdf"] is False
+
+
+# --- W01 正当路径回归：自身声明明确的正常导入不被降级 -------------------------
+
+def test_metadata_title_match_confirms_identity_and_merges(client, monkeypatch):
+    # 元数据 title 与检索题名一致即自身声明：正常确认合并，不标未确认。
+    mock_crossref(monkeypatch, "10.1038/own-work")
+    raw = make_pdf("Body without the title printed. doi:10.1038/own-work",
+                   meta={"title": "Verified Title"})
+    res = upload(client, raw, "own.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["title"] == "Verified Title"
+    assert body["doi"] == "10.1038/own-work"
+    assert body["identity"]["status"] == "retrieved"
+    assert body["identity_status"] is None
+
+
+def test_metadata_doi_with_matching_title_merges(client, monkeypatch):
+    # 元数据 subject 携带自身 DOI + 元数据题名一致：正常确认合并。
+    mock_crossref(monkeypatch, "10.1038/meta-doi")
+    raw = make_pdf("No identifiers printed in the body.", meta={
+        "title": "Verified Title", "subject": "doi:10.1038/meta-doi"})
+    res = upload(client, raw, "meta.pdf")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["title"] == "Verified Title"
+    assert body["doi"] == "10.1038/meta-doi"
+    assert body["identity"]["status"] == "retrieved"
+    assert body["identity_status"] is None
+
+
+def test_unconfirmed_upload_same_bytes_still_dedups(client, monkeypatch):
+    # 字节相同文件的合法去重不受未确认身份影响：重复上传不产生第二条记录。
+    _mock_crossref_timeout(monkeypatch)
+    raw = make_pdf("Intro. doi:10.1038/slow-repeat")
+    first = upload(client, raw, "a.pdf").json()
+    second = upload(client, raw, "b.pdf")
+    assert second.status_code == 200
+    assert second.json()["id"] == first["id"]
+    assert total_papers(client) == 1

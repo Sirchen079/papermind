@@ -1,8 +1,15 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import fitz
 
-from app.ingestion.pdf_identify import extract_candidates, extract_from_text, identify_pdf
+from app.ingestion.pdf_identify import (
+    _merge_conflict,
+    _self_declared_text,
+    extract_candidates,
+    extract_from_text,
+    identify_pdf,
+)
 
 ALL_NONE = {'doi': None, 'arxiv_id': None, 'title': None}
 
@@ -151,3 +158,78 @@ def test_arxiv_candidates_reported_with_kinds():
         ('2601.00001v1', 'body'),
         ('1706.03762', 'reference'),
     ]
+
+
+# --- W01（F01 二次返工）：参考文献节内的题名一律不算上传文档的自身声明 ----------
+
+def _merge_candidate(text, **kw):
+    base = {'title': None, 'text': text, 'doi': None, 'doi_kind': None,
+            'doi_candidates': [], 'arxiv_id': None, 'arxiv_kind': None,
+            'arxiv_candidates': []}
+    base.update(kw)
+    return base
+
+
+def test_self_declared_text_stops_at_references_heading():
+    text = ("Title Here\nBody mentions the work.\nReferences\n"
+            "A. Author. Title Here. doi:10.1234/x")
+    assert _self_declared_text(text) == "Title Here\nBody mentions the work.\n"
+    assert "References" not in _self_declared_text(text)
+    assert _self_declared_text("Plain body without a heading.") == \
+        "Plain body without a heading."
+
+
+def test_reference_title_in_reference_section_is_not_self_declaration():
+    # F01 主反例（单元级）：被引题名只出现在参考文献条目里属于循环自证，
+    # 不得据此把检索到的记录当成上传文档自身。
+    candidate = _merge_candidate(
+        "Actual Independent New Study\nThis is our own different research.\n"
+        "References\nA. Author. Cited Earlier Work. doi:10.1234/ref-present",
+        doi='10.1234/ref-present', doi_kind='reference',
+        doi_candidates=[{'doi': '10.1234/ref-present', 'kind': 'reference',
+                         'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Cited Earlier Work")) == 'unverified_title'
+
+
+def test_cited_title_in_body_before_references_confirms_identity():
+    # 检索题名出现在参考文献节之前的正文中：允许作为自身声明证据。
+    candidate = _merge_candidate(
+        "Actual New Paper\nIntro text.\n\nReferences\nA. Author. 10.1234/cited.\n",
+        doi='10.1234/cited', doi_kind='reference',
+        doi_candidates=[{'doi': '10.1234/cited', 'kind': 'reference',
+                         'labeled': False}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Actual New Paper")) is None
+
+
+def test_single_body_candidate_requires_title_verification():
+    # F01 附带反例（单元级）：单个 body 候选（含 doi: 标签写法）不能因唯一免检。
+    candidate = _merge_candidate(
+        "We compare with doi:10.1234/body-citation and propose our method.",
+        doi='10.1234/body-citation', doi_kind='body',
+        doi_candidates=[{'doi': '10.1234/body-citation', 'kind': 'body',
+                         'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Compared Baseline Method")) == \
+        'unverified_title'
+
+
+def test_metadata_title_match_confirms_without_body_print():
+    # 元数据题名与检索题名一致：自身声明成立，题名未印在前两页正文也允许合并。
+    candidate = _merge_candidate(
+        "Body text without the title printed.",
+        doi='10.1234/self', doi_kind='body', title="Actual New Paper",
+        doi_candidates=[{'doi': '10.1234/self', 'kind': 'body', 'labeled': True}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Actual New Paper")) is None
+
+
+def test_metadata_candidate_is_self_declared():
+    # 候选来自 PDF 元数据（subject/keywords）即自身声明，无需正文题名复核。
+    candidate = _merge_candidate(
+        "Anything.", doi='10.1234/meta', doi_kind='metadata',
+        doi_candidates=[{'doi': '10.1234/meta', 'kind': 'metadata',
+                         'labeled': False}])
+    assert _merge_conflict(
+        candidate, SimpleNamespace(title="Whatever Else")) is None

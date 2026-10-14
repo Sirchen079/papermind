@@ -117,6 +117,11 @@ def persist_fetched(
     # PDF uploads dedup by identifier only: a shared title like "Supplementary
     # information" must never merge two different documents. Other sources keep
     # title-based dedup.
+    if identity_status == 'unconfirmed':
+        # W01/F02 持久化边界：身份未确认的候选标识既不参与自动归并，也不写入
+        # 记录；条目独立保存，等用户后续确认。字节相同的合法去重不受影响。
+        fetched.doi = None
+        fetched.arxiv_id = None
     existing = target if target is not None else find_duplicate(
         session, fetched.doi, fetched.arxiv_id,
         None if fetched.source == "pdf" else fetched.title)

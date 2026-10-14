@@ -232,14 +232,25 @@ def identify_pdf(pdf_input: bytes | Path) -> dict:
     return {key: full.get(key) for key in _ALL_NONE}
 
 
+def _self_declared_text(text: str) -> str:
+    """The region where a title can count as this document's own statement:
+    everything before the reference-list heading. A title seen inside the
+    reference list belongs to a cited work and never proves this upload's
+    identity (W01/F01)."""
+    heading = _REFERENCES_HEADING_RE.search(text or '')
+    return text[:heading.start()] if heading else (text or '')
+
+
 def _merge_conflict(candidate: dict, verified) -> str | None:
     """``None`` when the retrieved metadata may auto-merge, else a reason code.
 
     A lookup hit only proves the record exists, not that it matches this
-    upload. Merging additionally requires the retrieved identity to be
-    consistent with what the document itself declares: its own metadata title,
-    or — when several distinct candidates were seen or only a reference-list
-    candidate exists — the retrieved title appearing in the document text.
+    upload. Merging additionally requires self-declared evidence: the
+    candidate itself comes from the PDF metadata, the document's own metadata
+    title equals the retrieved title, or the retrieved title appears in the
+    body BEFORE the reference list. A title found only inside the reference
+    list is the cited work describing itself, and a single body candidate is
+    never exempt from this check (W01/F01).
     """
     verified_title = (verified.title or '').strip()
     pdf_title = (candidate.get('title') or '').strip()
@@ -252,9 +263,12 @@ def _merge_conflict(candidate: dict, verified) -> str | None:
     selected_kind = (candidate.get('doi_kind') if candidate.get('doi')
                      else candidate.get('arxiv_kind'))
     ambiguous = len(values) > 1
-    if selected and verified_title and (ambiguous or selected_kind == 'reference'):
-        text_norm = normalize_title(candidate.get('text') or '')
-        if text_norm and normalize_title(verified_title) not in text_norm:
+    if selected and (selected_kind != 'metadata' or ambiguous):
+        verified_norm = normalize_title(verified_title)
+        pdf_match = bool(pdf_title and verified_title
+                         and normalize_title(pdf_title) == verified_norm)
+        body_norm = normalize_title(_self_declared_text(candidate.get('text') or ''))
+        if not pdf_match and (not verified_norm or verified_norm not in body_norm):
             return 'unverified_title'
     return None
 
@@ -276,10 +290,12 @@ def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dic
     verification came from arxiv/crossref/none and its status.
 
     Verified values are applied only when they are consistent with the
-    document (see :func:`_merge_conflict`). On conflict or reference-only
-    evidence the receipt degrades to ``unconfirmed`` with the contested
-    identifiers withheld, so an independent entry is saved instead of merging
-    into whichever record the lookup happened to hit.
+    document (see :func:`_merge_conflict`). Whenever the lookup fails to
+    confirm the document — conflict, reference-only evidence, outage, or an
+    escaping error — the candidate identifiers are withheld from ``fields``
+    (W01/F02: they must never drive dedup) and the receipt degrades to
+    ``unconfirmed``/``unavailable``, so an independent entry is saved instead
+    of merging into whichever record the lookup happened to hit.
     """
     candidate = _identify_pdf_full(data)
     fields = {'title': candidate.get('title'), 'authors': [], 'abstract': None,
@@ -287,6 +303,7 @@ def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dic
               'pages': None, 'doi': candidate.get('doi'),
               'arxiv_id': candidate.get('arxiv_id')}
     receipt: dict = {'status': 'none', 'source': 'none'}
+    confirmed = False
     try:
         verified = None
         if fields['arxiv_id']:
@@ -307,6 +324,7 @@ def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dic
                            'identifier': receipt.get('identifier'), 'reason': conflict,
                            'candidates': _candidate_provenance(candidate)}
             else:
+                confirmed = True
                 fields['title'] = verified.title or fields['title']
                 if verified.authors:
                     fields['authors'] = [str(author) for author in verified.authors]
@@ -317,4 +335,15 @@ def verify_upload_identity(data: bytes, filename: str | None) -> tuple[dict, dic
                         fields[field] = value
     except Exception as exc:  # noqa: BLE001 — verification must never block an upload
         receipt = {**receipt, 'status': 'unavailable', 'error_type': type(exc).__name__}
+    if not confirmed:
+        # W01/F02: an outage, an escaping error, or a lookup that confirmed
+        # nothing leaves the candidate identifiers unverified. They must never
+        # reach dedup (find_duplicate) — the entry is saved independently and
+        # the route marks it identity_status='unconfirmed'. The title stays
+        # whatever the document itself declared.
+        had_claim = bool(candidate.get('doi') or candidate.get('arxiv_id'))
+        fields['doi'] = None
+        fields['arxiv_id'] = None
+        if had_claim and receipt.get('status') not in ('unconfirmed', 'unavailable'):
+            receipt = {**receipt, 'status': 'unconfirmed', 'reason': 'unverified_identity'}
     return fields, receipt
