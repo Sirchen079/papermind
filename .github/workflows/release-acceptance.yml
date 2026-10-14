@@ -1,0 +1,111 @@
+# PaperMind 发布验收（安装/升级/卸载）在一次性 GitHub 托管 runner 上执行。
+#
+# 边界说明：
+# - 新安装器从 draft release 下载（GH_TOKEN 使用仓库自身的 github.token）。
+#   draft 下载仅用于验收，不构成公开发布；正式发布仍由人工另行执行。
+# - 升级基线是已发布 v0.5.4 安装器，SHA-256 固定核验
+#   （75d5778c728b3d14d5cdbc11b3a78d62f4982e4edbb28e124be68fcd3443efc7）。
+# - 全部安装/卸载发生在 runner 一次性环境中，结束后即销毁；不触碰任何本机数据。
+# - 不修改 AppId。桌面 GUI 验收已在工作站由 build/verify_desktop.py 完成，
+#   CI 不重复 GUI 检查（runner 桌面交互不可靠，不得以此冒充桌面验收）。
+# - 若 draft release 下载报 404：说明该 tag 下 draft 对 github.token 不可见
+#   （或 tag 未创建），工作流会明确失败，不做静默重试或改包替代。
+#
+# actions 以主版本固定（checkout@v4、upload-artifact@v4）；如需 SHA 级固定可后续收紧。
+
+name: release-acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Draft release tag carrying the new installer (acceptance only)"
+        required: true
+        default: "v0.6.31"
+      expected_sha256:
+        description: "SHA-256 (64 hex chars) of the new PaperMind-Setup-*.exe asset under that tag"
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  installer-acceptance:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - name: Check out acceptance script
+        uses: actions/checkout@v4
+
+      - name: Download installers (draft: new; published v0.5.4: upgrade baseline)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Path accept/downloads -Force | Out-Null
+          gh release download "$env:TAG" -R "$env:GITHUB_REPOSITORY" --pattern "PaperMind-Setup-*.exe" --dir accept/downloads
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download the candidate installer' }
+          gh release download v0.5.4 -R "$env:GITHUB_REPOSITORY" --pattern "PaperMind-Setup-0.5.4.exe" --dir accept/downloads
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to download the baseline installer' }
+          $old = 'accept/downloads/PaperMind-Setup-0.5.4.exe'
+          if (-not (Test-Path $old)) { throw "v0.5.4 baseline installer missing after download" }
+          $news = @(Get-ChildItem accept/downloads -Filter 'PaperMind-Setup-*.exe' |
+            Where-Object { $_.Name -ne 'PaperMind-Setup-0.5.4.exe' })
+          if ($news.Count -ne 1) { throw "expected exactly 1 new installer under tag '$env:TAG', found $($news.Count)" }
+          Add-Content -Path $env:GITHUB_ENV -Value "NEW_INSTALLER=$($news[0].FullName)"
+
+      - name: Verify installer SHA-256 (old fixed, new from required input)
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $knownOld = '75d5778c728b3d14d5cdbc11b3a78d62f4982e4edbb28e124be68fcd3443efc7'
+          $oldHash = (Get-FileHash 'accept/downloads/PaperMind-Setup-0.5.4.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($oldHash -ne $knownOld) { throw "v0.5.4 installer SHA-256 mismatch: got $oldHash" }
+          $expected = $env:EXPECTED_SHA256.Trim().ToLowerInvariant()
+          if ($expected -notmatch '^[0-9a-f]{64}$') { throw "expected_sha256 input must be 64 hex chars" }
+          $newHash = (Get-FileHash $env:NEW_INSTALLER -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($newHash -ne $expected) { throw "new installer SHA-256 mismatch: got $newHash, expected $expected" }
+          Add-Content -Path $env:GITHUB_ENV -Value "NEW_INSTALLER_SHA256=$newHash"
+
+      - name: Install / upgrade / uninstall acceptance (ephemeral runner only)
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & './build/verify_installer_ci.ps1' `
+            -NewSetup "$env:NEW_INSTALLER" `
+            -OldSetup 'accept/downloads/PaperMind-Setup-0.5.4.exe' `
+            -ExpectedNewSha256 "$env:EXPECTED_SHA256" `
+            -Tag "$env:TAG" `
+            -ReportDir 'accept/report'
+          exit $LASTEXITCODE
+
+      - name: Write job summary
+        if: always()
+        run: |
+          $report = 'accept/report/acceptance-report.json'
+          if (Test-Path $report) {
+            $j = Get-Content $report -Raw | ConvertFrom-Json
+            $fail = @($j.checks | Where-Object { $_.status -eq 'fail' })
+            "## Release acceptance: $($j.result)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            "blocking failures: $($fail.Count)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+            foreach ($f in $fail) { "- $($f.phase)/$($f.name): $($f.detail)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+            "desktop GUI: not run in CI; workstation build/verify_desktop.py remains the desktop authority" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          } else {
+            "## Release acceptance: acceptance-report.json missing (script failed before writing)" | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload acceptance artifacts (report + installer logs only)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-acceptance-report
+          path: accept/report/**
+          if-no-files-found: error
