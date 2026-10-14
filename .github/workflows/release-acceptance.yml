@@ -26,8 +26,9 @@ on:
         description: "SHA-256 (64 hex chars) of the new PaperMind-Setup-*.exe asset under that tag"
         required: true
 
+# GitHub requires write access to view unpublished release drafts.
 permissions:
-  contents: read
+  contents: write
 
 defaults:
   run:
