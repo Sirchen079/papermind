@@ -140,6 +140,11 @@ function Reset-DataRoot {
   }
 }
 
+function Get-NumericVersion([string]$Path) {
+  $v = (Get-Item -LiteralPath $Path).VersionInfo
+  return "$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart)"
+}
+
 function Get-ExeEvidence([string]$Phase, [string]$ExePath) {
   $sha = Get-Sha $ExePath
   $ver = (Get-Item -LiteralPath $ExePath).VersionInfo.FileVersion
@@ -157,7 +162,8 @@ try {
   $newSha = Get-Sha $NewSetup
   Assert-True ($oldSha -eq $OldKnownSha) 'P' 'old-sha-fixed' "v0.5.4 安装器 SHA-256 与已知值一致"
   Assert-True ($newSha -eq $ExpectedNewSha256.ToLowerInvariant()) 'P' 'new-sha-expected' "新安装器 SHA-256 与输入一致"
-  Assert-True ((Get-Item -LiteralPath $NewSetup).VersionInfo.FileVersion -eq $NewVersion) 'P' 'new-setup-versioninfo' "新安装器 VersionInfo=$NewVersion"
+  $setupVersion = Get-NumericVersion $NewSetup
+  Assert-True ($setupVersion -eq $NewVersion) 'P' 'new-setup-versioninfo' "Installer numeric version=$setupVersion; expected=$NewVersion"
   Assert-True (-not (Test-Path -LiteralPath $DataRoot)) 'P' 'runner-data-clean' "前置：$DataRoot 不存在（已有目录会让迁移断言失真）"
   $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
   $script:Evidence['runner_elevated'] = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -196,7 +202,7 @@ try {
   Assert-True ($newLoc -ieq $oldLoc) 'A' 'upgrade-in-place' "升级复用原目录：$newLoc"
   Assert-True ($null -eq (Get-UninstallEntry 'HKCU')) 'A' 'no-hkcu-duplicate' '升级后不得产生 HKCU 双模式残留'
   $newExe = Join-Path $newLoc 'PaperMind.exe'
-  Assert-True ((Get-Item -LiteralPath $newExe).VersionInfo.FileVersion -eq $NewVersion) 'A' 'new-exe-fileversion' "$newExe FileVersion=$NewVersion"
+  Assert-True ((Get-NumericVersion $newExe) -eq $NewVersion) 'A' 'new-exe-fileversion' "$newExe numeric version must equal $NewVersion"
   $script:Evidence['new_install_location'] = $newLoc
   $script:Evidence['new_exe'] = Get-ExeEvidence 'A' $newExe
   Assert-True ((Get-Sha $newExe) -eq $NewExeSha) 'A' 'installed-exe-hash' 'Installed executable matches the independently tested bundle'
