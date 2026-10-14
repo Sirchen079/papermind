@@ -197,3 +197,60 @@ def test_export_docx_keeps_indented_appendix_and_fence_example_both_styles(clien
             assert '正文先引 (张三, 2019)。' in texts
     with Session(get_engine()) as s:
         assert s.get(LibraryReview, 'docx-f03').content == content
+
+
+def test_export_docx_rewrites_appendix_citations_both_styles(client):
+    # O01（W03 回归，Markdown/DOCX 共享渲染路径）：附录中的 [Pn] 同样参与
+    # 收集与改写（GB/T 顺延编号、APA 作者—年份）并进入参考列表；附录标题与
+    # 叙述文字保留；导出不写回、不污染数据库原稿。
+    with Session(get_engine()) as s:
+        rows = [Paper(source='manual', title='Paper Five', authors_json='["张三"]',
+                      year=2019, arxiv_id='1901.00001'),
+                Paper(source='manual', title='Paper Two', authors_json='["Albert Einstein"]',
+                      year=2020, venue='Venue', volume='12', issue='3', pages='45-52',
+                      doi='10.1234/abc')]
+        s.add_all(rows);s.commit();ids = [r.id for r in rows]
+        content = (f'正文先引 [P{ids[0]}]。\n\n## 引用文献\n\n- [P{ids[0]}] old\n\n'
+                   f'## Appendix\n\nExtra evidence [P{ids[1]}] and [P{ids[0]}].\n')
+        s.add(LibraryReview(id='docx-o01', question='附录引用', status='ready',
+                            content=content, version=1))
+        s.commit()
+    for style in ('gbt', 'apa'):
+        resp, xml = fetch_docx(client, review_id='docx-o01', style=style)
+        texts = [p.text for p in paragraphs(resp.content)]
+        by_text = {p.text: p for p in paragraphs(resp.content)}
+        assert by_text['Appendix'].style.name == 'Heading 2'
+        assert '[P' not in xml
+        if style == 'gbt':
+            assert '正文先引 [1]。' in texts and 'Extra evidence [2] and [1].' in texts
+            assert '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.' in texts
+            assert '[2] EINSTEIN A. Paper Two[J]. Venue, 2020, 12(3): 45-52. DOI: 10.1234/abc.' in texts
+        else:
+            assert '正文先引 (张三, 2019)。' in texts
+            assert 'Extra evidence (Einstein, 2020) and (张三, 2019).' in texts
+            assert 'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc' in texts
+    with Session(get_engine()) as s:
+        assert s.get(LibraryReview, 'docx-o01').content == content
+
+
+def test_export_docx_apa_et_al_collision_expands_authors_not_suffixes(client):
+    # F05（W03 回归，Markdown/DOCX 共享渲染路径）：不同作者组缩写碰撞在 DOCX
+    # 中同样展开后续姓氏消歧，正文与列表都不加年份字母。
+    with Session(get_engine()) as s:
+        rows = [Paper(source='manual', title='Alpha Meta',
+                      authors_json='["Ada Smith", "Lee Jones", "Mo Kerr"]', year=2020),
+                Paper(source='manual', title='Beta Pool',
+                      authors_json='["Ada Smith", "Rae Lane", "Pia Moore"]', year=2020)]
+        s.add_all(rows);s.commit();ids = [r.id for r in rows]
+        content = f'两项 [P{ids[0]}] 与 [P{ids[1]}]。\n\n## 引用文献\n\n'
+        s.add(LibraryReview(id='docx-f05', question='消歧', status='ready',
+                            content=content, version=1))
+        s.commit()
+    resp, xml = fetch_docx(client, review_id='docx-f05', style='apa')
+    assert '(Smith, Jones, et al., 2020)' in xml and '(Smith, Lane, et al., 2020)' in xml
+    assert '2020a' not in xml and '2020b' not in xml
+    assert 'Smith et al.' not in xml
+    # 含 & 的条目在 document.xml 里被转义，用段落文本断言列表内容。
+    texts = [p.text for p in paragraphs(resp.content)]
+    assert 'Smith, A., Jones, L., & Kerr, M. (2020). Alpha Meta.' in texts
+    assert 'Smith, A., Lane, R., & Moore, P. (2020). Beta Pool.' in texts

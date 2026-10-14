@@ -209,22 +209,114 @@ def test_render_apa_same_author_year_suffixes_shared_with_body():
         '(n.d.-a)', '(n.d.-b)', '(2019)', '(2020a)', '(2020b)']
 
 
-def test_render_apa_multi_author_same_first_author_shares_suffixes():
+def test_render_apa_same_full_group_same_year_keeps_suffixes():
+    # F05 规则一（W03 回归）：同一完整作者组同年多篇才加年份字母 a/b，文内与
+    # 列表一致（§8.19；Purdue OWL「use lower-case letters (a, b, c) with the
+    # year」）。修复前该行为只被「不同作者组」的错误用例覆盖（见下）。
+    papers = {
+        1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Pool', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n同一作者组两项 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert '(Smith et al., 2020a)' in body and '(Smith et al., 2020b)' in body
+    assert entries.splitlines() == [
+        'Smith, A., Jones, L., & Kerr, M. (2020a). Alpha Meta.',
+        'Smith, A., Jones, L., & Kerr, M. (2020b). Beta Pool.']
+    assert _apa_marks(body) == ['2020a', '2020b']
+    assert _apa_list_years(entries) == ['(2020a)', '(2020b)']
+
+
+def test_render_apa_et_al_collision_expands_authors_not_year_suffixes():
+    # F05 回归（W03）。替换原因：旧 test_render_apa_multi_author_same_first_author_
+    # shares_suffixes 把「不同作者组碰巧缩写成同一 Smith et al.」当成同一作者组
+    # 同年多篇，固化了 (Smith et al., 2020a/2020b) 的错误样式——这正是验收报告
+    # F05 指出的缺陷。APA（§8.18；Purdue OWL「avoid ambiguity by writing out
+    # more names」）只对同一完整作者组同年多篇加年份字母（上一用例），不同作者
+    # 组须展开足够多后续姓氏消歧。新契约更强：文内展开、正文与列表全年份无 a/b、
+    # 列表按作者字母序。修复前实际输出为 (Smith et al., 2020a)/(Smith et al.,
+    # 2020b) 且两条列表条目带 2020a/2020b。
     papers = {
         1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
                 venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
         2: dict(title='Beta Pool', authors=['Ada Smith', 'Rae Lane', 'Pia Moore'], year=2020,
                 venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
     }
-    content = '# 综述\n\n两项 [P1] 与 [P2] 文内都缩写成 Smith et al.。\n\n## 引用文献\n\n'
+    content = '# 综述\n\n不同作者组两项 [P1] 与 [P2]，默认缩写形式相同。\n\n## 引用文献\n\n'
     out = references.render_styled_markdown(content, papers, 'apa')
     body, entries = out.split('\n\n## 引用文献\n\n', 1)
-    # 文内形式相同（均为 Smith et al., 2020），按列表顺序共享 a/b 后缀才可一一对应。
-    assert '(Smith et al., 2020a)' in body and '(Smith et al., 2020b)' in body
+    assert '(Smith, Jones, et al., 2020)' in body and '(Smith, Lane, et al., 2020)' in body
+    assert 'Smith et al.' not in body
+    assert '2020a' not in out and '2020b' not in out
+    # 列表排序：姓氏序列 ('smith','jones','kerr') < ('smith','lane','moore')。
+    assert entries.splitlines() == [
+        'Smith, A., Jones, L., & Kerr, M. (2020). Alpha Meta.',
+        'Smith, A., Lane, R., & Moore, P. (2020). Beta Pool.']
+
+
+def test_render_apa_same_surname_different_persons_use_initials():
+    # F05 规则三（W03 回归）：同姓不同人（John/Amy Smith 均缩写为 Smith）按
+    # §8.20 用首作者名首字母区分（Purdue OWL：(E. Johnson, 2001; L. Johnson,
+    # 1998)），不加年份字母；列表条目不受影响。
+    papers = {
+        1: dict(title='Alpha Study', authors=['John Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Study', authors=['Amy Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n同姓不同人 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert '(J. Smith, 2024)' in body and '(A. Smith, 2024)' in body
+    assert '2024a' not in out and '2024b' not in out
+    assert entries.splitlines() == [
+        'Smith, J. (2024). Alpha Study.',
+        'Smith, A. (2024). Beta Study.']
+
+
+def test_render_apa_same_surname_same_initials_fall_back_to_given_names():
+    # F05 边界（W03 回归）：名首字母也相同时（Jane/June Smith 均为 J. Smith）
+    # 退到全名区分，仍是首作者限定；本实现不限定第二位及以后作者的名（Purdue
+    # OWL 该节只给单作者示例，超出最小实现的部分如实记录为边界）。
+    papers = {
+        1: dict(title='Alpha Study', authors=['Jane Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Study', authors=['June Smith'], year=2024,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n首字母相同 [P1] 与 [P2]。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert '(Jane Smith, 2024)' in body and '(June Smith, 2024)' in body
+    assert '2024a' not in out and '2024b' not in out
+    assert entries.splitlines() == [
+        'Smith, J. (2024). Alpha Study.',
+        'Smith, J. (2024). Beta Study.']
+
+
+def test_render_apa_mixed_group_collision_keeps_letters_within_same_group():
+    # F05 组合（W03 回归）：同一完整作者组两项同年（保留 a/b）与另一组同年
+    # 缩写碰撞（展开消歧、无字母）同时出现，互不干扰。
+    papers = {
+        1: dict(title='Alpha Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        2: dict(title='Beta Meta', authors=['Ada Smith', 'Lee Jones', 'Mo Kerr'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+        3: dict(title='Gamma Pool', authors=['Ada Smith', 'Rae Lane', 'Pia Moore'], year=2020,
+                venue=None, volume=None, issue=None, pages=None, doi=None, arxiv_id=None),
+    }
+    content = '# 综述\n\n[P1]、[P2] 同组，[P3] 另一组。\n\n## 引用文献\n\n'
+    out = references.render_styled_markdown(content, papers, 'apa')
+    body, entries = out.split('\n\n## 引用文献\n\n', 1)
+    assert '(Smith, Jones, et al., 2020a)' in body and '(Smith, Jones, et al., 2020b)' in body
+    assert '(Smith, Lane, et al., 2020)' in body
     assert entries.splitlines() == [
         'Smith, A., Jones, L., & Kerr, M. (2020a). Alpha Meta.',
-        'Smith, A., Lane, R., & Moore, P. (2020b). Beta Pool.']
-    assert _apa_marks(body) == ['2020a', '2020b']
+        'Smith, A., Jones, L., & Kerr, M. (2020b). Beta Meta.',
+        'Smith, A., Lane, R., & Moore, P. (2020). Gamma Pool.']
 
 
 def test_render_apa_missing_author_or_year_marked_not_fabricated():
@@ -429,6 +521,42 @@ def test_render_tilde_fence_char_length_and_close_rules():
     out3 = references.render_styled_markdown(shorter_close, PAPERS, 'gbt')
     assert '~~~~\n~~\n## 引用文献\n示例\n~~~~' in out3 and 'KEEP SHORT' in out3
     assert out3.count('\n\n## 引用文献\n\n') == 1
+
+
+def test_render_collects_and_rewrites_appendix_citations_after_references():
+    # O01 回归（W03）：文献节之后的附录引用同样参与收集与改写——保留章节与
+    # 叙述文字不等于保留内部系统占位符 [Pn]。GB/T 编号按正文首现（含附录首现）
+    # 顺延，附录里重复出现的正文引用不产生第二条；文献节自身旧条目中的 [Pn]
+    # 属于被替换的旧列表，不参与。修复前附录保持 [P2] 原样且 P2 不进列表。
+    content = ('正文 [P5]。\n\n## 引用文献\n\n- [P5] old\n\n'
+               '## Appendix\n\nExtra evidence [P2] and [P5].\n')
+    gbt = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert gbt == ('正文 [1]。\n\n## 引用文献\n\n'
+                   '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.\n'
+                   '[2] EINSTEIN A. Paper Two[J]. Venue, 2020, 12(3): 45-52. DOI: 10.1234/abc.\n\n'
+                   '## Appendix\n\nExtra evidence [2] and [1].\n')
+    apa = references.render_styled_markdown(content, PAPERS, 'apa')
+    assert apa == ('正文 (张三, 2019)。\n\n## 引用文献\n\n'
+                   'Einstein, A. (2020). Paper Two. Venue, 12(3), 45-52. https://doi.org/10.1234/abc\n'
+                   '张三 (2019). Paper Five. arXiv: 1901.00001\n\n'
+                   '## Appendix\n\nExtra evidence (Einstein, 2020) and (张三, 2019).\n')
+
+
+def test_render_never_touches_marks_inside_code_fences_or_unknown_marks():
+    # O01 边界（W03 回归）：收集与改写都跳过围栏内部——代码示例中的字面 [Pn]
+    # 是文本不是引用（修复前正文围栏里的 sample [P2] 会被改写成 [2]）；未知
+    # [Pn] 在正文与附录中都原样保留、不产生条目。
+    content = ('正文 [P5]。\n\n```text\nsample [P2] stays\n```\n\n'
+               '## 引用文献\n\n- [P5] old\n\n'
+               '## Appendix\n\nExtra evidence [P2].\n\n```text\nliteral [P999] stays\n```\n')
+    out = references.render_styled_markdown(content, PAPERS, 'gbt')
+    assert '正文 [1]。' in out
+    assert 'sample [P2] stays' in out and 'literal [P999] stays' in out
+    body, entries_and_tail = out.split('\n\n## 引用文献\n\n', 1)
+    entries, tail = entries_and_tail.split('\n\n## Appendix\n\n', 1)
+    assert '[1] 张三. Paper Five[J]. 2019. arXiv: 1901.00001.' in entries
+    assert '[2] EINSTEIN A. Paper Two' in entries
+    assert tail == 'Extra evidence [2].\n\n```text\nliteral [P999] stays\n```\n'
 
 
 def test_render_without_reference_section_appends_exactly_once():

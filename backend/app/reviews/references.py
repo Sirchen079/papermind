@@ -214,33 +214,130 @@ def _apa_in_text_authors(paper: dict) -> str:
     return f'{surnames[0]} et al.'
 
 
+# —— 文内消歧三规则（APA 7 §8.18–8.20；Purdue OWL In-Text Citations: Author/Authors）：
+# 同一完整作者组同年多篇 → 年份字母 a/b；不同作者组缩写碰撞（同首作者）→ 展开足够
+# 多的后续姓氏再加 et al.；同姓不同人 → 首作者加名首字母，首字母再撞则用全名。——
+def _apa_name_parts(name: str) -> tuple[str, str]:
+    """(姓氏, 名) 拆分，与 format_author 同规则；CJK 与单词名没有名。"""
+    text = (name or '').strip()
+    if not text or _CJK.search(text):
+        return text, ''
+    if ',' in text:
+        surname, given = text.split(',', 1)
+        return surname.strip(), given.strip()
+    tokens = text.split()
+    if len(tokens) == 1:
+        return text, ''
+    return tokens[-1], ' '.join(tokens[:-1])
+
+
+def _apa_author_parts(paper: dict) -> list[tuple[str, str]]:
+    return [parts for parts in (_apa_name_parts(n) for n in paper.get('authors') or [])
+            if parts[0]]
+
+
+def _apa_identity(paper: dict) -> tuple:
+    """完整作者组身份：(姓氏, 名) 序列（名按小写比较）；同姓不同人、乃至首字母
+    相同而名不同的人都不相同。"""
+    return tuple((surname, given.lower()) for surname, given in _apa_author_parts(paper))
+
+
+def _apa_author_display(part: tuple[str, str], initials: bool = False,
+                        given_full: bool = False) -> str:
+    surname, given = part
+    if not given:
+        return surname
+    if given_full:
+        return f'{given} {surname}'
+    if initials:
+        return ' '.join([mark + '.' for mark in _initials(given)] + [surname])
+    return surname
+
+
+def _apa_form(parts: list[tuple[str, str]], shown: int, first_initials: bool = False,
+              first_full: bool = False) -> str:
+    """列举前 shown 位作者的文内作者部分：仍有剩余才用 et al.（et al. 至少替代
+    两人，全列时不带）；两名作者总是全部列出。首作者可按需加名首字母或全名。"""
+    if not parts:
+        return ''
+    if len(parts) == 2:
+        shown = max(shown, 2)
+    heads = [_apa_author_display(part, index == 0 and first_initials,
+                                 index == 0 and first_full)
+             for index, part in enumerate(parts[:shown])]
+    if len(parts) == 1:
+        return heads[0]
+    if shown >= len(parts):
+        if len(parts) == 2:
+            return f'{heads[0]} & {heads[1]}'
+        return ', '.join(heads[:-1]) + ', & ' + heads[-1]
+    if shown == 1:
+        return heads[0] + ' et al.'
+    return ', '.join(heads) + ', et al.'
+
+
+def _apa_disambiguated_forms(pids: list[int], papers: dict[int, dict]) -> dict[int, str]:
+    """同一「默认文内形式 + 年份」碰撞组内各条目的消歧形式；组内只有单一完整
+    作者组（该走年份字母规则）时返回 {}。
+
+    首作者为同一人 → 展开后续姓氏至可区分（§8.18）；首作者同姓不同人 → 首作者
+    加名首字母，首字母也相同再退到全名（§8.20）；连全名也无法区分（同名同姓）
+    时保持原形式、由年份字母兜底——记录为边界。
+    """
+    parts = {pid: _apa_author_parts(papers[pid]) for pid in pids}
+    identities = {pid: _apa_identity(papers[pid]) for pid in pids}
+    if len(set(identities.values())) == 1:
+        return {}
+    if len({identities[pid][:1] for pid in pids}) == 1:
+        tries = [(shown, False, False)
+                 for shown in range(2, max(map(len, parts.values())) + 1)]
+        tries += [(1, True, False), (1, False, True)]
+    else:
+        tries = [(1, True, False), (1, False, True)]
+    for shown, first_initials, first_full in tries:
+        forms = {pid: _apa_form(parts[pid], shown, first_initials, first_full)
+                 for pid in pids}
+        if len(set(forms.values())) == len(set(identities.values())):
+            return forms
+    return {}
+
+
 def _apa_entries(ordered: list[int], papers: dict[int, dict]) -> tuple[dict[int, str], list[str]]:
     """作者—年份映射：文内引用与列表条目共用同一套映射。
 
-    同一「文内作者部分 + 年份」组（含多名作者缩写成同一 et al. 形式的情况）按
-    列表顺序追加 a/b 后缀，组内顺序由题名（或第二作者）字母序决定（§9.47、8.19），
-    因此正文后缀与列表后缀天然一致。返回 (pid → 文内引用, APA 顺序的列表条目)。
+    年份字母的分组键是**完整作者组身份 + 年份**（§8.19），不再是「文内缩写形式
+    + 年份」——旧键会把不同作者组碰巧缩写成同一 et al. 的情况误当同组同年。同一
+    完整作者组同年的不同作品按列表顺序追加 a/b（组内顺序由题名或第二作者字母序
+    决定，§9.47），正文与列表后缀一致；不同作者组缩写碰撞先展开消歧再判重，列表
+    条目不因此加年份字母。返回 (pid → 文内引用, APA 顺序的列表条目)。
     """
     rows = sorted(((_apa_sort_key(papers[pid]), pid) for pid in ordered))
+    years = {pid: _text(papers[pid].get('year')) or 'n.d.' for _, pid in rows}
+    groups: dict[tuple[str, str], list[int]] = {}
+    for _, pid in rows:
+        groups.setdefault((_apa_in_text_authors(papers[pid]), years[pid]), []).append(pid)
+    forms: dict[int, str] = {}
+    for pids in groups.values():
+        forms.update(_apa_disambiguated_forms(pids, papers))
+    for _, pid in rows:
+        forms.setdefault(pid, _apa_in_text_authors(papers[pid]))
     sizes: dict[tuple[str, str], int] = {}
     for _, pid in rows:
-        paper = papers[pid]
-        group = (_apa_in_text_authors(paper), _text(paper.get('year')) or 'n.d.')
+        group = (forms[pid], years[pid])
         sizes[group] = sizes.get(group, 0) + 1
     seen: dict[tuple[str, str], int] = {}
     marks: dict[int, str] = {}
     lines = []
     for _, pid in rows:
-        paper = papers[pid]
-        author = _apa_in_text_authors(paper)
-        year = _text(paper.get('year')) or 'n.d.'
+        author = forms[pid]
+        year = years[pid]
         nth = seen.get((author, year), 0)
         seen[(author, year)] = nth + 1
         if sizes[(author, year)] > 1:
             letter = chr(ord('a') + nth)
             year = f'{year}-{letter}' if year == 'n.d.' else f'{year}{letter}'
         marks[pid] = f'({author}, {year})'
-        lines.append(format_reference(dict(paper, year=year), 'apa'))
+        lines.append(format_reference(dict(papers[pid], year=year), 'apa'))
     return marks, lines
 
 
@@ -331,13 +428,35 @@ def _ref_section_bounds(content: str) -> tuple[int, int] | None:
     return start, len(content) if end is None else end
 
 
+def _map_outside_fences(content: str, replace) -> str:
+    """逐行应用 replace，跳过围栏开合行与围栏内部（围栏规则与
+    _ref_section_bounds 一致）：代码示例中的字面 [Pn] 是文本，不是引用。"""
+    out = []
+    fence = ''
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if fence:
+            if stripped == fence[0] * len(stripped) and len(stripped) >= len(fence):
+                fence = ''
+        elif (run := _FENCE_OPEN.match(stripped)) and (
+                run.group(1)[0] == '~' or '`' not in stripped[run.end():]):
+            fence = run.group(1)
+        else:
+            line = replace(line)
+        out.append(line)
+    return ''.join(out)
+
+
 def render_styled_markdown(content: str, papers: dict[int, dict], style: str) -> str:
     """Rewrite body `[Pn]` marks per style and rebuild the reference list.
 
     GB/T 按正文首现顺序编号为 `[n]`；APA 改写为作者—年份文内引用，并与列表
-    共用同一套作者—年份—消歧映射。未收录的 `[Pn]` 原样保留、不产生条目。
-    只替换文献节自身的内容范围：其后的同级/更高级标题及全部非文献内容
-    （附录、讨论等）原样保留；「材料范围」节的既有拼接行为不变。
+    共用同一套作者—年份—消歧映射。收集与改写范围是文献节之前的正文加上其后的
+    tail（附录等后续章节的引用同样参与编号与书目收集，编号在正文之后顺延），
+    但不包括代码围栏内部；文献节自身旧条目中的 [Pn] 属于被替换的旧列表，不
+    参与。未收录的 `[Pn]` 原样保留、不产生条目。只替换文献节自身的内容范围，
+    其后的同级/更高级标题及全部非文献内容（附录、讨论等）逐字保留；「材料
+    范围」节的既有拼接行为不变。
     """
     _check_style(style)
     bounds = _ref_section_bounds(content)
@@ -350,16 +469,27 @@ def render_styled_markdown(content: str, papers: dict[int, dict], style: str) ->
         cut = body.find(MATERIAL_HEADING)
         if cut != -1:
             materials, body = body[cut:], body[:cut]
-    ordered = [pid for pid in first_appearance_ids(body) if pid in papers]
+    keep = lambda line: line
+    ordered: list[int] = []
+    for pid in first_appearance_ids(_map_outside_fences(body, keep)
+                                    + _map_outside_fences(tail, keep)):
+        if pid in papers and pid not in ordered:
+            ordered.append(pid)
     if style == 'apa':
         marks, lines = _apa_entries(ordered, papers)
-        for pid, mark in marks.items():
-            body = body.replace(f'[P{pid}]', mark)
+        rewrite = {f'[P{pid}]': mark for pid, mark in marks.items()}
     else:
         numbers = {pid: n for n, pid in enumerate(ordered, start=1)}
-        for pid, n in numbers.items():
-            body = body.replace(f'[P{pid}]', f'[{n}]')
+        rewrite = {f'[P{pid}]': f'[{numbers[pid]}]' for pid in ordered}
         lines = [format_reference(papers[pid], style, index=numbers[pid]) for pid in ordered]
+
+    def _substitute(line: str) -> str:
+        for mark, text in rewrite.items():
+            line = line.replace(mark, text)
+        return line
+
+    body = _map_outside_fences(body, _substitute)
+    tail = _map_outside_fences(tail, _substitute)
     if not ordered:
         lines = ['(正文未引用论文)']
     rendered = body.rstrip('\n') + '\n\n## 引用文献\n\n' + '\n'.join(lines)
