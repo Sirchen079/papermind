@@ -3,6 +3,7 @@ import type { LiteratureCandidate, LiteratureSurveyDetail, LiteratureSurveySumma
 import { useApi } from '../workspaceContext';
 import { Shell } from '../components/layout/Shell';
 import { PageHeader } from '../components/ui/PageHeader';
+import { InstitutionalDownload } from '../components/InstitutionalDownload';
 import {
   DEFAULT_IMPORT_BATCH_CAP, MAX_RESULTS_OPTIONS, YEARS_OPTIONS,
   authorLine, canImportCandidate, candidateSourceLabel, candidateStatusLabel, candidateStatusTone,
@@ -124,7 +125,7 @@ export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) 
           <label className="flex gap-2 text-sm"><input type="checkbox" checked={screen} onChange={e => setScreen(e.target.checked)}/>
             用 AI 扩展检索词并筛选候选（调用已配置的文本模型）</label>
           <button className="btn-primary w-full" disabled={busy || !surveyQueryValid(query)}>{busy ? '正在提交…' : '开始调研'}</button>
-          <p className="text-xs text-muted">检索使用公开的 OpenAlex 接口，不经过图书馆账号；下载仅使用公开开放获取链接，逐篇串行添加。</p>
+          <p className="text-xs text-muted">检索使用 OpenAlex。添加时先获取公开全文；缺失的 PDF 可通过机构通道补充。</p>
         </form>
         <section className="card space-y-2" aria-label="历史调研">
           <h2 className="text-sm font-medium">历史调研</h2>
@@ -209,6 +210,7 @@ function CandidateRow({ candidate, checked, onToggle, expanded, onExpand, onOpen
       <p className="text-xs" style={{ color: candidateStatusTone(candidate.status) }}>
         {candidateStatusLabel(candidate.status)}{candidate.note ? ` · ${candidate.note}` : ''}
       </p>
+      {candidate.paper_id != null && candidate.status === 'imported_no_pdf' && <InstitutionalDownload paperIds={[candidate.paper_id]}/>}
     </div>
   </li>;
 }

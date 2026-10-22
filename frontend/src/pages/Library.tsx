@@ -1,5 +1,6 @@
 import { useApi } from '../workspaceContext';
 import {NoteHistory} from '../components/NoteHistory';
+import {InstitutionalDownload} from '../components/InstitutionalDownload';
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MatrixRow,
@@ -2004,6 +2005,7 @@ export default function Library({
             </button>
           </div>
         )}
+        <InstitutionalDownload paperIds={bulkSelectedPaperIds} onAttached={load}/>
         {bulkSelectedPaperIds.length > 0 && (
           <div
             className="rounded-lg border px-3 py-2 border-[var(--border)] bg-[var(--surface-2)]"
@@ -3438,7 +3440,7 @@ export default function Library({
                 />
               </label>
               <p className="text-xs text-faint">
-                PDF 保存后按项目设置转换，默认对全部页面使用 OCR，生成 Markdown 后供 AI 阅读并建立检索索引。未配置 OCR 模型时等待配置；可在论文详情查看进度、原页和 Markdown。
+                PDF 保存后默认先检测文本层覆盖率与乱码率：合格页本地提取并重排，仅扫描或文字层不合格的页面使用 OCR，再由 Markdown 建立检索索引。缺少 OCR 模型时保留可用文字，待配置后补齐扫描页；可在论文详情查看进度、原页和 Markdown。
               </p>
               {pdfImportQueue.length > 0 && (
                 <div className="space-y-1 text-xs">

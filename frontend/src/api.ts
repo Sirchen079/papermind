@@ -4,6 +4,12 @@ import type { DocumentIdentity } from './pages/documentIdentityModel';
 
 const BASE = "/api";
 
+export interface InstitutionalPreferences { institution:string; aliases:string; library_url:string; ready:boolean; }
+export interface InstitutionalJob {
+  id:string; status:string; phase:string; mode:'auto'|'manual'; current_paper_id:number|null; error:string;
+  results:Array<{paper_id:number; title:string|null; status:string}>;
+}
+
 /**
  * 读取后端注入到首页 HTML 的本机令牌（<meta name="papermind-local-token">）。
  * 缺失时返回空串：开发模式下页面由 Vite dev server 提供，后端中间件不注入该
@@ -59,6 +65,7 @@ export interface LiteratureSurveyDetail extends LiteratureSurveySummary {
 }
 export interface DocumentStatus {
   status: string; mode: 'auto' | 'ocr' | 'advanced'; total_pages: number; completed_pages: number; ocr_pages: number;
+  native_pages: number; pending_ocr_pages: number;
   advanced_pages: number; has_markdown: boolean; model_name: string; error: string; index_status: string;
 }
 export interface SavedChatDocument extends DocumentIdentity {
@@ -831,6 +838,13 @@ export interface ArchiveStatus {
 export function createApi(BASE: string = '/api') {
 const req = <T = any>(path: string, opts?: RequestInit) => request<T>(BASE, path, opts);
 return {
+  institutionalConfig: () => req<InstitutionalPreferences>('/institutional/config', {headers:{'X-Local-Token':localToken()}}),
+  configureInstitutional: (body:InstitutionalPreferences) => req('/institutional/config', {method:'PUT', headers:{'X-Local-Token':localToken()},
+    body:JSON.stringify({institution:body.institution, aliases:body.aliases, library_url:body.library_url})}),
+  institutionalJobs: () => req<InstitutionalJob[]>('/institutional/jobs', {headers:{'X-Local-Token':localToken()}}),
+  institutionalJob: (id:string) => req<InstitutionalJob>(`/institutional/jobs/${id}`, {headers:{'X-Local-Token':localToken()}}),
+  startInstitutionalJob: (paper_ids:number[], mode:'auto'|'manual') => req<InstitutionalJob>('/institutional/jobs', {method:'POST', headers:{'X-Local-Token':localToken()}, body:JSON.stringify({paper_ids,mode})}),
+  stopInstitutionalJob: (id:string) => req(`/institutional/jobs/${id}/stop`, {method:'POST', headers:{'X-Local-Token':localToken()}}),
   // papers
   listPapers: (limit?: number, offset?: number, q?: string) => {
     const params = new URLSearchParams();

@@ -14,7 +14,7 @@ from test_documents import make_paper, models, finish
 
 
 def imported(client):
-    # Generate a readable PDF; even its text pages must go through OCR.
+    # Generate a readable PDF; auto mode must reuse its text layer.
     legacy, path = make_paper()
     with Session(get_engine()) as s:
         s.delete(s.get(Paper, legacy)); s.commit()
@@ -59,23 +59,30 @@ def test_default_import_without_ocr_model_publishes_text_layer(client, monkeypat
         assert 'Page 1' in text and 'Page 2' in text
 
 
-def test_explicit_ocr_without_model_falls_back_to_auto(client, monkeypatch):
+def test_explicit_ocr_without_model_waits_and_resumes_all_pages(client, monkeypatch):
     assert client.put('/api/settings/pdf_ingest_mode', json={'value': 'ocr'}).status_code == 200
-    monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: pytest.fail('fallback import must not call OCR'))
+    calls = []
+    monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: calls.append(kw['request_kind']) or SimpleNamespace(content='Explicit full-page OCR'))
+    monkeypatch.setattr(ProviderClient, 'embed', lambda *a, **kw: [[1., 0.]] * len(a[3]))
     pid = imported(client)
     state = finish(client, pid)
-    assert state['status'] == 'ready' and state['mode'] == 'auto'
+    assert state['status'] == 'waiting_model' and state['mode'] == 'ocr'
+    assert state['completed_pages'] == 0 and not state['has_markdown'] and calls == []
     with Session(get_engine()) as s:
         row = s.get(PaperDocument, pid)
-        assert json.loads(row.followup_json).get('mode_fallback') == 'ocr->auto'
-        assert 'Page 1' in s.get(Paper, pid).full_text
+        assert 'mode_fallback' not in json.loads(row.followup_json)
+    models(client)
+    state = finish(client, pid)
+    assert state['status'] == 'ready' and state['ocr_pages'] == state['total_pages'] == 2
+    assert state['native_pages'] == 0 and calls == ['pdf_ocr', 'pdf_ocr']
 
 
 def test_auto_without_model_keeps_text_and_marks_pending_ocr(client, monkeypatch):
     monkeypatch.setattr(ProviderClient, 'complete', lambda *a, **kw: pytest.fail('missing OCR model must not call OCR'))
     pid = mixed_imported(client)
     state = finish(client, pid)
-    assert state['status'] == 'ready'
+    # A pending scan remains resumable instead of being reported as completed.
+    assert state['status'] == 'waiting_model' and state['completed_pages'] == 1
     assert '1 页需要 OCR' in state['error'] and '配置 OCR 模型' in state['error']
     with Session(get_engine()) as s:
         row = s.get(PaperDocument, pid)

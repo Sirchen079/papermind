@@ -10,16 +10,6 @@ def import_mode(session):
     return row.value if row and row.value in {'ocr', 'auto', 'advanced', 'manual'} else 'auto'
 
 
-def _ocr_model_missing(session):
-    from app.providers.purposes import purpose_model
-
-    try:
-        return purpose_model(session, 'ocr') is None
-    except HTTPException:
-        # A configured but unusable model keeps the explicit waiting_model path.
-        return False
-
-
 def waiting_for_markdown(session, paper):
     row = session.get(PaperDocument, paper.id)
     return bool(row and json.loads(row.followup_json).get('ingest') and not row.markdown)
@@ -31,10 +21,6 @@ def queue_import(session, paper, provider=None, model_id=None):
     if mode == 'manual':
         return False
     followup = {'ingest': True}
-    if mode == 'ocr' and _ocr_model_missing(session):
-        # A missing OCR model must not discard the PDF's own text layer.
-        mode = 'auto'
-        followup['mode_fallback'] = 'ocr->auto'
     row = session.get(PaperDocument, paper.id) or PaperDocument(paper_id=paper.id)
     row.mode = mode
     import pymupdf

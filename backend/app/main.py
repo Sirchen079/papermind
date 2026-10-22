@@ -26,6 +26,7 @@ from app.api.library_diagnostics_api import router as library_diagnostics_router
 from app.api.models_api import router as models_router
 from app.api.organization_api import router as organization_router
 from app.api.papers_api import router as papers_router
+from app.api.institutional_api import router as institutional_router
 from app.api.documents_api import router as documents_router
 from app.api.providers_api import router as providers_router
 from app.api.managed_models_api import router as managed_models_router
@@ -191,7 +192,7 @@ def _create_app() -> FastAPI:
             try:manager(registry.root).close()
             finally:app.state.release_runtime_lease()
 
-    app = FastAPI(title="PaperMind", version="0.6.31", lifespan=lifespan)
+    app = FastAPI(title="PaperMind", version="0.6.32", lifespan=lifespan)
     from app.security.crypto import MissingKeyError
     from fastapi.responses import JSONResponse
 
@@ -226,6 +227,7 @@ def _create_app() -> FastAPI:
     app.include_router(research_router, prefix="/api")
     app.include_router(reviews_router, prefix="/api")
     app.include_router(papers_router, prefix="/api")
+    app.include_router(institutional_router, prefix="/api")
     app.include_router(documents_router, prefix="/api")
     app.include_router(claims_router, prefix="/api")
     app.include_router(reading_router, prefix="/api")

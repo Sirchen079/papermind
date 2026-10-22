@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DocumentModel } from '../api';
 import { useApi } from '../workspaceContext';
+import { FullOcrSwitch } from './FullOcrSwitch';
 
 export function DocumentModelSettings({ refreshKey, ocrOnly = false, onSaved }: { refreshKey?: unknown; ocrOnly?: boolean; onSaved?: () => void }) {
   const api = useApi();
@@ -32,6 +33,7 @@ export function DocumentModelSettings({ refreshKey, ocrOnly = false, onSaved }: 
     } finally { if (version === generation.current) setSaving(false); }
   }
   const mode = values.rerank_mode || (values.rerank_model_config_id ? 'dedicated' : 'off');
+  const fullOcr = values.pdf_ingest_mode === 'ocr';
   function modelControl(purpose: 'ocr' | 'rerank' | 'rerank_llm') {
       const value = values[`${purpose}_model_config_id`] || '';
       const label = purpose === 'ocr' ? 'OCR 模型' : purpose === 'rerank_llm' ? '用于重排序的大模型' : '重排序模型';
@@ -51,15 +53,20 @@ export function DocumentModelSettings({ refreshKey, ocrOnly = false, onSaved }: 
   return <section className={ocrOnly ? 'space-y-3' : 'card space-y-3'} aria-label="文档与检索模型">
     {!ocrOnly && <div><h2 className="text-lg">文档与检索</h2><p className="mt-1 text-sm text-muted">复用已添加连接的地址和密钥，模型选择按项目保存。</p></div>}
     {modelControl('ocr')}
-    {!ocrOnly && <label className="block text-xs text-muted">新导入 PDF 的解析方式
-      <select className="input mt-1 w-full text-xs" aria-label="新导入 PDF 的解析方式" value={values.pdf_ingest_mode || 'ocr'} disabled={!ready || loading || saving} onChange={e => void choose('pdf_ingest_mode', e.target.value)}>
-        <option value="ocr">全文 OCR → Markdown → 向量索引（默认）</option>
-        <option value="auto">自动转换：文字页直接提取，扫描页 OCR</option>
+    {!ocrOnly && <div className="space-y-2">
+      <FullOcrSwitch checked={fullOcr} disabled={!ready || loading || saving}
+        onChange={checked => void choose('pdf_ingest_mode', checked ? 'ocr' : 'auto')}
+        description="仅影响本项目之后新导入的 PDF。开启后跳过文本层检测，所有页面调用 OCR 模型并消耗识别额度；未配置模型时等待配置。" />
+      <label className="block text-xs text-muted">新导入 PDF 的解析方式
+      <select className="input mt-1 w-full text-xs" aria-label="新导入 PDF 的解析方式" value={values.pdf_ingest_mode || 'auto'} disabled={!ready || loading || saving || fullOcr} onChange={e => void choose('pdf_ingest_mode', e.target.value)}>
+        <option value="auto">自动分层：文本层提取与重排，扫描页 OCR（默认）</option>
+        <option value="ocr">全文 OCR → Markdown → 向量索引</option>
         <option value="advanced">高级解析引擎 → Markdown → 向量索引</option>
         <option value="manual">直接提取文字，之后手动转换</option>
       </select>
-      <p className="mt-1 text-xs text-muted">全文 OCR 会识别所有页面。缺少模型时先保存 PDF；选好 OCR 模型后自动继续待处理的导入。已有文献不会自动重识别。</p>
-    </label>}
+      </label>
+      {!fullOcr && <p className="mt-1 text-xs text-muted">自动模式先检测覆盖率与乱码率，合格页本地提取并重排，仅不合格页调用 OCR。缺少模型时保留可用文字，选好模型后自动补齐待处理的导入。已有文献不会自动重识别。</p>}
+    </div>}
     <div className="space-y-1">
       <label className="block text-xs text-muted">高级解析引擎地址（可选）
         <input className="input mt-1 w-full text-xs" type="url" placeholder="例如 http://127.0.0.1:8765" aria-label="高级解析引擎地址"

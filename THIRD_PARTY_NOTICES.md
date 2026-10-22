@@ -1,5 +1,9 @@
 # Third-party research skill notices
 
+## Optional institutional download runtime — 2026-10-22
+
+PaperMind prepares an isolated local [InstSci](https://github.com/Rimagination/instsci) runtime at revision `7a233a4df767c7fe64f03491ef1b6abe84d08c34` (MIT, Copyright (c) 2025 InstSci contributors). Its original package and license remain in the installed environment. PaperMind's task and import adapter is independently implemented. [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) 0.3.31 supplies the visible browser; its Python package is MIT and its downloaded browser is subject to the upstream binary license. The runtime and browser are downloaded separately, outside the application and paper backups. Bootstrap uses [uv](https://github.com/astral-sh/uv) 0.12.20 (MIT/Apache-2.0) when uv is not already installed.
+
 PaperMind includes two **adapted** research workflows. They are not the complete upstream skills, do not execute upstream hooks or scripts, and do not imply affiliation or endorsement. Upstream license and attribution notices are retained below and in `third_party/research_skills/`.
 
 ## Nature Skills — Apache License 2.0

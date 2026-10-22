@@ -18,11 +18,13 @@ from app.config import get_settings
 from app.ingestion.pdf_storage import resolve_pdf
 from app.models import Paper, PaperDocument
 from app.providers.purposes import configured_id, purpose_model
+from app.reading.pdf_text import native_page
 
 _pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='pdf-ocr')
 _lock = RLock()
 _active = {}
 _log = logging.getLogger(__name__)
+_needs_ocr = {'pending_ocr', 'native_unverified'}
 
 
 def _failure_detail(exc, stage):
@@ -79,7 +81,10 @@ def snapshot(row):
     pages = json.loads(row.pages_json) if row else []
     return {
         'status': row.status if row else 'idle', 'mode': row.mode if row else 'auto',
-        'total_pages': row.total_pages if row else 0, 'completed_pages': len(pages),
+        'total_pages': row.total_pages if row else 0,
+        'completed_pages': sum(p['method'] not in _needs_ocr for p in pages),
+        'native_pages': sum(p['method'] == 'native' for p in pages),
+        'pending_ocr_pages': sum(p['method'] in _needs_ocr for p in pages),
         'ocr_pages': sum(p['method'] == 'ocr' for p in pages),
         'advanced_pages': sum(p['method'] == 'advanced' for p in pages),
         'has_markdown': bool(row and row.markdown), 'model_name': row.model_name if row else '',
@@ -107,8 +112,15 @@ def status(session, pid):
         if row is None:
             from app.ingestion.document_pipeline import import_mode
             mode = import_mode(session)
-            result['mode'] = 'ocr' if mode == 'manual' else mode
+            result['mode'] = 'auto' if mode == 'manual' else mode
         return result
+
+
+def _auto_ocr(session):
+    try:
+        return purpose_model(session, 'ocr')
+    except HTTPException:
+        return None
 
 
 def start(session, pid, mode='auto', force=False):
@@ -117,7 +129,8 @@ def start(session, pid, mode='auto', force=False):
     paper, path, root = paper_path(session, pid)
     source_hash = digest(path)
     mid = configured_id(session, 'ocr')
-    ctx = purpose_model(session, 'ocr')
+    # An unavailable OCR connection must not block local text extraction.
+    ctx = _auto_ocr(session) if mode == 'auto' else purpose_model(session, 'ocr') if mode == 'ocr' else None
     if mode == 'ocr' and not ctx:
         raise HTTPException(422, '请先在设置中选择 OCR 模型。')
     advanced_url = None
@@ -141,10 +154,12 @@ def start(session, pid, mode='auto', force=False):
         row = session.get(PaperDocument, pid) or PaperDocument(paper_id=pid)
         if key in _active:
             raise HTTPException(409, '该论文仍有转换请求执行中，请稍后重试。')
-        same = row.source_hash == source_hash and row.mode == mode and row.model_config_id == mid
-        if same and row.status == 'ready' and not force:
+        same_source = row.source_hash == source_hash and row.mode == mode
+        same = same_source and row.model_config_id == mid
+        pending = any(p['method'] in _needs_ocr for p in json.loads(row.pages_json))
+        if same and row.status == 'ready' and not pending and not force:
             return snapshot(row)
-        if force or not same:
+        if force or not same_source or (mode != 'auto' and not same):
             row.pages_json = '[]'
         row.run_id = uuid.uuid4().hex
         row.source_hash, row.mode, row.model_config_id = source_hash, mode, mid
@@ -186,17 +201,6 @@ def _current(session, pid, run_id):
     return row
 
 
-def native_page(page):
-    blocks = page.get_text('blocks', sort=True)
-    text = '\n\n'.join(b[4].strip() for b in blocks if len(b) > 6 and b[6] == 0 and b[4].strip())
-    # Full-page scans sometimes contain a small footer or a broken hidden text layer.
-    large_image = any(pymupdf.Rect(info['bbox']).get_area() > page.rect.get_area() * .45 for info in page.get_image_info())
-    reliable = bool(text.strip()) and text.count('\ufffd') <= len(text) * .01 and not large_image
-    if not text.strip() and not page.get_image_info() and not page.get_drawings():
-        return '[空白页]', True
-    return text, reliable
-
-
 def transcribe(ctx, image, pid, raw_path=None):
     if ctx is None:
         raise HTTPException(422, '此页需要 OCR。请先在设置选择支持图片输入的 OCR 模型，再继续转换。')
@@ -233,6 +237,7 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
             row = session.get(PaperDocument, pid)
             source_hash, mode = row.source_hash, row.mode
             pages = json.loads(row.pages_json)
+            cached = {p['page']: p for p in pages}
         target = artifact_dir(root, pid, source_hash)
         stage = 'save'
         target.mkdir(parents=True, exist_ok=True)
@@ -266,26 +271,38 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
                     row.status = 'running'
                     session.add(row)
                     session.commit()
-                if number <= len(pages):
+                if number in cached and cached[number]['method'] not in _needs_ocr:
                     continue
                 # Cap the image dimensions, not just DPI, for oversized scanned sheets.
                 stage = 'render'
                 scale = min(2.5, 2400 / max(page.rect.width, page.rect.height))
                 image = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), colorspace=pymupdf.csRGB, alpha=False).tobytes('png')
+                quality = None
                 if mode == 'advanced':
                     method = 'advanced'
                     text = advanced_texts[number]
                 else:
                     stage = 'extract'
-                    text, reliable = native_page(page)
-                    method = 'native' if mode == 'auto' and reliable else 'ocr'
+                    text, quality = ('', None) if mode == 'ocr' else native_page(page)
+                    method = 'native' if quality and quality['reliable'] else 'ocr'
                     if method == 'ocr':
                         if mode == 'auto' and ctx is None:
-                            # One page without OCR must not discard the whole text.
-                            if text.strip():
-                                method = 'native_unverified'
-                            else:
-                                method, text = 'pending_ocr', '[此页需要 OCR，尚未转换]'
+                            # A queued job may have started before the researcher
+                            # configured OCR. Resolve only when a page needs it.
+                            with _lock, Session(engine) as session:
+                                ctx = _auto_ocr(session)
+                                row = _current(session, pid, run_id)
+                                if row is None:
+                                    return
+                                if ctx:
+                                    row.model_config_id = configured_id(session, 'ocr')
+                                    row.model_name = ctx[2]
+                                    session.add(row)
+                                    session.commit()
+                        if mode == 'auto' and ctx is None:
+                            # Keep good pages usable, but do not embed a broken
+                            # text layer as scientific evidence while OCR waits.
+                            method, text = 'pending_ocr', '[此页需要 OCR，尚未转换]'
                         else:
                             stage = 'ocr'
                             text = transcribe(ctx, image, pid, raw_path=target / f'page-{number}.ocr.txt')
@@ -296,7 +313,9 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
                     if row is None:
                         return
                     (target / f'page-{number}.png').write_bytes(image)
-                    pages.append({'page': number, 'method': method, 'markdown': text})
+                    cached[number] = {'page': number, 'method': method, 'markdown': text,
+                                      **({'text_quality': quality} if quality is not None else {})}
+                    pages = [cached[n] for n in sorted(cached)]
                     row.pages_json = json.dumps(pages, ensure_ascii=False)
                     session.add(row)
                     session.commit()
@@ -349,7 +368,7 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
             from app.ingestion.document_pipeline import finish_import
             with _lock, Session(engine) as session:
                 current = _current(session, pid, run_id)
-            if current:
+            if current and not any(p['method'] in _needs_ocr for p in pages):
                 with Session(engine) as session:
                     finish_import(session, pid)
         except Exception as exc:
@@ -357,18 +376,10 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
         with _lock, Session(engine) as session:
             row = _current(session, pid, run_id)
             if row:
-                row.status = 'ready'
-                # Pages kept without a working OCR model stay usable for search
-                # while telling the researcher what is still missing.
-                pending = sum(p['method'] == 'pending_ocr' for p in pages)
-                unverified = sum(p['method'] == 'native_unverified' for p in pages)
-                if pending or unverified:
-                    notices = []
-                    if pending:
-                        notices.append(f'{pending} 页需要 OCR，配置 OCR 模型后可重新转换')
-                    if unverified:
-                        notices.append(f'{unverified} 页文字层未验证，请对照原页核查')
-                    row.error = '；'.join(notices)
+                pending = sum(p['method'] in _needs_ocr for p in pages)
+                row.status = 'waiting_model' if pending else 'ready'
+                if pending:
+                    row.error = f'{pending} 页需要 OCR；可用文字已保存，配置 OCR 模型后自动补齐待处理的导入。'
                 session.add(row)
                 session.commit()
     except Exception as exc:
@@ -385,3 +396,14 @@ def _run(engine, pid, run_id, stored_path, path, root, ctx, advanced_url=None):
         with _lock:
             if _active.get((engine, pid)) == run_id:
                 _active.pop((engine, pid), None)
+                # Close the race with settings saved during publish/index or
+                # while this worker still held its active-job registration.
+                try:
+                    with Session(engine) as session:
+                        row = session.get(PaperDocument, pid)
+                        if (row and row.run_id == run_id and row.status == 'waiting_model'
+                                and row.mode == 'auto' and json.loads(row.followup_json).get('ingest')
+                                and _auto_ocr(session)):
+                            start(session, pid, 'auto')
+                except Exception as exc:
+                    _log_failure(exc, pid, page_number, 'resume')

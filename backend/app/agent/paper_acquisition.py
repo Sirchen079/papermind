@@ -24,7 +24,7 @@ def _result(paper, path, receipt, status, indexing=None, metadata=None, document
         'status': status, 'pages': pages, 'full_text_chars': len(paper.full_text or ''),
         'file_url': f'{base}/papers/{paper.id}/file', 'download': receipt,
         'indexing': indexing, 'document': document, 'metadata': metadata or (receipt or {}).get('metadata'), 'first_page_preview': preview,
-        'next': 'PDF 已保存，全文 OCR → Markdown → 索引尚未完成；请在论文详情查看进度。等待配置时需选择 OCR 模型，识别失败时可继续未完成的页面。当前预览仅来自 PDF 第一页，不能据此声称已读全文。'
+        'next': 'PDF 已保存，按文本层质量分流 → Markdown → 索引尚未完成；请在论文详情查看进度。待 OCR 页需配置 OCR 模型，识别失败时可继续未完成的页面。当前预览仅来自 PDF 第一页，不能据此声称已读全文。'
                 if document and not document['has_markdown'] else 'PDF 已在当前论文库。先核对题名，再用 get_paper_full_text 按章节或 PDF 页阅读；search_paper_text 可检索正文。'
                 if paper.full_text else 'PDF 已保存，未提取到文本；需要通过现有 PDF 转 Markdown/OCR 流程处理。'}, ensure_ascii=False)
 

@@ -21,9 +21,13 @@ on:
       tag:
         description: "Draft release tag carrying the new installer (acceptance only)"
         required: true
-        default: "v0.6.31"
+        default: "v0.6.32"
       expected_sha256:
         description: "SHA-256 (64 hex chars) of the new PaperMind-Setup-*.exe asset under that tag"
+        required: true
+
+      expected_exe_sha256:
+        description: "SHA-256 of PaperMind.exe from the independently tested candidate bundle"
         required: true
 
 # GitHub requires write access to view unpublished release drafts.
@@ -77,6 +81,7 @@ jobs:
       - name: Install / upgrade / uninstall acceptance (ephemeral runner only)
         env:
           EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
+          EXPECTED_EXE_SHA256: ${{ inputs.expected_exe_sha256 }}
           TAG: ${{ inputs.tag }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -84,6 +89,7 @@ jobs:
             -NewSetup "$env:NEW_INSTALLER" `
             -OldSetup 'accept/downloads/PaperMind-Setup-0.5.4.exe' `
             -ExpectedNewSha256 "$env:EXPECTED_SHA256" `
+            -ExpectedExeSha256 "$env:EXPECTED_EXE_SHA256" `
             -Tag "$env:TAG" `
             -ReportDir 'accept/report'
           exit $LASTEXITCODE

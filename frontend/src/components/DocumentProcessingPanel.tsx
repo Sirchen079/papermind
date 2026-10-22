@@ -4,6 +4,7 @@ import type { DocumentStatus } from '../api';
 import { useApi, useWorkspace } from '../workspaceContext';
 import { MarkdownContent } from './MarkdownContent';
 import { DocumentModelSettings } from './DocumentModelSettings';
+import { FullOcrSwitch } from './FullOcrSwitch';
 
 const labels: Record<string, string> = {idle: '尚未转换', waiting_model: 'PDF 已保存，等待配置 OCR 模型', queued: '等待处理', running: '正在转换', ready: '已生成 Markdown', error: '转换未完成', cancelled: '已停止', interrupted: '上次转换中断'};
 
@@ -11,7 +12,7 @@ export function DocumentProcessingPanel({paperId, onClose, onReady}: {paperId: n
   const api = useApi();
   const {base} = useWorkspace();
   const [status, setStatus] = useState<DocumentStatus | null>(null);
-  const [mode, setMode] = useState<'auto' | 'ocr' | 'advanced'>('ocr');
+  const [mode, setMode] = useState<'auto' | 'ocr' | 'advanced'>('auto');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [markdown, setMarkdown] = useState('');
@@ -82,14 +83,17 @@ export function DocumentProcessingPanel({paperId, onClose, onReady}: {paperId: n
         <p className="text-sm text-muted">转换结果落库后供 AI 阅读，并自动更新向量索引。保留原 PDF 与逐页原图；公式、表格和模糊文字请对照原页核查。关闭面板后任务继续。</p>
         <button className="btn-ghost text-xs" aria-expanded={configOpen} onClick={() => setConfigOpen(v => !v)}>配置 OCR 模型</button>
         {configOpen && <DocumentModelSettings ocrOnly onSaved={() => setAttempt(n => n + 1)} />}
+        <FullOcrSwitch checked={mode === 'ocr'} disabled={active || busy || !status}
+          onChange={checked => setMode(checked ? 'ocr' : 'auto')}
+          description="仅作用于当前论文，点击转换后生效。开启后所有页面调用 OCR 模型；关闭后恢复自动分层。未配置模型时请先配置。" />
         <label className="block text-sm">转换方式
-          <select className="input mt-1 w-full" aria-label="转换方式" value={mode} disabled={active || busy} onChange={e => setMode(e.target.value as 'auto' | 'ocr' | 'advanced')}>
-            <option value="auto">自动：提取文本，扫描页使用 OCR</option><option value="ocr">全文 OCR：所有页面交给识别模型</option>
+          <select className="input mt-1 w-full" aria-label="转换方式" value={mode} disabled={active || busy || mode === 'ocr'} onChange={e => setMode(e.target.value as 'auto' | 'ocr' | 'advanced')}>
+            <option value="auto">自动分层：文本层提取与重排，扫描页 OCR</option><option value="ocr">全文 OCR：所有页面交给识别模型</option>
             <option value="advanced">高级解析引擎：整册交给外部解析服务（适合扫描件与复杂表格，需在下方配置地址）</option>
           </select>
         </label>
         <div className="space-y-2" role="status" aria-live="polite">
-          <p className="text-sm">{status ? labels[status.status] || status.status : '正在读取进度…'}{status && status.total_pages > 0 && ` · ${status.completed_pages} / ${status.total_pages} 页（OCR ${status.ocr_pages} 页${status.advanced_pages ? `，高级解析 ${status.advanced_pages} 页` : ''}）`}</p>
+          <p className="text-sm">{status ? labels[status.status] || status.status : '正在读取进度…'}{status && status.total_pages > 0 && ` · ${status.completed_pages} / ${status.total_pages} 页（本地提取 ${status.native_pages || 0} 页，OCR ${status.ocr_pages} 页${status.pending_ocr_pages ? `，待 OCR ${status.pending_ocr_pages} 页` : ''}${status.advanced_pages ? `，高级解析 ${status.advanced_pages} 页` : ''}）`}</p>
           {status && status.total_pages > 0 && <div role="progressbar" aria-label="转换进度" aria-valuenow={status.completed_pages} aria-valuemin={0} aria-valuemax={status.total_pages}
             className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--border)]"><div className="h-full rounded-full bg-[var(--accent)]" style={{width: `${Math.min(100, status.completed_pages / status.total_pages * 100)}%`}} /></div>}
           {status?.model_name && <p className="text-xs text-muted">识别模型：{status.model_name}</p>}
@@ -103,7 +107,7 @@ export function DocumentProcessingPanel({paperId, onClose, onReady}: {paperId: n
           </>}
         </div>
         {status?.has_markdown && <div className="space-y-3 border-t border-[var(--border)] pt-4">
-          <p className="text-xs text-muted">{active || status.status !== 'ready' ? '下方为上次成功生成的版本。' : '已保存，可供 AI 读取。'}{status.index_status === 'pending' ? '正在更新向量索引…' : status.index_status === 'ready' ? '向量索引已更新。' : status.index_status === 'error' ? '向量索引更新失败，可在设置中重建索引。' : '尚未配置向量模型；配置后可在设置中重建索引。'}</p>
+          <p className="text-xs text-muted">{status.status === 'waiting_model' && status.pending_ocr_pages ? '下方为已保存的可用文字；待 OCR 页尚未识别。' : active || status.status !== 'ready' ? '下方为上次成功生成的版本。' : '已保存，可供 AI 读取。'}{status.index_status === 'pending' ? '正在更新向量索引…' : status.index_status === 'ready' ? '向量索引已更新。' : status.index_status === 'error' ? '向量索引更新失败，可在设置中重建索引。' : '尚未配置向量模型；配置后可在设置中重建索引。'}</p>
           <div className="flex flex-wrap gap-2"><a className="btn-subtle text-xs" href={`${base}/papers/${paperId}/document/download`} download>下载 Markdown</a><a className="btn-subtle text-xs" href={`${base}/papers/${paperId}/document/download?bundle=true`} download>下载 Markdown 与原图</a></div>
           <MarkdownContent content={preview} images={false} />
         </div>}

@@ -132,7 +132,7 @@ def list_activity(registry):
         try:
             with bind_workspace(registry.context(workspace['id'])), Session(get_engine()) as session:
                 for item in (_task_items(session, 30) + _wiki_events(session, 30) + _chat_events(session, 30)
-                             + _map_items(session, 30) + _import_items(session, 30)):
+                             + _map_items(session, 30) + _import_items(session, 30) + _institutional_events()):
                     route = item.pop('route')
                     result.append({**item, 'key': workspace['id'] + ':' + item['key'],
                                    'workspace_id': workspace['id'], 'workspace_name': workspace['name'],
@@ -144,3 +144,20 @@ def list_activity(registry):
     priority = sorted((r for r in result if r['active'] or r['status'] == 'awaiting_user'), key=lambda r: r['time'])
     recent = sorted((r for r in result if not r['active'] and r['status'] != 'awaiting_user'), key=lambda r: r['time'], reverse=True)[:60]
     return {'items': priority + recent, 'unavailable': unavailable}
+
+
+def _institutional_events():
+    from app.ingestion.institutional_jobs import list_jobs
+    statuses = {'completed': 'ready', 'stopped': 'paused', 'needs_attention': 'needs_input'}
+    items = []
+    for job in list_jobs():
+        if not job.get('results'):
+            continue
+        status = statuses.get(job['status'], job['status'])
+        if job['status'] == 'running' and job['phase'] in ('waiting_verification', 'waiting_login'):
+            status = job['phase']
+        item = _item('institutional', job['id'], '机构全文下载：' + (job['results'][0].get('title') or '论文'),
+                     status, job.get('updated_at', ''), 'library')
+        item['active'] = job['status'] == 'running'
+        items.append(item)
+    return items

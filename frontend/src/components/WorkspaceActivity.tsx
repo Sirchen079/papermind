@@ -24,7 +24,11 @@ export function WorkspaceActivity(){
   },[key]);
   function read(){memory.current={...memory.current,unread:[]};writeDraft(localStore(),key,memory.current);setUnread([]);}
   const active=items.filter(item=>item.active).length;
+  const verification=items.find(item=>item.kind==='institutional'&&item.status==='waiting_verification');
   return <div className="fixed bottom-3 right-3 z-30">
+    {verification&&<a role="alert" href={verification.url} className="card block mb-2 max-w-sm border border-[var(--warning)] text-sm">
+      <strong className="block">机构下载需要手动人机验证</strong><span className="block mt-1 text-xs">请到已打开的 Chromium 下载浏览器完成验证，程序会自动继续。</span>
+    </a>}
     <button className="btn-secondary shadow-sm" onClick={()=>dialog.current?.showModal()} aria-label={`项目任务，${active} 项运行中，${unread.length} 项新动态`}>项目任务{active?` · ${active} 运行中`:''}{unread.length?` · ${unread.length} 新动态`:''}</button>
     {!!unread.length&&<span className="sr-only" role="status">有 {unread.length} 项项目任务状态更新。</span>}
     <dialog ref={dialog} aria-labelledby="workspace-activity-title" className="card w-[min(640px,calc(100vw-32px))] max-h-[85vh] overflow-y-auto backdrop:bg-black/30">

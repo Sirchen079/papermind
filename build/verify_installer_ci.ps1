@@ -20,6 +20,7 @@ param(
   [Parameter(Mandatory = $true)][string]$NewSetup,
   [Parameter(Mandatory = $true)][string]$OldSetup,
   [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedNewSha256,
+  [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedExeSha256,
   [string]$Tag = '',
   [Parameter(Mandatory = $true)][string]$ReportDir
 )
@@ -41,8 +42,9 @@ if ($env:RUNNER_OS -ne 'Windows') {
 # ---------- 常量（与 build/installer.iss 对应） ----------
 $AppIdReg   = '{7C5A2F3B-1D4E-4A6F-9B2C-000000000007}_is1'
 $OldVersion = '0.5.4'
-$NewVersion = '0.6.31'
-$NewExeSha = '3db238124315e30cae6a5ae9d6a20d5e3aa5d16839b44ccd0b068f754788d694'
+if ($Tag -notmatch '^v?(\d+\.\d+\.\d+)$') { throw 'Pass the candidate version as -Tag vX.Y.Z.' }
+$NewVersion = $Matches[1]
+$NewExeSha = $ExpectedExeSha256.ToLowerInvariant()
 $OldKnownSha = '75d5778c728b3d14d5cdbc11b3a78d62f4982e4edbb28e124be68fcd3443efc7'
 $DataRoot   = Join-Path $env:LOCALAPPDATA 'PaperMind'
 $DataDir    = Join-Path $DataRoot 'data'
@@ -71,6 +73,7 @@ function Save-Report {
     new_installer        = $NewSetup
     old_installer        = $OldSetup
     expected_new_sha256  = $ExpectedNewSha256.ToLowerInvariant()
+    expected_exe_sha256  = $ExpectedExeSha256.ToLowerInvariant()
     old_version          = $OldVersion
     new_version          = $NewVersion
     runner_os            = $(if ($env:RUNNER_OS) { $env:RUNNER_OS } else { '' })
@@ -193,7 +196,7 @@ try {
 
   $logA2 = Join-Path $ReportDir 'A2-install-new.log'
   $code = Invoke-SetupExe $NewSetup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$logA2") $logA2 'A' 'install-new-upgrade'
-  Assert-True ($code -eq 0) 'A' 'install-new-upgrade-exit0' "0.6.31 覆盖安装（无模式/目录覆盖参数，UsePreviousPrivileges 自动沿用）退出码 $code"
+  Assert-True ($code -eq 0) 'A' 'install-new-upgrade-exit0' "$NewVersion 覆盖安装（无模式/目录覆盖参数，UsePreviousPrivileges 自动沿用）退出码 $code"
   $newEntry = Get-UninstallEntry 'HKLM'
   Assert-True ($null -ne $newEntry) 'A' 'new-hklm-record' '升级后 HKLM 卸载记录存在'
   $newVer = Get-Prop $newEntry 'DisplayVersion'
