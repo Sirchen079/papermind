@@ -10,6 +10,26 @@ const apiModule=await import(sourceUrl(compile('../src/api.ts').replace('"./page
 const researchModule=await import(sourceUrl(compile('../src/researchApi.ts').replace("'./pages/apiErrorModel'",JSON.stringify(errorModel))));
 const wikiModule=await import(sourceUrl(compile('../src/wikiApi.ts').replace("'./pages/apiErrorModel'",JSON.stringify(errorModel))));
 
+test('institutional PDF recovery carries the local token and preserves multipart boundary',async()=>{
+  const originalFetch=globalThis.fetch, originalDocument=globalThis.document;
+  let sent;
+  globalThis.document={querySelector:()=>({getAttribute:()=> 'test-local-token'})};
+  globalThis.fetch=async (url,opts)=>{sent={url,opts};return Response.json({status:'completed'});};
+  try {
+    await apiModule.createApi('/api/w/origin').attachInstitutionalPdf('job',7,new File(['%PDF-test'],'paper.pdf'));
+    assert.equal(sent.url,'/api/w/origin/institutional/jobs/job/papers/7/pdf');
+    assert.equal(sent.opts.headers['X-Local-Token'],'test-local-token');
+    assert.equal(sent.opts.headers['Content-Type'],undefined);
+    assert.ok(sent.opts.body instanceof FormData);
+    await apiModule.createApi('/api/w/origin').institutionalEnvironment();
+    assert.equal(sent.url,'/api/w/origin/institutional/environment');
+    assert.equal(sent.opts.headers['X-Local-Token'],'test-local-token');
+    await apiModule.createApi('/api/w/origin').installInstitutionalEnvironment();
+    assert.equal(sent.opts.method,'POST');
+    assert.equal(sent.opts.headers['X-Local-Token'],'test-local-token');
+  } finally {globalThis.fetch=originalFetch;globalThis.document=originalDocument;}
+});
+
 test('late callbacks, streams and research requests retain their originating workspace',async()=>{
   const urls=[];
   const original=globalThis.fetch;

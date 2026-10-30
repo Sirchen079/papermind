@@ -7,6 +7,19 @@ from sqlalchemy import create_engine, inspect
 BACKEND = Path(__file__).resolve().parent.parent
 
 
+def test_literature_quality_upgrade_preserves_legacy_candidates(tmp_path):
+    import sqlite3
+    db = tmp_path / 'source-quality.sqlite'
+    cfg = _cfg(db)
+    command.upgrade(cfg, 'b4c8e2f6a9d1')
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO literaturesurvey(query,created_at) VALUES ('Existing survey','2026-10-30')")
+        conn.execute("INSERT INTO literaturecandidate(survey_id,title,created_at) VALUES (1,'Existing candidate','2026-10-30')")
+    command.upgrade(cfg, 'head')
+    with sqlite3.connect(db) as conn:
+        assert conn.execute('SELECT title,source_quality FROM literaturecandidate').fetchall() == [('Existing candidate','')]
+
+
 def _cfg(db_path: Path) -> Config:
     c = Config(str(BACKEND / "alembic.ini"))
     c.set_main_option("script_location", str(BACKEND / "migrations"))

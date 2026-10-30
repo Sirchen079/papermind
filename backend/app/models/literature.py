@@ -33,6 +33,7 @@ class LiteratureCandidate(SQLModel, table=True):
     title: str
     year: int | None = None
     venue: str = ""
+    source_quality: str = ""  # external list evidence at discovery; empty for legacy surveys
     authors_json: str = "[]"
     cited_by_count: int = 0
     oa_pdf_url: str = ""

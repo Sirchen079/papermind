@@ -28,6 +28,12 @@ const entry = (overrides = {}) => ({
   ...overrides,
 });
 
+test('人工修订保留贡献项索引，未附引文时不标为模型归纳', () => {
+  const rows = cardFieldRows({contributions: [field(''), {...field('修订后的贡献'), status: 'no_quote', researcher_edited: true}]});
+  assert.equal(rows[0].key, 'contributions.1');
+  assert.equal(cardRowStatusText(rows[0]), '人工修订 · 未附引文');
+});
+
 // R02 复现输入：数字与原文不符的字段（返工任务书原样输入）。
 const mismatchField = {
   value: "Accuracy 99.9%",
@@ -73,7 +79,7 @@ test("cardFieldRows 过滤缺失与空值字段，空引文不带 quote", () => 
   );
   for (const row of rows) {
     assert.equal(row.problem, false, "正常核验字段不产生警告标记");
-    assert.equal(row.statusText, "已核对原文");
+    assert.equal(row.statusText, "引文已匹配");
     assert.deepEqual(row.missingNumbers, []);
     assert.equal(row.locationText, "");
     assert.equal(row.page, undefined);
@@ -104,7 +110,7 @@ test("R02 复现输入：Markdown 导出可见数字不匹配、99.9 与第 7 �
   assert.match(text, /字段核对：1 项需注意/);
 });
 
-test("R02 正常核验字段显示已核对原文，不产生假警告", () => {
+test("R02 正常核验字段显示引文已匹配，不产生假警告", () => {
   const verified = {
     value: "凸优化恢复",
     quote: "we convexify the recovery",
@@ -114,11 +120,11 @@ test("R02 正常核验字段显示已核对原文，不产生假警告", () => {
   };
   const row = cardFieldRows({ mechanism: verified })[0];
   assert.equal(row.problem, false);
-  assert.equal(row.statusText, "已核对原文");
-  assert.equal(cardRowStatusText(row), "已核对原文（第 3 页）");
+  assert.equal(row.statusText, "引文已匹配");
+  assert.equal(cardRowStatusText(row), "引文已匹配（第 3 页）");
   assert.equal(cardRowQuoteLabel(row), "原文");
   const text = cardToMarkdown(entry({ card: { mechanism: verified } }));
-  assert.match(text, /已核对原文（第 3 页）/);
+  assert.match(text, /引文已匹配（第 3 页）/);
   assert.match(text, /> 原文：“we convexify the recovery”/);
   assert.ok(!text.includes("⚠"), "正常核验不得出现警告标记");
 });
@@ -127,7 +133,7 @@ test("R02 近似核对仍属正常核验显示，不算警告", () => {
   const fuzzy = { value: "l1 最小化", quote: "l1 minimization approach", status: "quote_verified", similarity: 0.93 };
   const row = cardFieldRows({ mechanism: fuzzy })[0];
   assert.equal(row.problem, false);
-  assert.equal(row.statusText, "近似核对原文");
+  assert.equal(row.statusText, "引文近似匹配");
   assert.ok(!cardToMarkdown(entry({ card: { mechanism: fuzzy } })).includes("⚠"));
 });
 
@@ -140,13 +146,13 @@ test("R02 缺失/未知状态不被当作核验通过，引文不包装成原文
   assert.equal(cardRowQuoteLabel(row), "引文");
   const text = cardToMarkdown(entry({ card: { boundary: noStatus } }));
   assert.match(text, /未记录核验状态/);
-  assert.ok(!text.includes("已核对原文"), "缺失状态不得显示已核对");
+  assert.ok(!text.includes("引文已匹配"), "缺失状态不得显示已核对");
   assert.match(text, /引文：“small samples only”/);
   assert.ok(!text.includes("原文：“small samples only”"), "未核验引文不得标成原文");
 
   const unknown = { value: "未知状态", quote: "quote", status: "some_future_status" };
   const row2 = cardFieldRows({ mechanism: unknown })[0];
-  assert.notEqual(row2.statusText, "已核对原文");
+  assert.notEqual(row2.statusText, "引文已匹配");
   assert.equal(cardRowQuoteLabel(row2), "引文");
 });
 
@@ -173,7 +179,7 @@ test("R02 兼容：只有摘要定位时不编造页码", () => {
   assert.equal(row.locationText, "摘要");
   assert.equal(row.page, undefined);
   const text = cardToMarkdown(entry({ card: { problem: abstractOnly } }));
-  assert.match(text, /已核对原文（摘要）/);
+  assert.match(text, /引文已匹配（摘要）/);
   assert.ok(!/第 \d+ 页/.test(text), "无真实页码不得输出页码定位");
 });
 
@@ -188,7 +194,7 @@ test("R02 兼容：全文命中但无页码时定位为空且不编造", () => {
   const row = cardFieldRows({ problem: noPages })[0];
   assert.equal(row.locationText, "");
   assert.equal(row.page, undefined);
-  assert.equal(cardRowStatusText(row), "已核对原文");
+  assert.equal(cardRowStatusText(row), "引文已匹配");
 });
 
 test("R02 兼容：无引文字段不输出引文行，状态显示模型归纳", () => {
@@ -210,7 +216,7 @@ test("R02 兼容：旧卡片缺少可选字段（仅 value/quote/status）可用
   assert.deepEqual(row.missingNumbers, []);
   assert.equal(row.locationText, "");
   assert.equal(row.page, undefined);
-  assert.equal(row.statusText, "已核对原文");
+  assert.equal(row.statusText, "引文已匹配");
   const text = cardToMarkdown(entry({ card: { problem: { value: "旧卡片字段", quote: "old quote text", status: "quote_verified" } } }));
   assert.match(text, /\*\*问题：\*\*旧卡片字段/);
   assert.match(text, /> 原文：“old quote text”/);

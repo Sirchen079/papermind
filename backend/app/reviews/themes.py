@@ -88,7 +88,8 @@ def card_line(paper_id, card_row, paper) -> str:
                 f' | 数据：{values["data_setting"]}')
     else:
         line = f'{head} | 摘要：{(paper.abstract or "")[:300]}'
-    return line[:400]
+    corrections = '；'.join(f'{name}：{edit["value"]}' for name, edit in (card.get('manual_fields') or {}).items())
+    return line[:400] + (f' | 研究者修订（非论文原文）：{corrections}' if corrections else '')
 
 
 def card_lines(session: Session, review_id) -> list:

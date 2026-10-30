@@ -54,6 +54,8 @@ def cancel(job_id):
 
 
 def start(session, paper_ids, mode='auto'):
+    if not runtime.ready():
+        raise HTTPException(409, '请先在设置 → 图书馆下载环境完成安装，再使用图书馆渠道获取。')
     preferences = access.config()
     if not preferences['institution']:
         raise HTTPException(422, '请先配置学校或机构。')
@@ -68,7 +70,7 @@ def start(session, paper_ids, mode='auto'):
     for pid in dict.fromkeys(paper_ids):
         paper = session.get(Paper, pid)
         status = 'not_found' if paper is None or paper.is_deleted else 'has_pdf' if paper.pdf_path else 'pending'
-        job['results'].append({'paper_id': pid, 'title': paper.title if paper else '', 'status': status})
+        job['results'].append({'paper_id': pid, 'title': paper.title if paper else '', 'doi': paper.doi if paper else '', 'status': status})
         if status == 'pending':
             records.append({'paper_id': pid, 'title': paper.title, 'doi': paper.doi})
     _active[str(path)] = event
@@ -97,6 +99,7 @@ def _terminate(process):
 
 def _work(engine, path, job, records, preferences, event):
     process = None
+    failure_status = 'environment_failed'
     def save(phase=None):
         job['updated_at'] = datetime.now(timezone.utc).isoformat()
         if phase:
@@ -120,10 +123,12 @@ def _work(engine, path, job, records, preferences, event):
             save()
     try:
         if records:
-            runtime.prepare(lambda text: (job.update(error=text), save('preparing')))
+            if not runtime.ready():
+                raise runtime.PreparationError('下载环境已不可用，请在设置中检查并重新安装。')
             if event.is_set():
                 return
             job['error'] = ''
+            failure_status = 'worker_failed'
             runtime.root().mkdir(parents=True, exist_ok=True)
             from app.archive.application import _backup_lock
             with _backup_lock(runtime.root() / 'browser.lock', '机构浏览器正在被另一个窗口使用。'):
@@ -152,14 +157,21 @@ def _work(engine, path, job, records, preferences, event):
                             save(data['phase'])
                     event.wait(.5)
                 collect(folder)
+                if any(x['status'] == 'pending' for x in job['results']):
+                    job['error'] = '下载引擎退出且未返回结果，可使用常用浏览器下载后上传 PDF。'
+    except runtime.PreparationError as exc:
+        job['error'] = str(exc)
     except Exception:
-        job['error'] = '机构下载未完成；请检查网络与浏览器，保留的任务可继续。'
+        job['error'] = ('下载环境尚未准备完成' if failure_status == 'environment_failed' else '机构下载引擎未能运行') + '；可重试或使用常用浏览器下载后上传 PDF。'
     finally:
         if process is not None:
             try:
                 _terminate(process)
             except Exception:
                 pass
+        for result in job['results']:
+            if result['status'] == 'pending':
+                result['status'] = 'stopped' if event.is_set() else failure_status
         job['status'] = 'stopped' if event.is_set() else 'completed' if all(
             x['status'] in _finished for x in job['results']) else 'needs_attention'
         try:
@@ -167,3 +179,38 @@ def _work(engine, path, job, records, preferences, event):
         finally:
             _active.pop(str(path), None)
             access._browser_lock.release()
+
+
+def attach_uploaded(session, job_id, paper_id, data):
+    """Recovery does not depend on downloading or launching the isolated engine."""
+    with access._json_lock:
+        return _attach_uploaded(session, job_id, paper_id, data)
+
+
+def _attach_uploaded(session, job_id, paper_id, data):
+    from tempfile import TemporaryDirectory
+    job = get_job(job_id)
+    if job['status'] == 'running':
+        raise HTTPException(409, '请先停止当前任务再上传 PDF。')
+    result = next((r for r in job['results'] if r['paper_id'] == paper_id), None)
+    paper = session.get(Paper, paper_id)
+    if result is None or paper is None or paper.is_deleted:
+        raise HTTPException(404, '该任务中没有这篇论文。')
+    with TemporaryDirectory(prefix='upload-', dir=_path(job_id).parent) as temporary:
+        folder = Path(temporary)
+        pdf = folder / 'paper.pdf'
+        pdf.write_bytes(data)
+        item = dict(status='success', verified_match=True, doi=paper.doi, pdf_path=str(pdf))
+        try:
+            status = access.attach(session, paper_id, item, folder,
+                {'doi': result.get('doi', paper.doi), 'title': result.get('title') or paper.title}, access_mode='manual_pdf_upload')
+        except (ValueError, RuntimeError):
+            raise HTTPException(422, 'PDF 无法解析，请确认下载的是完整正文。') from None
+    if status not in _finished:
+        raise HTTPException(422, 'PDF 未通过正文格式或论文身份校验，请确认下载的是本篇正文。')
+    result['status'] = status
+    job['updated_at'] = datetime.now(timezone.utc).isoformat()
+    if all(r['status'] in _finished for r in job['results']):
+        job.update(status='completed', phase='done', error='')
+    access.write_json(_path(job_id), job)
+    return job

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { formatTokenEstimate } from "../.tmp_graph_test_dist/reviewComposerModel.js";
+import { formatTokenEstimate, selectedReviewPapers } from "../.tmp_graph_test_dist/reviewComposerModel.js";
+
+test('跨页所选论文保留顺序、去重并排除非法编号', () => {
+  assert.deepEqual(selectedReviewPapers('4,2,4,0,-1,NaN,1.2,9007199254740993'), [4,2]);
+  assert.deepEqual(selectedReviewPapers(), []);
+});
 
 test("papers 为 0 时返回空串，界面不显示", () => {
   assert.equal(

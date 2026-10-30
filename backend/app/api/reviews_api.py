@@ -130,9 +130,21 @@ def review_cards(review_id:str,session:Session=Depends(get_session)):
     rows={r.paper_id:r for r in session.exec(select(PaperCard).where(PaperCard.paper_id.in_([e.paper_id for e in entries])))}
     return [{'paper_id':e.paper_id,'title':e.title,
              'status':rows[e.paper_id].status if e.paper_id in rows else 'pending',
+             'version':rows[e.paper_id].version if e.paper_id in rows else 0,
              'card':json.loads(rows[e.paper_id].card_json) if e.paper_id in rows else None,
              'warning':rows[e.paper_id].warning if e.paper_id in rows else '',
              'updated_at':rows[e.paper_id].updated_at if e.paper_id in rows else None} for e in entries]
+
+class CardEditBody(BaseModel):
+    field: str = Field(pattern=r'^(problem|mechanism|data_setting|boundary|contributions\.[0-2])$')
+    value: str = Field(min_length=1,max_length=10000)
+    quote: str = Field(default='',max_length=10000)
+    expected_version: int = Field(ge=0)
+
+@router.post('/{review_id}/cards/{paper_id}')
+def card_edit(review_id:str,paper_id:int,body:CardEditBody,session:Session=Depends(get_session)):
+    from app.reviews.card_edits import edit_field
+    return invoke(edit_field,session,review_id,paper_id,body.field,body.value,body.quote,body.expected_version)
 
 @router.get('/{review_id}/papers/{paper_id}')
 def source(review_id:str,paper_id:int,session:Session=Depends(get_session)):

@@ -5,9 +5,10 @@ import type { DocumentIdentity } from './pages/documentIdentityModel';
 const BASE = "/api";
 
 export interface InstitutionalPreferences { institution:string; aliases:string; library_url:string; ready:boolean; }
+export interface InstitutionalEnvironment { status:'not_installed'|'installing'|'ready'|'failed'|'interrupted'; ready:boolean; message:string; error:string; }
 export interface InstitutionalJob {
   id:string; status:string; phase:string; mode:'auto'|'manual'; current_paper_id:number|null; error:string;
-  results:Array<{paper_id:number; title:string|null; status:string}>;
+  results:Array<{paper_id:number; title:string|null; status:string; doi?:string}>;
 }
 
 /**
@@ -54,7 +55,7 @@ export interface LiteratureCandidate {
   id: number; survey_id: number; openalex_id: string; doi: string; arxiv_id: string;
   title: string; year: number | null; venue: string; authors: string[]; cited_by_count: number;
   oa_pdf_url: string | null; abstract: string; relevance: string; keep: boolean | null;
-  status: string; paper_id: number | null; note: string;
+  status: string; paper_id: number | null; note: string; source_quality?: string;
 }
 export interface LiteratureSurveySummary {
   id: number; query: string; years: number; max_results: number; status: string; error: string;
@@ -838,6 +839,8 @@ export interface ArchiveStatus {
 export function createApi(BASE: string = '/api') {
 const req = <T = any>(path: string, opts?: RequestInit) => request<T>(BASE, path, opts);
 return {
+  institutionalEnvironment: () => req<InstitutionalEnvironment>('/institutional/environment', {headers:{'X-Local-Token':localToken()}}),
+  installInstitutionalEnvironment: () => req<InstitutionalEnvironment>('/institutional/environment', {method:'POST',headers:{'X-Local-Token':localToken()}}),
   institutionalConfig: () => req<InstitutionalPreferences>('/institutional/config', {headers:{'X-Local-Token':localToken()}}),
   configureInstitutional: (body:InstitutionalPreferences) => req('/institutional/config', {method:'PUT', headers:{'X-Local-Token':localToken()},
     body:JSON.stringify({institution:body.institution, aliases:body.aliases, library_url:body.library_url})}),
@@ -1069,6 +1072,10 @@ return {
     const form = new FormData();
     form.append("file", file);
     return req<Paper>("/papers/pdf", { method: "POST", body: form });
+  },
+  attachInstitutionalPdf: (jobId: string, paperId: number, file: File) => {
+    const form = new FormData(); form.append('file', file);
+    return req<InstitutionalJob>(`/institutional/jobs/${jobId}/papers/${paperId}/pdf`, {method:'POST',headers:{'X-Local-Token':localToken()},body:form});
   },
   ingestBibtex: (bibtex: string) =>
     req<Paper[]>("/papers/bibtex", { method: "POST", body: JSON.stringify({ bibtex }) }),

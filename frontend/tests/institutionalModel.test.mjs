@@ -13,6 +13,8 @@ test('manual fallback accepts one paper and automatic selection remains bounded'
   assert.equal(downloadSelectionValid(Array.from({length:11},(_,i)=>i+1), 'auto'), false);
 });
 test('identity, entitlement and authentication failures remain distinct', () => {
+  assert.equal(institutionalLabel('environment_failed'), '下载环境准备失败');
+  assert.equal(institutionalLabel('worker_failed'), '下载引擎未返回结果');
   assert.equal(institutionalLabel('attached'), 'PDF 已入库');
   assert.notEqual(institutionalLabel('unverified'), institutionalLabel('no_permission'));
   assert.notEqual(institutionalLabel('waiting_user'), institutionalLabel('needs_attention'));

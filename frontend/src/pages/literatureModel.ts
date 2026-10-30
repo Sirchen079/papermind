@@ -3,6 +3,10 @@
 
 export const DEFAULT_IMPORT_BATCH_CAP = 10;
 
+export function recommendedCandidates<T extends {source_quality?: string; keep: boolean | null}>(candidates: T[], showOther = false): T[] {
+  return showOther ? candidates : candidates.filter(c => Boolean(c.source_quality) && c.keep !== false);
+}
+
 export function surveyQueryValid(query: string): boolean {
   const trimmed = (query ?? '').trim();
   return trimmed.length > 0 && trimmed.length <= 500;

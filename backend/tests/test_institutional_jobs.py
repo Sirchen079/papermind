@@ -1,5 +1,6 @@
 import json
 import time
+import pytest
 from types import SimpleNamespace
 
 from sqlmodel import Session
@@ -13,13 +14,14 @@ def setup_access(client, monkeypatch, tmp_path):
     monkeypatch.setenv('PAPERMIND_INSTITUTION_CONFIG', str(tmp_path / 'config.json'))
     access.configure('Example University', 'https://library.example.edu/')
     monkeypatch.setattr(jobs.runtime, 'prepare', lambda callback: None)
+    monkeypatch.setattr(jobs.runtime, 'ready', lambda: True)
     with Session(get_engine()) as session:
         paper = Paper(source='manual', title='Example', doi='10.1000/example')
         session.add(paper)
         session.commit()
         pid = paper.id
-    from app.security.local_token import _token_path
-    return jobs, pid, {'X-Local-Token': _token_path().read_text().strip()}
+    from app.security.local_token import get_or_create_token
+    return jobs, pid, {'X-Local-Token': get_or_create_token()}
 
 
 def wait_done(client, jid, headers):
@@ -50,12 +52,52 @@ def test_background_failure_is_readable_recoverable_and_does_not_expose_engine_e
     value = client.post('/api/institutional/jobs', headers=headers, json={'paper_ids': [pid]}).json()
     result = wait_done(client, value['id'], headers)
     assert result['status'] == 'needs_attention'
+    assert result['results'][0]['status'] == 'worker_failed'
     assert 'SECRET' not in json.dumps(result)
     assert client.get('/api/institutional/jobs', headers=headers).json()[0]['id'] == value['id']
     # All profile leases are released after the failed worker.
     retry = client.post('/api/institutional/jobs', headers=headers, json={'paper_ids': [pid]})
     assert retry.status_code == 200
     wait_done(client, retry.json()['id'], headers)
+
+
+def test_failed_download_allows_verified_browser_upload(client, monkeypatch, tmp_path):
+    import pymupdf
+    jobs, pid, headers = setup_access(client, monkeypatch, tmp_path)
+    def fail(*args, **kwargs):
+        raise OSError('unavailable engine')
+    monkeypatch.setattr(jobs.subprocess, 'Popen', fail)
+    jid = client.post('/api/institutional/jobs', headers=headers, json={'paper_ids': [pid]}).json()['id']
+    result = wait_done(client, jid, headers)
+    assert result['results'][0]['status'] == 'worker_failed'
+    monkeypatch.setattr('app.literature.survey._index_imported', lambda *a: '')
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((30,30), 'Example DOI: 10.1000/example')
+        data = pdf.tobytes()
+    endpoint = f'/api/institutional/jobs/{jid}/papers/{pid}/pdf'
+    assert client.post(endpoint, files={'file': ('paper.pdf',data)}).status_code == 403
+    assert client.post(endpoint, headers=headers, files={'file': ('login.pdf',b'<html>Login</html>')}).status_code == 422
+    with pymupdf.open() as pdf:
+        pdf.new_page().insert_text((30,30), 'An unrelated paper DOI: 10.1000/other')
+        wrong = pdf.tobytes()
+    assert client.post(endpoint, headers=headers, files={'file': ('wrong.pdf',wrong)}).status_code == 422
+    response = client.post(f'/api/institutional/jobs/{jid}/papers/{pid}/pdf', headers=headers,
+        files={'file': ('paper.pdf', data, 'application/pdf')})
+    assert response.status_code == 200
+    assert response.json()['results'][0]['status'] == 'attached'
+    assert response.json()['status'] == 'completed'
+    with Session(get_engine()) as session:
+        receipt = jobs.Path(session.get(Paper,pid).pdf_path).with_suffix('.source.json')
+        assert json.loads(receipt.read_text())['access_mode'] == 'manual_pdf_upload'
+
+
+def test_download_is_disabled_until_environment_is_ready(client, monkeypatch, tmp_path):
+    jobs, pid, headers = setup_access(client, monkeypatch, tmp_path)
+    monkeypatch.setattr(jobs.runtime, 'ready', lambda: False)
+    monkeypatch.setattr(jobs.runtime, 'prepare', lambda *a: pytest.fail('downloads must never install dependencies'))
+    for mode in ('auto','manual'):
+        response = client.post('/api/institutional/jobs',headers=headers,json={'paper_ids':[pid],'mode':mode})
+        assert response.status_code == 409 and '设置' in response.json()['detail']
 
 
 def test_completed_items_are_imported_once_and_retained(client, monkeypatch, tmp_path):

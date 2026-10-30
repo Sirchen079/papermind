@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64">
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="#202832"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="15.5" fill="none" stroke="#50616f"/>
+  <g id="brand-paper">
+    <rect x="12" y="20" width="29" height="34" rx="6" fill="#a8c7fa"/>
+    <path d="M26 11h13l11 11v23a6 6 0 0 1-6 6H26a6 6 0 0 1-6-6V17a6 6 0 0 1 6-6Z" fill="#edf1eb"/>
+    <path d="M39 11v7a4 4 0 0 0 4 4h7Z" fill="#7d9dc8"/>
+    <path d="M27 29h12M27 36h8" stroke="#315a8a" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+  <g id="brand-evidence" stroke="#202832" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m36 50 11-10 9 12" fill="none" stroke-width="6"/>
+    <path d="m36 50 11-10 9 12" fill="none" stroke="#ddef76" stroke-width="2.5"/>
+    <circle cx="47" cy="40" r="5.5" fill="#ddef76"/>
+    <circle cx="36" cy="50" r="3.5" fill="#ddef76"/>
+    <circle cx="56" cy="52" r="3.5" fill="#ddef76"/>
+  </g>
+</svg>

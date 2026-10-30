@@ -4,6 +4,15 @@ import pytest
 from app.ingestion import institutional_runtime as runtime
 
 
+def test_install_failure_reports_tls_without_leaking_raw_output(monkeypatch):
+    def fail(*args, **kwargs):
+        raise runtime.subprocess.CalledProcessError(1, ['uv'], stderr='SECRET tls handshake eof')
+    monkeypatch.setattr(runtime.subprocess, 'run', fail)
+    with pytest.raises(runtime.PreparationError, match='TLS') as error:
+        runtime._run(['uv', 'pip', 'install'])
+    assert 'SECRET' not in str(error.value)
+
+
 def test_prepare_pins_engine_isolates_browser_and_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv('PAPERMIND_INSTITUTION_RUNTIME', str(tmp_path))
     monkeypatch.setenv('PYTHONHOME', 'parent-frozen-runtime')

@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { WorkspaceMenu } from '../WorkspaceMenu';
-import { Blocks, BookOpen, Inbox, Lightbulb, Logo, Menu, MessageSquare, Search, Settings, Share2, Sparkles } from '../../icons';
+import { useEffect, useRef } from 'react';
+import { Blocks, BookOpen, Inbox, Lightbulb, Logo, MessageSquare, Search, Settings, Share2, Sparkles } from '../../icons';
 
 const primary = [
   {key:'home',label:'研究主页',icon:Inbox,hint:'从这里开始或继续上次工作'},
@@ -21,7 +20,7 @@ const more = [
 export const pageLabels:Record<string,string> = Object.fromEntries([...primary,...more,{key:'help',label:'使用指南'},{key:'settings',label:'设置'}].map(item=>[item.key,item.label]));
 
 export function Sidebar({page,open,onClose,onNavigate,onNewResearch,newCount}:{page:string;open:boolean;onClose:()=>void;onNavigate:(page:string)=>void;onNewResearch:()=>void;newCount:number}) {
-  const [collapsed,setCollapsed]=useState(()=>{try{return localStorage.getItem('pm-sidebar-collapsed')==='true';}catch{return false;}});
+  const toolsDialog=useRef<HTMLDialogElement>(null);
   const panel = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
@@ -30,6 +29,7 @@ export function Sidebar({page,open,onClose,onNavigate,onNewResearch,newCount}:{p
     const previous = document.activeElement as HTMLElement | null;
     panel.current?.querySelector<HTMLButtonElement>('.sidebar-close')?.focus();
     function keydown(event: KeyboardEvent) {
+      if (toolsDialog.current?.open) return;
       if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
       if (event.key !== 'Tab') return;
       const controls = Array.from(panel.current?.querySelectorAll<HTMLElement>('button:not(:disabled), [href]') ?? []).filter(el => el.getClientRects().length);
@@ -40,29 +40,28 @@ export function Sidebar({page,open,onClose,onNavigate,onNewResearch,newCount}:{p
     document.addEventListener('keydown', keydown);
     return () => { document.removeEventListener('keydown', keydown); previous?.focus(); };
   }, [open]);
-  function toggle(){setCollapsed(value=>{try{localStorage.setItem('pm-sidebar-collapsed',String(!value));}catch{/* optional preference */}return !value;});}
-  function go(key:string){onNavigate(key);onClose();}
+  function go(key:string){toolsDialog.current?.close();onNavigate(key);onClose();}
   function itemButton(item:typeof primary[number]) {
     const Icon=item.icon;
-    return <button key={item.key} className="nav-link" aria-label={item.label} aria-current={page===item.key?'page':undefined} title={`${item.label} · ${item.hint}`} onClick={()=>go(item.key)}>
-      <Icon size={18}/><span className="sidebar-copy flex-1">{item.label}</span>
-      {item.key==='suggestions'&&newCount>0&&<span className="sidebar-copy text-xs">{newCount}</span>}
+    const short:Record<string,string>={home:'主页',library:'论文',chat:'对话',research:'整理',cards:'精读',map:'地图'};
+    return <button key={item.key} className="rail-link" aria-label={item.label} aria-current={page===item.key?'page':undefined} title={`${item.label} · ${item.hint}`} onClick={()=>go(item.key)}>
+      <Icon size={21}/><span>{short[item.key]||item.label}</span>
+      {item.key==='suggestions'&&newCount>0&&<small>{newCount}</small>}
     </button>;
   }
-  return <aside ref={panel} aria-label="工作区导航" role={open?'dialog':undefined} aria-modal={open?true:undefined} className={`app-sidebar ${collapsed?'is-collapsed':''} ${open?'is-open':''}`}>
-    <div className="sidebar-brand"><span className="brand-symbol"><Logo size={25}/></span><span className="sidebar-copy brand-name">PaperMind</span><button className="btn-subtle sidebar-close lg:hidden" aria-label="关闭导航" onClick={onClose}>×</button></div>
-    <WorkspaceMenu/>
-    <button className="sidebar-new" onClick={()=>{onNewResearch();onClose();}} title="开始新的研究对话" aria-label="开始新的研究对话"><span aria-hidden="true" className="text-xl leading-none">+</span><span className="sidebar-copy">新研究</span></button>
-    <p className="sidebar-copy nav-section-label">日常研究</p>
-    <nav aria-label="主导航" className="space-y-1">{primary.map(itemButton)}</nav>
-    <div className="sidebar-tools">
-      <p className="sidebar-copy nav-section-label">探索与积累</p>
-      <nav aria-label="更多工具" className="space-y-1">{more.map(itemButton)}</nav>
+  return <aside ref={panel} aria-label="工作区导航" role={open?'dialog':undefined} aria-modal={open?true:undefined} className={`app-sidebar navigation-rail ${open?'is-open':''}`}>
+    <button className="rail-brand" aria-label="PaperMind 研究主页" title="PaperMind" onClick={()=>go('home')}><Logo size={44}/></button>
+    <button className="btn-subtle sidebar-close lg:hidden" aria-label="关闭导航" onClick={onClose}>×</button>
+    <button className="rail-create" onClick={()=>{onNewResearch();onClose();}} title="开始新的研究对话" aria-label="开始新的研究对话">+</button>
+    <nav aria-label="主导航" className="rail-primary">{primary.map(itemButton)}</nav>
+    <button className="rail-link" aria-label="更多研究工具" aria-haspopup="dialog" aria-current={more.some(item=>item.key===page)?'page':undefined} onClick={()=>toolsDialog.current?.showModal()}><Blocks size={21}/><span>工具</span>{newCount>0&&<i className="rail-dot"/>}</button>
+    <div className="rail-footer">
+      <button className="rail-link" aria-label="使用指南" aria-current={page==='help'?'page':undefined} title="使用指南" onClick={()=>go('help')}><BookOpen size={19}/></button>
+      <button className="rail-link" aria-label="设置" aria-current={page==='settings'?'page':undefined} title="设置" onClick={()=>go('settings')}><Settings size={19}/></button>
     </div>
-    <div className="sidebar-footer">
-      <button className="nav-link" aria-label="使用指南" aria-current={page==='help'?'page':undefined} title="使用指南" onClick={()=>go('help')}><BookOpen size={17}/><span className="sidebar-copy">使用指南</span></button>
-      <button className="nav-link" aria-label="设置" aria-current={page==='settings'?'page':undefined} title="设置" onClick={()=>go('settings')}><Settings size={17}/><span className="sidebar-copy">设置</span></button>
-      <div className="sidebar-bottom"><span className="sidebar-copy text-xs text-faint">你的本地研究空间</span><button className="btn-subtle hidden lg:inline-flex p-2" aria-label={collapsed?'展开侧栏':'收起侧栏'} title={collapsed?'展开侧栏':'收起侧栏'} onClick={toggle}><Menu size={17}/></button></div>
-    </div>
+    <dialog ref={toolsDialog} className="workspace-dialog rail-tools-dialog" aria-labelledby="research-tools-title">
+      <header><div><p className="workspace-kicker">PAPERMIND</p><h2 id="research-tools-title">探索与积累</h2></div><button className="btn-subtle" aria-label="关闭研究工具" onClick={()=>toolsDialog.current?.close()}>×</button></header>
+      <nav aria-label="更多工具">{more.map(itemButton)}</nav>
+    </dialog>
   </aside>;
 }

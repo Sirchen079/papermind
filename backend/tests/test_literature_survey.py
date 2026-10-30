@@ -39,7 +39,7 @@ def fixture_pdf(tmp: Path) -> Path:
 
 
 def fake_records():
-    return [
+    return [{**record, 'source_lists': ['jufo-2'], 'source_type': 'journal'} for record in [
         {'openalex_id': 'W1', 'doi': '10.1000/fwi-2025', 'title': 'FWI objective functions 2025',
          'year': 2025, 'venue': 'Geophysics', 'authors': ['A. Author'], 'cited_by_count': 9,
          'oa_pdf_url': 'https://example.test/fwi2025.pdf', 'type': 'web', 'text': 'Abstract about FWI objectives.',
@@ -51,7 +51,7 @@ def fake_records():
         {'openalex_id': 'W3', 'doi': '', 'title': 'Existing library paper',
          'year': 2024, 'venue': '', 'authors': [], 'cited_by_count': 0,
          'oa_pdf_url': None, 'type': 'web', 'text': 'Already in the library.', 'url': ''},
-    ]
+    ]]
 
 
 def install_search(monkeypatch, records=None):
@@ -93,6 +93,37 @@ def test_survey_run_lists_candidates(client, monkeypatch):
 
 def test_survey_requires_query(client):
     assert create(client, query='  ').status_code == 422
+
+
+def test_source_gate_runs_without_ai_and_before_result_cap(client, monkeypatch):
+    poor = [{**fake_records()[0], 'openalex_id': f'poor{i}', 'source_lists': ['doaj'],
+             'venue': 'Unassessed Journal', 'cited_by_count': 99999} for i in range(25)]
+    install_search(monkeypatch, [*poor, *fake_records()])
+    created = create(client, max_results=5).json()
+    state = wait_for(lambda: (lambda d: d if d['status'] == 'ready' else None)(
+        client.get(f"/api/literature/surveys/{created['id']}").json()))
+    assert len(state['candidates']) == 3
+    assert all(c['source_quality'] for c in state['candidates'])
+    assert all(c['venue'] != 'Unassessed Journal' for c in state['candidates'])
+
+
+def test_source_gate_does_not_fill_empty_results_with_unassessed_sources(client, monkeypatch):
+    install_search(monkeypatch, [{**fake_records()[0], 'source_lists': []}])
+    created = create(client).json()
+    state = wait_for(lambda: (lambda d: d if d['status'] == 'ready' else None)(
+        client.get(f"/api/literature/surveys/{created['id']}").json()))
+    assert state['candidates'] == []
+
+
+def test_source_quality_uses_explicit_lists_not_publisher_or_citations():
+    from app.literature.quality import source_quality
+    for lists in (['jufo-2'], ['jufo-3'], ['norway-2'], ['ccf-a']):
+        assert source_quality({'source_lists': lists, 'source_type': 'journal'})
+    for record in ({'venue': 'Nature Fake', 'cited_by_count': 100000},
+                   {'source_lists': ['doaj', 'cwts-core', 'jufo-1']},
+                   {'source_lists': ['jufo-3'], 'source_type': 'repository'},
+                   {'source_lists': ['jufo-3'], 'is_retracted': True}):
+        assert not source_quality(record)
 
 
 def test_survey_keeps_authors_beyond_display_preview(client, monkeypatch):
@@ -160,7 +191,7 @@ def test_survey_uses_default_chat_model_for_expansion_and_screening(client, monk
     calls = []
     phrases = []
 
-    def complete(ctx, prompt, ref_id):
+    def complete(ctx, prompt, ref_id, **kwargs):
         calls.append((ctx[2], ref_id))
         if '候选（JSON）' not in prompt:
             return ['full waveform inversion objective function']

@@ -29,7 +29,7 @@ export function WorkspaceActivity(){
     {verification&&<a role="alert" href={verification.url} className="card block mb-2 max-w-sm border border-[var(--warning)] text-sm">
       <strong className="block">机构下载需要手动人机验证</strong><span className="block mt-1 text-xs">请到已打开的 Chromium 下载浏览器完成验证，程序会自动继续。</span>
     </a>}
-    <button className="btn-secondary shadow-sm" onClick={()=>dialog.current?.showModal()} aria-label={`项目任务，${active} 项运行中，${unread.length} 项新动态`}>项目任务{active?` · ${active} 运行中`:''}{unread.length?` · ${unread.length} 新动态`:''}</button>
+    <button className="btn-ghost workspace-activity-trigger" onClick={()=>dialog.current?.showModal()} aria-label={`项目任务，${active} 项运行中，${unread.length} 项新动态`}><i aria-hidden="true" className={active||unread.length?'has-activity':''}/>项目任务{active?` · ${active} 运行中`:''}{unread.length?` · ${unread.length} 新动态`:''}</button>
     {!!unread.length&&<span className="sr-only" role="status">有 {unread.length} 项项目任务状态更新。</span>}
     <dialog ref={dialog} aria-labelledby="workspace-activity-title" className="card w-[min(640px,calc(100vw-32px))] max-h-[85vh] overflow-y-auto backdrop:bg-black/30">
       <div className="flex gap-3 items-center justify-between"><h2 id="workspace-activity-title" className="text-lg font-semibold">各项目任务</h2><button className="btn-ghost" onClick={()=>dialog.current?.close()}>关闭</button></div>

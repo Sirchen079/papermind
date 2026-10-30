@@ -29,6 +29,7 @@
     "src/pages/readingWorkspaceModel.ts",
     "src/pages/readinessModel.ts",
     "src/pages/researchProgressModel.ts",
+    "src/pages/researchDeskModel.ts",
     "src/pages/thesisWorkspaceModel.ts",
     "src/pages/organizationModel.ts",
     "src/pages/manualPaperModel.ts",

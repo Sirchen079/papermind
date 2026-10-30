@@ -156,25 +156,31 @@ def build_card(session: Session, paper: Paper, complete) -> dict:
 
 
 def save_card(session: Session, paper_id: int, fingerprint: str, result: dict, model: str) -> None:
-    row = session.exec(select(PaperCard).where(PaperCard.paper_id == paper_id)).first()
-    if row is None:
-        row = PaperCard(paper_id=paper_id)
-    row.fingerprint = fingerprint
-    row.status = result['status']
-    row.card_json = json.dumps(result['card'], ensure_ascii=False)
-    row.model = model
-    row.warning = result.get('warning') or ''
-    row.version += 1
-    row.updated_at = utcnow()
-    session.add(row)
-    session.commit()
+    from app.reviews.card_edits import preserve_edits
+    # Read corrections under the write lock, after the potentially slow model call.
+    with Session(session.get_bind()) as writer:
+        writer.connection().exec_driver_sql('BEGIN IMMEDIATE')
+        row = writer.exec(select(PaperCard).where(PaperCard.paper_id == paper_id)).first()
+        stored = json.loads(row.card_json) if row else {}
+        if row is None:
+            row = PaperCard(paper_id=paper_id)
+        card = preserve_edits(result['card'], stored, writer.get(Paper, paper_id))
+        row.fingerprint = fingerprint
+        row.status = result['status']
+        row.card_json = json.dumps(card, ensure_ascii=False)
+        row.model = model
+        row.warning = result.get('warning') or ''
+        row.version += 1
+        row.updated_at = utcnow()
+        writer.add(row)
+        writer.commit()
 
 
 def ensure_cards(engine, paper_ids, client, provider, model, ref_id, active, warnings) -> dict:
     """Build or reuse paper cards alongside a review (and later the map flow).
 
-    Cards are paper-level reading aids: they never feed synthesis or writing
-    and are not part of any generation key. One paper's failure only appends a
+    Cards feed the map; manual corrections also enter writing as researcher notes.
+    Generated fields alone do not invalidate writing. One paper's failure appends a
     warning; the surrounding task always continues. Consecutive provider
     failures abort the pool quietly (no raise) via ``unavailable``.
     """

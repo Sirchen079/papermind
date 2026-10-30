@@ -80,11 +80,19 @@ def test_survey_retains_complete_authors_while_agent_uses_short_preview(client, 
     record = work()
     names = [f'Author {i}' for i in range(15)]
     record['authorships'] = [{'author':{'display_name':name}} for name in names]
-    install(monkeypatch, lambda request: httpx.Response(200, json={'results':[record]}))
+    record['primary_location']['source'].update(listed_in=['jufo-2'], type='journal')
+    filters = []
+    def handler(request):
+        filters.append(request.url.params.get('filter',''))
+        return httpx.Response(200,json={'results':[record]})
+    install(monkeypatch, handler)
     with db_session() as db:
         candidates = _search_phrase(db,'retrieval',2025,25)
         preview = json.loads(search_openalex(db,'retrieval'))
     assert candidates[0]['authors'] == names
+    assert candidates[0]['source_lists'] == ['jufo-2']
+    assert 'primary_location.source.listed_in:jufo-3|jufo-2|norway-2|ccf-a' in filters[0]
+    assert 'is_retracted:false' in filters[0]
     assert preview[0]['authors'] == names[:6]
 
 

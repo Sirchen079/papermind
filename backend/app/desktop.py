@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ctypes
-import html
 import json
 import logging
 from logging.handlers import RotatingFileHandler
@@ -14,6 +13,7 @@ import threading
 import time
 
 from app.paths import default_data_dir, exe_dir, is_frozen
+from app.desktop_loading import loading_page
 
 TITLE = "PaperMind"
 DEFAULT_PORT = 4278
@@ -162,12 +162,6 @@ class LocalBackend:
         self.sock.close()
 
 
-def loading_page(message="正在打开你的研究空间…", *, error=False) -> str:
-    return f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8">
-    <style>body{{margin:0;background:#f8faff;color:#1d2942;font:16px 'Microsoft YaHei',sans-serif;display:grid;place-content:center;height:100vh;text-align:center}}h1{{font-size:32px;letter-spacing:-1px;margin:0 0 16px}}p{{color:#63718b;max-width:680px;line-height:1.8;padding:0 28px}}.dot{{width:12px;height:12px;border-radius:50%;background:#316be4;margin:0 auto 24px;animation:pulse 1s alternate infinite}}@keyframes pulse{{to{{opacity:.3}}}}</style>
-    {'' if error else '<div class="dot"></div>'}<h1>PaperMind</h1><p>{html.escape(message)}</p></html>"""
-
-
 def wait_for_event(event, cancelled, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while not cancelled.is_set():
@@ -284,7 +278,7 @@ def main(*, smoke_test=False) -> None:
         window = webview.create_window(
             TITLE, html=loading_page(), width=width, height=height,
             min_size=(880, 620), text_select=True, zoomable=True,
-            background_color="#F8FAFF",
+            background_color="#14171B",
         )
 
         def on_closing():

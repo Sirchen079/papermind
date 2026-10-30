@@ -67,6 +67,7 @@ interface PdfReaderProps {
   /** P11.5：翻页后上报进度（父级做 2s 防抖节流写回）。 */
   onProgress: (page: number) => void;
   onClose: () => void;
+  closeLabel?: string;
   onOpenPaper: (id: number, page?: number) => void;
   onRefreshNotes: () => Promise<void>;
 }
@@ -95,6 +96,7 @@ export default function PdfReader({
   initialPage,
   onProgress,
   onClose,
+  closeLabel = '退出阅读',
   onOpenPaper,
   onRefreshNotes,
 }: PdfReaderProps) {
@@ -649,8 +651,8 @@ export default function PdfReader({
         <button className="btn-ghost shrink-0 py-1 text-xs" aria-expanded={notesOpen} aria-controls="pdf-reader-notes" onClick={() => setNotesOpen((open) => !open)}>
           {notesOpen ? "收起侧栏" : "AI 伴读 / 笔记"}
         </button>
-        <button className="btn-subtle shrink-0 px-2" onClick={() => void leaveReader(onClose)} aria-label="退出阅读">
-          <X size={18} />
+        <button className="btn-subtle shrink-0 px-2 gap-1" onClick={() => void leaveReader(onClose)} aria-label={closeLabel}>
+          <X size={18} />{closeLabel !== '退出阅读' && <span className="text-xs">{closeLabel}</span>}
         </button>
       </header>
       <div className="relative flex min-h-0 flex-1">

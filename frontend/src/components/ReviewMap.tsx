@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useWorkspace } from '../workspaceContext';
 import { createReviewRequest, putReviewThemes, type MapTheme, type PaperCardEntry, type ReviewMapDetail, type ReviewMapPaper } from '../reviewsApi';
-import { addTheme, fieldLocation, filterPapers, ideaHandoff, mergeThemes, removeTheme, renameTheme, researchHandoff, statusLabel, themesForSave, type CardField, type FilterablePaper, type MapCombination, type MapOpenQuestion } from '../pages/reviewMapModel';
+import { addTheme, filterPapers, ideaHandoff, mergeThemes, removeTheme, renameTheme, researchHandoff, themesForSave, type CardField, type FilterablePaper, type MapCombination, type MapOpenQuestion } from '../pages/reviewMapModel';
+import { PaperCardFields } from './PaperCardFields';
 
 const EXPORTS: [string, string][] = [['html', 'HTML'], ['xlsx', 'Excel'], ['docx', 'Word'], ['csv', 'CSV'], ['bib', 'BibTeX']];
 
@@ -136,34 +137,35 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
     if (node) { node.open = true; node.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
   }
 
-  if (!map) return <section className="card space-y-3" aria-label="文献地图"><p role="status">正在读取文献地图…</p>{error && <p className="text-sm text-red-600" role="alert">{error}</p>}</section>;
+  if (!map) return <section className="review-map map-loading card space-y-3" aria-label="文献地图"><p role="status">正在读取文献地图…</p>{error && <p className="text-sm text-red-600" role="alert">{error}</p>}</section>;
 
   const running = map.status === 'running';
   const generated = map.themes.length > 0;
   const paperTitle = (pid: number) => map.papers.find((p) => p.paper_id === pid)?.title ?? `论文 ${pid}`;
 
-  return <section className="card space-y-4" aria-label="文献地图">
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <h2 className="text-lg">文献地图</h2>
+  return <section className="review-map card space-y-4" aria-label="文献地图">
+    <div className="map-detail-heading flex flex-wrap items-center justify-between gap-3">
+      <div><p className="research-surface-code">文献 · 主题 · 阅读路线</p><h2 className="text-lg">文献地图</h2></div>
       <div className="flex flex-wrap gap-2">
         {EXPORTS.map(([fmt, label]) => <button key={fmt} className="btn-ghost" disabled={!generated} onClick={() => window.open(`${base}/reviews/${reviewId}/map/export?format=${fmt}`, '_blank')}>导出{label}</button>)}
       </div>
     </div>
-    {!generated && !running && <div className="space-y-3">
+    {!generated && !running && <div className="map-generation space-y-3">
       <p className="text-sm text-muted">基于本次综述的论文生成精读卡片、研究主题、值得研究的问题和阅读路线，不需要等正文写完。</p>
       {map.error && <p className="text-sm text-amber-700">{map.error}</p>}
       {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
       <button className="btn-primary" disabled={busy} onClick={() => call('run')}>{busy ? '正在启动…' : '生成文献地图'}</button>
     </div>}
-    {running && <div className="space-y-3">
+    {running && <div className="map-generation is-running space-y-3">
       <p role="status">{map.stage || '正在生成'} · 论文 {map.counts.papers} 篇 · 已归类 {map.counts.assigned} 篇</p>
       <button className="btn-ghost" disabled={busy} onClick={() => call('stop')}>暂停</button>
     </div>}
     {generated && !running && <>
+      {map.needs_update && <p role="status" className="text-sm">材料或卡片已有变更，当前地图保留旧结果。点击“重新生成受影响部分”带入修订。</p>}
       {map.error && <p className="text-sm text-amber-700">{map.error}</p>}
       {error && <p className="text-sm text-red-600" role="alert">{error}{conflict && <> <button className="btn-ghost text-sm" disabled={busy} onClick={reload}>刷新地图（放弃未保存的修改）</button></>}</p>}
       {savedHint && <p className="text-sm" style={{ color: 'var(--success, #15803d)' }}>{savedHint}</p>}
-      <div className="flex flex-wrap gap-2">
+      <div className="map-edit-actions flex flex-wrap gap-2">
         <button className="btn-primary" disabled={busy} onClick={() => call('run')}>{map.status === 'failed' ? '重新生成' : '重新生成受影响部分'}</button>
         {!editing && <button className="btn-ghost" disabled={busy} onClick={() => { setDraft(map.themes); setEditing(true); setSavedHint(''); }}>编辑主题</button>}
         {editing && <>
@@ -171,13 +173,18 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
           <button className="btn-ghost" disabled={busy} onClick={() => { setEditing(false); setMergePick([]); setMergeName(''); setNewName(''); }}>取消</button>
         </>}
       </div>
-      <p className="text-sm text-muted">论文 {map.counts.papers} 篇 · 精读卡片 {map.counts.cards_done} 篇 · 已归类 {map.counts.assigned} 篇 · 未归类 {map.counts.unassigned} 篇</p>
+      <div className="map-counts" aria-label="文献地图统计">
+        <div><span>来源论文</span><strong>{map.counts.papers}<small>篇</small></strong></div>
+        <div><span>精读卡片</span><strong>{map.counts.cards_done}<small>篇</small></strong></div>
+        <div><span>已归类</span><strong>{map.counts.assigned}<small>篇</small></strong></div>
+        <div><span>未归类</span><strong>{map.counts.unassigned}<small>篇</small></strong></div>
+      </div>
 
-      {(map.overview.summary || map.overview.reading_route?.length || map.overview.research_steps?.length) && <div className="space-y-2 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
-        <h3 className="font-semibold">总览与阅读路线</h3>
+      {(map.overview.summary || map.overview.reading_route?.length || map.overview.research_steps?.length) && <div className="map-overview space-y-2 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+        <h3 className="font-semibold"><span className="map-section-number">01</span> 总览与阅读路线</h3>
         {map.overview.error && <p className="text-sm text-amber-700">{map.overview.error}</p>}
         {map.overview.summary && <p className="text-sm">{map.overview.summary}</p>}
-        {!!map.overview.reading_route?.length && <ol className="space-y-1 text-sm list-decimal list-inside">
+        {!!map.overview.reading_route?.length && <ol className="map-reading-route space-y-1 text-sm list-decimal list-inside">
           {map.overview.reading_route.map((step) => <li key={step.step}><strong>{step.goal}</strong>
             {' '}{step.papers.map((pid) => <button key={pid} className="btn-ghost text-xs" onClick={() => jumpTo(pid)}>[P{pid}] {paperTitle(pid)}</button>)}
             {step.source_missing && <span className="text-xs text-muted"> · 来源待补</span>}
@@ -186,9 +193,9 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
         {!!map.overview.research_steps?.length && <div className="text-sm"><p className="font-semibold">开展新研究的步骤</p><ol className="list-decimal list-inside space-y-1">{map.overview.research_steps.map((step, i) => <li key={i}>{step}</li>)}</ol></div>}
       </div>}
 
-      <div className="space-y-2 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
-        <h3 className="font-semibold">研究主题 · {map.themes.length} 条</h3>
-        {!editing && map.themes.map((theme) => {
+      <div className="map-themes border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+        <h3 className="font-semibold"><span className="map-section-number">02</span> 研究主题 · {map.themes.length} 条</h3>
+        {!editing && map.themes.map((theme, themeIndex) => {
           const synthesis = map.syntheses[theme.id] ?? {};
           const representative = (synthesis.representative ?? []).map((r) => r.paper_id);
           const researchButton = (key: string, item: MapOpenQuestion | MapCombination) => onResearch && <button className="btn-ghost text-xs" disabled={!!starting} onClick={() => research(key, theme.name, item, representative)}>{starting === key ? '正在带入…' : '带着这个问题继续研究 →'}</button>;
@@ -196,8 +203,8 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
             <button className="btn-ghost text-xs" disabled={!!savingIdea} onClick={() => saveIdea(key, theme.name, item, representative)}>{savingIdea === key ? '正在保存…' : '转为研究想法 →'}</button>
             {ideaSaved.includes(key) && <span className="text-xs" style={{ color: 'var(--success, #15803d)' }}>已存入研究想法 ✓</span>}
           </>;
-          return <details key={theme.id} className="space-y-2 border rounded p-2" style={{ borderColor: 'var(--border)' }}>
-            <summary className="cursor-pointer">{theme.name} <span className="text-xs text-muted">{synthesis.stats?.count ?? 0} 篇</span></summary>
+          return <details key={theme.id} className="map-theme">
+            <summary className="cursor-pointer"><span className="map-theme-number">{String(themeIndex + 1).padStart(2, '0')}</span><span className="map-theme-name">{theme.name}</span> <span className="map-theme-count text-xs text-muted">{map.papers.filter(paper => (map.assignments[String(paper.paper_id)]?.themes ?? paper.themes).includes(theme.id)).length} 篇</span></summary>
             <p className="text-sm text-muted">{theme.definition}</p>
             {synthesis.error && <p className="text-sm text-amber-700">{synthesis.error}</p>}
             {synthesis.stats && <p className="text-xs text-muted">年份：{Object.entries(synthesis.stats.years ?? {}).map(([y, n]) => `${y} 年 ${n} 篇`).join('、') || '无'}；数据：{Object.entries(synthesis.stats.setting ?? {}).map(([k, n]) => `${k} ${n}`).join('、')}</p>}
@@ -207,7 +214,7 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
             {!!synthesis.representative?.length && <p className="text-sm"><strong>代表论文：</strong>{synthesis.representative.map((r) => <button key={r.paper_id} className="btn-ghost text-xs" onClick={() => jumpTo(r.paper_id)}>[P{r.paper_id}] {paperTitle(r.paper_id)}</button>)}</p>}
           </details>;
         })}
-        {editing && <div className="space-y-3">
+        {editing && <div className="map-theme-editor space-y-3">
           {draft.map((theme) => <div key={theme.id} className="flex flex-wrap items-center gap-2">
             <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={mergePick.includes(theme.id)} onChange={() => setMergePick((old) => old.includes(theme.id) ? old.filter((x) => x !== theme.id) : [...old, theme.id])}/>合并</label>
             <input className="input flex-1 min-w-40" aria-label="主题名称" value={theme.name} onChange={(e) => setDraft(renameTheme(draft, theme.id, e.target.value))}/>
@@ -225,9 +232,9 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
         </div>}
       </div>
 
-      <div className="space-y-2 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
-        <h3 className="font-semibold">精读卡片 · {filtered.length} 篇</h3>
-        <div className="flex flex-wrap gap-2">
+      <div className="map-paper-archive space-y-2 border-t pt-3" style={{ borderColor: 'var(--border)' }}>
+        <h3 className="font-semibold"><span className="map-section-number">03</span> 精读卡片 · {filtered.length} 篇</h3>
+        <div className="map-paper-filters flex flex-wrap gap-2">
           <input className="input flex-1 min-w-40" placeholder="搜索题名或 DOI" aria-label="搜索精读卡片" value={query} onChange={(e) => { setQuery(e.target.value); setCardPage(0); }}/>
           <select className="input" aria-label="按主题筛选" value={themeFilter} onChange={(e) => { setThemeFilter(e.target.value); setCardPage(0); }}>
             <option value="">全部主题</option>
@@ -244,24 +251,13 @@ export function ReviewMap({ reviewId, onOpenPaper, onResearch, onCreateIdea }: {
         {filtered.slice(cardPage * 20, cardPage * 20 + 20).map((paper) => {
           const entry = cardById.get(paper.paper_id);
           const card = entry?.card ?? null;
-          return <details key={paper.paper_id} id={`map-card-${paper.paper_id}`} className="space-y-2 border rounded p-2" style={{ borderColor: 'var(--border)' }}>
-            <summary className="cursor-pointer">[P{paper.paper_id}] {paper.year ? `${paper.year} ` : ''}{paper.title}{paper.venue ? ` · ${paper.venue}` : ''}</summary>
-            <p className="text-xs text-muted">主题：{paper.themes.map((tid) => map.themes.find((t) => t.id === tid)?.name ?? tid).join('、') || '未归类'}；证据级别：{paper.evidence_level || '—'}；卡片状态：{entry?.status ?? paper.card_status}{entry?.warning ? ` · ${entry.warning}` : ''}</p>
+          return <details key={paper.paper_id} id={`map-card-${paper.paper_id}`} className="archive-card">
+            <summary><span className="archive-id">P{paper.paper_id}</span><span className="archive-card-title">{paper.title}<small>{[paper.year,paper.venue].filter(Boolean).join(' · ') || '精读记录'}</small></span><span className="archive-expand" aria-hidden="true">+</span></summary>
+            <p className="archive-card-meta">主题：{paper.themes.map((tid) => map.themes.find((t) => t.id === tid)?.name ?? tid).join('、') || '未归类'} · 可用材料：{({full_text:'全文',abstract:'摘要',metadata:'书目信息'} as Record<string,string>)[paper.evidence_level] || '—'}{entry?.warning ? ` · ${entry.warning}` : ''}</p>
             {paper.doi && <p className="text-xs"><a className="underline" href={`https://doi.org/${paper.doi}`} target="_blank" rel="noreferrer">{paper.doi}</a></p>}
-            {card ? [
-              ['问题', card.problem], ['机制', card.mechanism], ['数据条件', card.data_setting],
-              ...(card.contributions ?? []).map((c, i) => [`主要贡献 ${i + 1}`, c] as [string, typeof card.problem]),
-              ['判断边界', card.boundary],
-            ].filter((pair): pair is [string, NonNullable<typeof card.problem>] => Boolean(pair[1])).map(([label, field]) => {
-              const location = fieldLocation(field);
-              return <p key={label} className="text-sm"><strong>{label}：</strong>{field.value}
-                {' '}<span className="text-xs" style={{ color: field.status === 'number_mismatch' ? 'var(--warning, #b45309)' : 'var(--muted, #6b7280)' }}>
-                  {statusLabel(field.status, field.similarity)}{field.missing_numbers?.length ? `：缺少 ${field.missing_numbers.join('、')}` : ''}{location.text ? `（${location.text}）` : ''}
-                </span>
-                {location.page !== undefined && <button className="btn-ghost text-xs" onClick={() => onOpenPaper(paper.paper_id, location.page)}>查看原文</button>}
-                {field.quote && <span className="block text-xs text-muted">原文：“{field.quote}”</span>}
-              </p>;
-            }) : <p className="text-sm text-muted">这篇论文还没有精读卡片。</p>}
+            {entry && card ? <PaperCardFields entry={entry} reviewId={reviewId} onOpenPaper={onOpenPaper}
+              onSaved={next => {setCards(old => old.map(c => c.paper_id === next.paper_id ? next : c)); setMap(old => old ? {...old, needs_update: true} : old);}}/>
+              : <p className="text-sm text-muted">这篇论文还没有精读卡片。</p>}
           </details>;
         })}
         <div className="flex gap-2">

@@ -31,6 +31,8 @@ import {MarkdownContent} from '../components/MarkdownContent';
 import { usePaperDraft } from "../components/usePaperDraft";
 import { CopyPaperPanel } from '../components/CopyPaperPanel';
 import ThesisWorkspacePanel from "../components/ThesisWorkspacePanel";
+import { SelectedPaperReviewActions } from '../components/SelectedPaperReviewActions';
+import { PaperCollection } from '../components/PaperCollection';
 import {
   buildExcerptPayload,
   buildNotePayload,
@@ -1697,8 +1699,8 @@ export default function Library({
   });
 
   return (
-    <Shell max="wide"><div className="mb-6"><h1 className="page-title">论文库</h1><p className="page-subtitle mt-2">导入论文后，点击标题开始阅读。需要比较方法时用论文对照表，开始写作时再组织课题与章节。</p></div>
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <Shell max="wide"><div className="archive-page-heading library-heading"><div><p className="workspace-kicker">文献档案 / COLLECTION</p><h1 className="page-title">论文库</h1><p className="page-subtitle mt-2">本项目的论文、标注与阅读记录</p></div><button className="btn-primary" onClick={()=>setImportOpen(true)}><Plus size={16}/> 导入论文</button></div>
+      <div className="library-stats mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label={serverSearchActive ? "搜索匹配数" : "论文总数"} value={papersTotal} />
             <Stat
               label={papersIncomplete ? `已总结（已加载 ${papers.length}/${papersTotal}）` : "已总结"}
@@ -1729,22 +1731,25 @@ export default function Library({
         </div>
       )}
 
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-          <div className="flex rounded-lg border p-1 border-[var(--border)]">
+      <div className="library-toolbar mb-3 flex flex-wrap items-center gap-2">
+          <div className="library-view-switch">
             <button
               className={view === "library" ? "btn-primary py-1 text-xs" : "btn-ghost py-1 text-xs"}
+              aria-pressed={view === "library"}
               onClick={() => setView("library")}
             >
               论文库
             </button>
             <button
               className={view === "matrix" ? "btn-primary py-1 text-xs" : "btn-ghost py-1 text-xs"}
+              aria-pressed={view === "matrix"}
               onClick={() => setView("matrix")}
             >
               论文对照表
             </button>
             <button
               className={view === "thesis" ? "btn-primary py-1 text-xs" : "btn-ghost py-1 text-xs"}
+              aria-pressed={view === "thesis"}
               onClick={() => setView("thesis")}
             >
               课题与章节
@@ -1753,17 +1758,12 @@ export default function Library({
           {view !== "thesis" && (
             <>
           <input
-            className="input max-w-xs"
+            className="library-search input"
             placeholder="搜索全库：标题、作者、DOI、摘要、概念、标签…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             aria-label="搜索论文库"
           />
-          {!serverSearchActive && sort === "imported" && (
-            <span className="chip text-muted" title="未搜索时按导入时间倒序展示">
-              最近导入
-            </span>
-          )}
           {serverSearchActive && (
             <button
               className="btn-ghost py-1 text-xs"
@@ -1775,6 +1775,7 @@ export default function Library({
           )}
           <select
             className="input max-w-[10rem]"
+            aria-label="论文排序"
             value={sort}
             onChange={(e) => setSort(e.target.value as typeof sort)}
           >
@@ -1783,8 +1784,10 @@ export default function Library({
             <option value="year_asc">发表年份从旧到新</option>
             <option value="title">按标题字母序</option>
           </select>
+          <details className="library-filters"><summary>筛选{hasActiveFilter?' · 已启用':''}</summary><div>
           <select
             className="input max-w-[9rem]"
+            aria-label="阅读状态"
             value={readingStatus}
             onChange={(e) => setReadingStatus(e.target.value as typeof readingStatus)}
           >
@@ -1796,6 +1799,7 @@ export default function Library({
           </select>
           <select
             className="input max-w-[9rem]"
+            aria-label="最低相关度"
             value={minRelevance}
             onChange={(e) => setMinRelevance(Number(e.target.value))}
           >
@@ -1809,6 +1813,7 @@ export default function Library({
           {view === "library" && (
             <select
               className="input max-w-[14rem]"
+              aria-label="课题与章节目标"
               value={thesisFilter}
               onChange={(e) => setThesisFilter(e.target.value as ThesisFilter)}
             >
@@ -1836,6 +1841,7 @@ export default function Library({
           {view === "library" && (
             <select
               className="input max-w-[12rem]"
+              aria-label="标签或合集"
               value={organizationFilter}
               onChange={(e) => setOrganizationFilter(e.target.value as OrganizationFilter)}
             >
@@ -1868,6 +1874,7 @@ export default function Library({
             />
             高优先级
           </label>
+          </div></details>
           {visible.length > 0 && (
             <button
               onClick={() => {
@@ -1898,12 +1905,6 @@ export default function Library({
           <span className="text-xs text-faint">
             {visible.length} / {papersTotal}
           </span>
-          <button
-            onClick={() => setImportOpen(true)}
-            className="btn-primary ml-auto py-1 text-xs"
-          >
-            <Plus size={13} /> 导入
-          </button>
             </>
           )}
           {view === "thesis" && (
@@ -2008,7 +2009,7 @@ export default function Library({
         <InstitutionalDownload paperIds={bulkSelectedPaperIds} onAttached={load}/>
         {bulkSelectedPaperIds.length > 0 && (
           <div
-            className="rounded-lg border px-3 py-2 border-[var(--border)] bg-[var(--surface-2)]"
+            className="library-selection rounded-lg border px-3 py-2 border-[var(--border)] bg-[var(--surface-2)]"
             
           >
             <div className="flex flex-wrap items-center gap-2">
@@ -2019,6 +2020,7 @@ export default function Library({
                 finally { setDiscussionOpening(false); }
               }}>{discussionOpening ? '正在打开讨论…' : bulkSelectedPaperIds.length > 100 ? '基于所选论文讨论（最多 100 篇）' : '基于所选论文讨论'}</button>
               <button className="btn-primary min-h-9 py-1 text-xs" disabled={bulkSelectedPaperIds.length>5} onClick={()=>onNavigate?.({page:'research',params:{papers:bulkSelectedPaperIds.join(',')}})}>围绕问题比较{bulkSelectedPaperIds.length>5?'（最多 5 篇）':''}</button>
+              <SelectedPaperReviewActions paperIds={bulkSelectedPaperIds} onNavigate={onNavigate}/>
               <button
                 onClick={runBulkEnrichMetadata}
                 disabled={enrichBusy || fulltextBusy || bulkSelectedPaperIds.length > ENRICH_METADATA_CAP}
@@ -2136,71 +2138,8 @@ export default function Library({
             {serverSearchActive && <button className="btn-ghost mt-2" onClick={() => { setQuery(""); setServerQuery(""); }}>清除搜索</button>}
           </div>
         )}
-        {visible.map((p) => (
-          <div
-            key={p.id}
-            className="card-tight group flex items-center gap-2 transition hover:translate-y-[-1px]"
-            style={{ boxShadow: "var(--shadow)" }}
-          >
-            <label
-              className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border transition"
-              style={{
-                borderColor: bulkSelectedPaperIdSet.has(p.id) ? "var(--accent)" : "var(--border)",
-                backgroundColor: bulkSelectedPaperIdSet.has(p.id)
-                  ? "color-mix(in srgb, var(--accent) 10%, transparent)"
-                  : "transparent",
-              }}
-              title="选择论文"
-            >
-              <input
-                type="checkbox"
-                className="h-4 w-4"
-                checked={bulkSelectedPaperIdSet.has(p.id)}
-                onChange={() => {
-                  setBulkSelectedPaperIds((ids) => toggleBulkPaperSelection(ids, p.id));
-                  setBulkMsg(null);
-                }}
-                aria-label={`选择论文：${p.title ?? "无标题"}`}
-              />
-            </label>
-            <button onClick={() => open(p)} className="block min-w-0 flex-1 text-left">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0 break-words font-medium leading-snug">{p.title ?? "（无标题）"}</div>
-                <div className="flex shrink-0 flex-wrap gap-1 sm:max-w-[45%] sm:justify-end">
-                  {p.has_summary && <span className="chip">已总结</span>}
-                  <span className="chip">{READING_STATUS_LABELS[p.reading?.status ?? "unread"] ?? "未读"}</span>
-                  {p.reading?.priority && (
-                    <span className="chip">{READING_PRIORITY_LABELS[p.reading.priority] ?? p.reading.priority}</span>
-                  )}
-                  {p.reading?.relevance && <span className="chip">相关度 {p.reading.relevance}</span>}
-                  {(p.tags ?? []).slice(0, 2).map((tag) => (
-                    <span key={`tag-${tag.id}`} className="chip">
-                      {tag.name}
-                    </span>
-                  ))}
-                  {(p.collections ?? []).slice(0, 1).map((collection) => (
-                    <span key={`collection-${collection.id}`} className="chip">
-                      {collection.name}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <div className="mt-1 text-sm text-muted">
-                {p.authors.slice(0, 3).join("，")}
-                {p.authors.length > 3 ? " 等" : ""} {p.year ? `· ${p.year}` : ""}
-              </div>
-            </button>
-            <button
-              onClick={() => removePaper(p)}
-              className="shrink-0 rounded-lg px-2 py-1 text-xs opacity-0 transition-opacity group-hover:opacity-100 text-faint"
-              
-              title="从库中移除"
-              aria-label={`从库中移除${p.title ?? "该论文"}`}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        ))}
+        <PaperCollection papers={visible} selectedIds={bulkSelectedPaperIdSet} onOpen={open} onRemove={removePaper}
+          onToggle={id=>{setBulkSelectedPaperIds(ids=>toggleBulkPaperSelection(ids,id));setBulkMsg(null);}}/>
         {papersIncomplete && (
           <button
             onClick={() => loadMorePapers(papers.length + PAPER_PAGE_SIZE)}

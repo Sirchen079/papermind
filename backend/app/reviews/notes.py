@@ -11,13 +11,14 @@ GUIDANCE = ('以下是本地研究笔记，可能包含人工或 AI 分析、纠
 
 
 def snapshots(session, paper_id):
+    from app.reviews.card_edits import correction_snapshot
     return [dict(ref=f'N{n.id}.v{n.version}', paper_id=paper_id, scope=SCOPE,
                  note_id=n.id, version=n.version, kind=n.kind, tags=json.loads(n.tags_json),
                  quote=n.content, source_hash=hashlib.sha256(n.content.encode()).hexdigest(),
                  locator=f'研究笔记 #{n.id} · v{n.version}（研究记录，非论文原文）',
                  purpose='研究笔记')
             for n in session.exec(select(PaperNote).where(PaperNote.paper_id==paper_id)
-                                  .order_by(PaperNote.id)) if n.content.strip()]
+                                  .order_by(PaperNote.id)) if n.content.strip()] + correction_snapshot(session, paper_id)
 
 
 def from_entries(entries):

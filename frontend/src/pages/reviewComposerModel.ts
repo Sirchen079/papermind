@@ -10,6 +10,10 @@ export type ReviewEstimate = {
   review_tokens: number;
 };
 
+export function selectedReviewPapers(raw = ''): number[] {
+  return [...new Set(raw.split(',').map(Number).filter(id => Number.isSafeInteger(id) && id > 0))].slice(0, 1000);
+}
+
 // 万位换算保留 1 位小数（四舍五入），不足 1 万直接给整数；整万不带小数点。
 function tokenAmount(tokens: number): string {
   if (tokens < 10000) return String(tokens);

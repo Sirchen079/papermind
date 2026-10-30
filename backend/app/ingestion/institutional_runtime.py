@@ -17,6 +17,10 @@ UV_SHA256 = '95f9bc30fbb3574d276e28ac4a6de932d25153645853d13da8c21eec3bc88d06'
 _install_lock = Lock()
 
 
+class PreparationError(RuntimeError):
+    """A safe actionable installation error; never contains raw process output."""
+
+
 def root() -> Path:
     # Browser credentials stay outside paper/project backups.
     return Path(os.environ.get('PAPERMIND_INSTITUTION_RUNTIME') or
@@ -64,9 +68,20 @@ def _uv() -> str:
 
 
 def _run(argv):
-    subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, shell=False, check=True, timeout=900,
-                   env=environment(), creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    try:
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
+                       shell=False, check=True, timeout=900, env=environment(),
+                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except subprocess.CalledProcessError as exc:
+        diagnostic = (exc.stderr or '').lower()
+        if any(word in diagnostic for word in ('tls', 'ssl', 'certificate')):
+            message = '下载环境的 HTTPS/TLS 连接失败；请检查网络代理与系统证书，或使用常用浏览器下载后上传 PDF。'
+        else:
+            message = '下载环境安装失败；请检查网络与可用磁盘空间，或使用常用浏览器下载后上传 PDF。'
+        raise PreparationError(message) from None
+    except subprocess.TimeoutExpired:
+        raise PreparationError('下载环境准备超时，可重试或使用常用浏览器下载后上传 PDF。') from None
 
 
 def prepare(progress=lambda message: None):

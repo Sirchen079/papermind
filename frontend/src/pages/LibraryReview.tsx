@@ -7,7 +7,7 @@ import { ReviewMap } from '../components/ReviewMap';
 import { ReviewParagraphEditor } from '../components/ReviewParagraphEditor';
 import {createReviewRequest,type LibraryReviewDetail as Review,type ReviewSource as Source} from '../reviewsApi';
 import type { NavLocation } from './navigationModel';
-import {formatTokenEstimate,type ReviewEstimate} from './reviewComposerModel';
+import {formatTokenEstimate,selectedReviewPapers,type ReviewEstimate} from './reviewComposerModel';
 import {localToken,type Paper} from '../api';
 import {parseApiErrorMessage} from './apiErrorModel';
 
@@ -16,7 +16,7 @@ const labels:Record<string,string>={draft:'待开始',running:'正在生成',rea
 export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Record<string,string>;onNavigate:(target:NavLocation|string)=>void;onOpenPaper:(id:number,page?:number)=>void}) {
   const {base,workspace}=useWorkspace();const api=useApi();
   const [history,setHistory]=useState<Review[]>([]),[job,setJob]=useState<Review|null>(null);
-  const [topic,setTopic]=useState(''),[whole,setWhole]=useState(true),[selected,setSelected]=useState<number[]>([]),[mapFirst,setMapFirst]=useState(true);
+  const [topic,setTopic]=useState(''),[whole,setWhole]=useState(false),[selected,setSelected]=useState<number[]>(()=>selectedReviewPapers(params.papers)),[mapFirst,setMapFirst]=useState(params.output!=='review');
   const [query,setQuery]=useState(''),[offset,setOffset]=useState(0),[items,setItems]=useState<Paper[]>([]),[total,setTotal]=useState(0);
   const [error,setError]=useState(''),[busy,setBusy]=useState(false),[filter,setFilter]=useState(''),[page,setPage]=useState(0);
   const [citeStyle,setCiteStyle]=useState<'gbt'|'apa'>('gbt'),[exporting,setExporting]=useState(false);
@@ -28,6 +28,7 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
   const id=params.review;const current=useRef(id);current.current=id;const generation=useRef(0);const editorRef=useRef(editor);editorRef.current=editor;
   const requestId=useRef(crypto.randomUUID());
   const request=useMemo(()=>createReviewRequest(base),[base]);
+  useEffect(()=>{requestId.current=crypto.randomUUID();},[topic,whole,selected]);
   useEffect(()=>{let alive=true;request<Review[]>('').then(x=>{if(alive)setHistory(x);}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[request,id,job?.status]);
   useEffect(()=>{
     let alive=true;const timer=setTimeout(()=>api.listPapers(30,offset,query).then(r=>{if(alive){setItems(r.items);setTotal(r.total);}}).catch(e=>{if(alive)setError(e.message);}),200);
@@ -41,13 +42,19 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
     return()=>{alive=false;clearTimeout(timer);};
   },[id,whole,selected,items,request]);
   useEffect(()=>{
-    const g=++generation.current;setJob(null);setSource(null);setEditor(null);setOldVersion(null);setEditSelection(null);setError('');setBusy(false);setPage(0);setFilter('');setSelected([]);requestId.current=crypto.randomUUID();
+    const g=++generation.current;setJob(null);setSource(null);setEditor(null);setOldVersion(null);setEditSelection(null);setError('');setBusy(false);setPage(0);setFilter('');requestId.current=crypto.randomUUID();
     if(!id)return;
+    setSelected([]);
     request<Review>('/'+id).then(x=>{if(g!==generation.current)return;setJob(x);
       try {const saved=localStorage.getItem(workspaceDraftKey(workspace.id,'review-edit-'+id));if(saved){const draft=JSON.parse(saved);setEditor(draft.content);setEditVersion(draft.version);}}catch{/* editor still usable */}
     }).catch(e=>{if(g===generation.current)setError(e.message);});
     return()=>{++generation.current;};
   },[id,request,workspace.id]);
+  useEffect(()=>{
+    if(id)return;
+    setSelected(selectedReviewPapers(params.papers));setWhole(false);setMapFirst(params.output!=='review');
+    requestId.current=crypto.randomUUID();
+  },[id,params.papers,params.output]);
   useEffect(()=>{
     if(!id||job?.status!=='running')return;
     let alive=true,pending=false;const timer=setInterval(async()=>{if(pending)return;pending=true;try{const next=await request<Review>('/'+id);if(alive)setJob(next);}catch(e){if(alive)setError((e as Error).message);}finally{pending=false;}},2500);
@@ -95,10 +102,11 @@ export default function LibraryReview({params,onNavigate,onOpenPaper}:{params:Re
     <div className="grid gap-2 md:grid-cols-2">{items.map(p=><label className="paper-option" key={p.id}><input type="checkbox" checked={selected.includes(p.id)} disabled={!selected.includes(p.id)&&selected.length>=1000} onChange={()=>setSelected(old=>old.includes(p.id)?old.filter(x=>x!==p.id):[...old,p.id])}/><span className="break-words">{p.title??`论文 ${p.id}`}</span></label>)}</div>
     <div className="flex gap-3"><button className="btn-ghost" disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-30))}>上一页</button><span className="text-sm text-muted">共 {total} 篇</span><button className="btn-ghost" disabled={offset+30>=total} onClick={()=>setOffset(offset+30)}>下一页</button></div></div>;
   return <Shell max="wide"><div className="space-y-6">
-    <div className="flex flex-wrap justify-between gap-3"><div><h1 className="page-title">专题综述</h1><p className="page-subtitle mt-2">从最多 1000 篇论文中生成文献地图（研究主题、值得研究的问题、阅读路线），并按需写成可以继续修改的综述。</p></div><div className="flex gap-2"><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{}})}>少量论文比较</button><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{mode:'review'}})}>新建综述</button></div></div>
+    <div className="flex flex-wrap justify-between gap-3"><div><h1 className="page-title">{!id&&mapFirst?'生成卡片与文献地图':'专题综述'}</h1><p className="page-subtitle mt-2">从最多 1000 篇论文中生成文献地图（研究主题、值得研究的问题、阅读路线），并按需写成可以继续修改的综述。</p></div><div className="flex gap-2"><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{}})}>少量论文比较</button><button className="btn-ghost" onClick={()=>onNavigate({page:'research',params:{mode:'review'}})}>新建综述</button></div></div>
     {error&&<p className="card text-red-600" role="alert">{error}</p>}
     {!id&&<section className="research-composer space-y-5"><p className="text-sm text-muted">内置 Nature Writing · Oh My Paper：先组织论证，再分章写作与整篇修订。</p><label className="block">综述主题与关注问题<textarea className="input w-full mt-2" aria-label="综述主题" rows={3} value={topic} onChange={e=>{setTopic(e.target.value);requestId.current=crypto.randomUUID();}} placeholder="例如：梳理检索增强生成的方法演进，比较检索、证据利用与评测方式。"/></label>
-      <div className="flex gap-4"><label><input type="radio" checked={whole} onChange={()=>setWhole(true)}/> 当前整个论文库</label><label><input type="radio" checked={!whole} onChange={()=>setWhole(false)}/> 自选论文</label></div>
+      {params.papers&&!whole&&<p role="status" className="text-sm">已带入论文库所选范围，当前 {selected.length} 篇；可继续增减论文。</p>}
+      <div className="flex gap-4"><label><input type="radio" checked={!whole} onChange={()=>setWhole(false)}/> 所选论文</label><label><input type="radio" checked={whole} onChange={()=>setWhole(true)}/> 当前整个论文库</label></div>
       {!whole&&picker}
       <div className="space-y-2"><label className="block"><input type="radio" checked={mapFirst} onChange={()=>setMapFirst(true)}/> 先生成文献地图（推荐）：精读卡片、研究主题、值得研究的问题和阅读路线，用量约为写综述正文的一半</label><label className="block"><input type="radio" checked={!mapFirst} onChange={()=>setMapFirst(false)}/> 直接写综述正文：逐篇分析、分章写作与整篇修订；地图之后也可以生成</label></div>
       {estimateText&&<p className="text-sm text-muted" aria-live="polite">{estimateText}</p>}

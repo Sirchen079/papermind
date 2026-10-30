@@ -416,29 +416,18 @@ export function SquareIcon(props: IconProps) {
 // ─── 品牌 ────────────────────────────────────────────────────────────
 
 /**
- * PaperMind 品牌标识——一本翻开的书 + 一个相连的节点（论文 + AI）。
- * 跟随 currentColor，所以在 accent 背景上自动反白。
+ * 与桌面、安装器共用的论文与证据标识，由 build/make_icon.py 同步。
  */
 export function Logo({ size = 24, ...props }: IconProps) {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={1.75}
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      viewBox="0 0 64 64"
       aria-hidden="true"
       {...props}
     >
-      <path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2V4Z" />
-      <path d="M5 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2" />
-      <path d="M9 9h6" />
-      <path d="M9 13h4" />
-      <circle cx="18.5" cy="6.5" r="1.6" fill="currentColor" stroke="none" />
-      <path d="M16.6 9.4l1.3-1.4" />
+      <image href="/papermind.svg" width="64" height="64" />
     </svg>
   );
 }

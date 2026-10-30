@@ -12,6 +12,7 @@ type PaperCardField = {
   pages?: number[];
   missing_numbers?: string[];
   similarity?: number | null;
+  researcher_edited?: boolean;
 };
 type PaperCardData = {
   metadata?: Record<string, unknown>;
@@ -28,6 +29,8 @@ type PaperCardEntry = { paper_id: number; title: string; status: string; card: P
 // 行模型保留字段级核验信息：状态、未匹配数字与真实来源定位（页码/摘要），
 // 供页面警示、原文跳转与 Markdown 导出使用，不再只剩值和引文。
 export type CardRow = {
+  key: string;
+  edited: boolean;
   label: string;
   value: string;
   quote?: string;
@@ -51,33 +54,35 @@ function fieldStatusText(field: PaperCardField): string {
 export function cardFieldRows(card: PaperCardData | null): CardRow[] {
   if (!card) return [];
   const rows: CardRow[] = [];
-  const push = (label: string, field: PaperCardField | undefined) => {
+  const push = (key: string, label: string, field: PaperCardField | undefined) => {
     if (!field || !field.value || !field.value.trim()) return;
     const location = fieldLocation(field);
     const status = field.status ?? '';
     rows.push({
+      key, edited: !!field.researcher_edited,
       label,
       value: field.value,
       quote: field.quote || undefined,
       status,
-      statusText: fieldStatusText(field),
+      statusText: field.researcher_edited && status === 'no_quote' ? '未附引文' : fieldStatusText(field),
       missingNumbers: field.missing_numbers ?? [],
       locationText: location.text,
       page: location.page,
       problem: PROBLEM_STATUSES.has(status),
     });
   };
-  push("问题", card.problem);
-  push("机制", card.mechanism);
-  push("数据条件", card.data_setting);
-  (card.contributions ?? []).forEach((contribution, i) => push(`主要贡献 ${i + 1}`, contribution));
-  push("判断边界", card.boundary);
+  push('problem', "问题", card.problem);
+  push('mechanism', "机制", card.mechanism);
+  push('data_setting', "数据条件", card.data_setting);
+  (card.contributions ?? []).forEach((contribution, i) => push(`contributions.${i}`, `主要贡献 ${i + 1}`, contribution));
+  push('boundary', "判断边界", card.boundary);
   return rows;
 }
 
 // 行内核验说明，文案与文献地图卡片区块一致：状态＋缺少数字＋（定位）。
 export function cardRowStatusText(row: CardRow): string {
   let text = row.statusText;
+  if (row.edited) text = '人工修订 · ' + text;
   if (row.missingNumbers.length) text += `：缺少 ${row.missingNumbers.join('、')}`;
   if (row.locationText) text += `（${row.locationText}）`;
   return text;
@@ -97,7 +102,7 @@ export function cardCheckSummary(card: PaperCardData | null): string {
 }
 
 // 搜索题名子串（不区分大小写）或卡片编号（P12、12 均可）。
-export function filterCards(entries: PaperCardEntry[], query: string): PaperCardEntry[] {
+export function filterCards<T extends PaperCardEntry>(entries: T[], query: string): T[] {
   const trimmed = query.trim().toLowerCase();
   if (!trimmed) return entries;
   const idMatch = /^p?(\d+)$/.exec(trimmed);

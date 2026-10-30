@@ -19,6 +19,7 @@ import { libraryScope, localStore } from './components/usePaperDraft';
 import { GettingStarted, useGettingStarted } from './components/GettingStarted';
 import { Sidebar, pageLabels } from './components/layout/Sidebar';
 import { Shell } from './components/layout/Shell';
+import { WorkspaceMenu } from './components/WorkspaceMenu';
 
 // Route-level code splitting keeps the heavy graph lib (cytoscape) out of the
 // initial bundle — it only loads when the Graph page is opened.
@@ -37,6 +38,7 @@ const MapPage = lazy(() => import("./pages/MapPage"));
 const Wiki = lazy(() => import('./pages/Wiki'));
 const Literature = lazy(() => import('./pages/Literature'));
 const Help = lazy(() => import('./pages/Help'));
+const PaperSourceReader = lazy(() => import('./components/PaperSourceReader'));
 
 function readInitialLocation(): NavLocation {
   if (typeof window === "undefined") return { page: DEFAULT_PAGE, params: {} };
@@ -48,12 +50,12 @@ function ThemeToggle({ theme, toggle }: { theme: Theme; toggle: () => void }) {
   return (
     <button
       onClick={toggle}
-      className="btn-subtle p-2"
+      className="theme-toggle btn-subtle"
       title={`切换到${isDark ? "浅色" : "深色"}模式`}
       aria-label={`切换到${isDark ? "浅色" : "深色"}模式`}
     >
       {isDark ? <Sun size={16} /> : <Moon size={16} />}
-      <span className="sr-only">{isDark ? "浅色模式" : "深色模式"}</span>
+      <span>{isDark ? "日间" : "夜间"}</span>
     </button>
   );
 }
@@ -66,6 +68,8 @@ export default function App() {
   const [newCount, setNewCount] = useState(0);
   const [openPaperId, setOpenPaperId] = useState<number | null>(null);
   const [openPaperPage, setOpenPaperPage] = useState<number | null>(null);
+  const [sourcePaper, setSourcePaper] = useState<{id: number; page?: number} | null>(null);
+  const sourceTrigger = useRef<HTMLElement | null>(null);
   const [activeConv, setActiveConv] = useState<number | null>(()=>{
     const explicit=location.page==='chat'?Number(location.params.conversation):0;
     if(Number.isSafeInteger(explicit)&&explicit>0)return explicit;
@@ -141,11 +145,16 @@ export default function App() {
   // Cross-page "open this paper" — e.g. clicking a RAG source chip in Chat.
   const openPaper = useCallback(
     (id: number, sourcePage?: number) => {
+      if (page !== 'library') {
+        sourceTrigger.current ??= document.activeElement as HTMLElement | null;
+        setSourcePaper({id, page: Number.isInteger(sourcePage) && (sourcePage ?? 0) > 0 ? sourcePage : undefined});
+        return;
+      }
       setOpenPaperId(id);
       setOpenPaperPage(Number.isInteger(sourcePage) && (sourcePage ?? 0) > 0 ? sourcePage! : null);
       navigate("library");
     },
-    [navigate],
+    [navigate, page],
   );
   const clearOpenPaper = useCallback(() => { setOpenPaperId(null); setOpenPaperPage(null); }, []);
   const guide = useGettingStarted(navigate,openPaper);
@@ -248,7 +257,7 @@ export default function App() {
   return (
     <ToastProvider>
     <ConfirmProvider>
-    <div className="app-frame flex overflow-hidden"><a href="#main-content" className="skip-link" onClick={e=>{e.preventDefault();mainRef.current?.focus();}}>跳到内容</a>
+    <div {...(sourcePaper ? {inert: ''} : {})} className="app-frame flex overflow-hidden"><a href="#main-content" className="skip-link" onClick={e=>{e.preventDefault();mainRef.current?.focus();}}>跳到内容</a>
       <Sidebar page={page} open={sidebarOpen} onClose={()=>setSidebarOpen(false)} onNavigate={navigate} onNewResearch={startNewResearch} newCount={newCount}/>
 
       {sidebarOpen && (
@@ -272,7 +281,7 @@ export default function App() {
               <Menu size={18} />
             </button>
             <div className="header-project-location text-sm">
-              <span className="header-project-name" title={workspace.name}>{workspace.name} <span aria-hidden="true">/</span></span>
+              <span className="header-wordmark">Paper<span>Mind</span></span><WorkspaceMenu/><span className="header-divider" aria-hidden="true">/</span>
               <span className="header-page-title">{pageLabels[page]}</span>
             </div>
           </div>
@@ -344,6 +353,10 @@ export default function App() {
         </div>
       </main>
     </div>
+    {sourcePaper && <Suspense fallback={<div role="status" className="fixed inset-0 z-[60] bg-[var(--surface)] p-6">正在打开原文…</div>}><PaperSourceReader
+      key={`${sourcePaper.id}:${sourcePaper.page ?? ''}`} paperId={sourcePaper.id} page={sourcePaper.page}
+      returnLabel={pageLabels[page]} onClose={() => {setSourcePaper(null); const trigger = sourceTrigger.current; sourceTrigger.current = null; requestAnimationFrame(() => trigger?.focus());}} onOpenPaper={openPaper}
+    /></Suspense>}
     </ConfirmProvider>
     </ToastProvider>
   );

@@ -33,6 +33,7 @@ from sqlmodel import Session, select
 from app.config import get_settings
 from app.models import LiteratureCandidate, LiteratureSurvey, Paper, PaperChunk, PaperReadingState
 from app.models.literature import _now
+from app.literature.quality import SOURCE_FILTER, source_quality
 
 _log = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ def candidate_summary(row: LiteratureCandidate) -> dict:
         'id': row.id, 'survey_id': row.survey_id, 'openalex_id': row.openalex_id,
         'doi': row.doi, 'arxiv_id': row.arxiv_id, 'title': row.title, 'year': row.year,
         'venue': row.venue, 'authors': authors, 'cited_by_count': row.cited_by_count,
+        'source_quality': row.source_quality,
         'oa_pdf_url': row.oa_pdf_url or None, 'abstract': row.abstract,
         'relevance': row.relevance, 'keep': row.keep, 'status': row.status,
         'paper_id': row.paper_id, 'note': row.note,
@@ -155,10 +157,10 @@ def _chat_context(session: Session):
         return None
 
 
-def _complete_json(ctx, prompt: str, ref_id: str):
+def _complete_json(ctx, prompt: str, ref_id: str, max_tokens: int = 2000):
     client, provider, model = ctx
     result = client.complete(provider, model, [{'role': 'user', 'content': prompt}],
-                             request_kind='chat', ref_id=ref_id, max_tokens=2000)
+                             request_kind='chat', ref_id=ref_id, max_tokens=max_tokens)
     text = (result.content or '').strip()
     match = re.search(r'\[.*\]', text, re.S)
     if not match:
@@ -188,7 +190,7 @@ def _search_phrase(session: Session, phrase: str, from_year: int, per_page: int)
     with _client() as client:
         response = client.get(BASE, params=_params(session, {
             'search': phrase,
-            'filter': f'from_publication_date:{from_year}-01-01',
+            'filter': f'from_publication_date:{from_year}-01-01,{SOURCE_FILTER},is_retracted:false',
             'per-page': per_page,
         }))
         if response.status_code in {429, 503}:
@@ -202,7 +204,7 @@ def _search_phrase(session: Session, phrase: str, from_year: int, per_page: int)
             time.sleep(wait)
             response = client.get(BASE, params=_params(session, {
                 'search': phrase,
-                'filter': f'from_publication_date:{from_year}-01-01',
+                'filter': f'from_publication_date:{from_year}-01-01,{SOURCE_FILTER},is_retracted:false',
                 'per-page': per_page,
             }))
         if response.status_code == 429:
@@ -220,16 +222,18 @@ def _screen(ctx, query: str, candidates: list[dict], survey_id: int) -> dict[int
               'cited_by_count': c['cited_by_count'],
               'abstract': c['abstract'][:300]} for c in candidates], ensure_ascii=False) +
         '\n只输出 JSON 数组，每项 {"id": 候选id, "keep": true/false, "reason": "不超过40字的中文理由"}。'
-        '宁多勿漏：主题相关即 keep=true。'
+        '只推荐直接回应研究问题、具有具体方法或证据价值的论文。泛泛提及主题、'
+        '研究对象或任务不符时 keep=false；不要为了凑数量保留。'
+        '来源已由程序按外部刊物目录核验，但刊物声誉不能代替主题相关性与方法价值判断。'
     )
     try:
-        rows = _complete_json(ctx, prompt, f'literature-{survey_id}')
+        rows = _complete_json(ctx, prompt, f'literature-{survey_id}', max_tokens=max(2000, len(candidates) * 120))
     except Exception:
         return {}
     verdicts: dict[int, dict] = {}
     for row in rows:
-        if isinstance(row, dict) and isinstance(row.get('id'), int):
-            verdicts[row['id']] = {'keep': bool(row.get('keep')), 'reason': str(row.get('reason', ''))[:120]}
+        if isinstance(row, dict) and isinstance(row.get('id'), int) and isinstance(row.get('keep'), bool):
+            verdicts[row['id']] = {'keep': row['keep'], 'reason': str(row.get('reason', ''))[:120]}
     return verdicts
 
 
@@ -252,7 +256,7 @@ def _run_survey(engine, survey_id: int, screen: bool) -> None:
             for index, phrase in enumerate(phrases):
                 if index:
                     time.sleep(SEARCH_PAUSE_SECONDS)
-                for record in _search_phrase(session, phrase, from_year, PER_PHRASE_PAGE):
+                for record in _search_phrase(session, phrase, from_year, max(PER_PHRASE_PAGE, cap * 2)):
                     key = record.get('openalex_id') or record.get('doi') or record.get('title', '')
                     if not key or key in seen:
                         continue
@@ -260,7 +264,8 @@ def _run_survey(engine, survey_id: int, screen: bool) -> None:
                     merged.append(record)
             if not merged:
                 raise RuntimeError('没有检索到文献，可调整主题或时间范围后重试。')
-            merged = merged[:cap]
+            # Admission precedes the cap and works even without a configured AI.
+            merged = [item for item in merged if source_quality(item)][:min(cap * 2, 100)]
 
             candidates = [
                 LiteratureCandidate(
@@ -268,6 +273,7 @@ def _run_survey(engine, survey_id: int, screen: bool) -> None:
                     doi=item.get('doi', ''), arxiv_id=_arxiv_id(item),
                     title=item.get('title', '')[:500], year=item.get('year'),
                     venue=item.get('venue', ''),
+                    source_quality=source_quality(item),
                     authors_json=json.dumps(item.get('authors', []), ensure_ascii=False),
                     cited_by_count=item.get('cited_by_count', 0) or 0,
                     oa_pdf_url=item.get('oa_pdf_url') or '',
@@ -278,13 +284,17 @@ def _run_survey(engine, survey_id: int, screen: bool) -> None:
             session.commit()
             session.refresh(row)
             screened = False
-            if ctx is not None:
+            if ctx is not None and candidates:
                 verdicts = _screen(ctx, query, [candidate_summary(c) for c in candidates], survey_id)
                 for candidate in candidates:
                     verdict = verdicts.get(candidate.id)
                     if verdict is not None:
                         candidate.keep, candidate.relevance = verdict['keep'], verdict['reason']
                 screened = bool(verdicts)
+            candidates.sort(key=lambda c: c.keep is False)
+            for candidate in candidates[cap:]:
+                session.delete(candidate)
+            candidates = candidates[:cap]
             row.expansion_used = json.dumps(phrases, ensure_ascii=False)
             row.screened = screened
             row.status, row.error, row.finished_at = 'ready', '', _now()

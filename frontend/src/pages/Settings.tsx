@@ -5,6 +5,7 @@ import { ManagedModelsPanel } from '../components/ManagedModelsPanel';
 import { TranslationModelSettings } from '../components/TranslationModelSettings';
 import { DocumentModelSettings } from '../components/DocumentModelSettings';
 import { ReviewModelSettings } from '../components/ReviewModelSettings';
+import { InstitutionalEnvironmentSettings } from '../components/InstitutionalEnvironmentSettings';
 import { useEffect, useState } from "react";
 import {
   type ArchiveStatus,
@@ -571,7 +572,8 @@ export default function Settings() {
 
   return (
     <Shell max="narrow" className="space-y-6">
-      <PageHeader title="设置" subtitle="连接 AI 服务，或管理本地资料备份" />
+      <PageHeader title="设置" subtitle="管理 AI 连接、下载环境与本地资料" />
+      <InstitutionalEnvironmentSettings/>
       <ManagedModelsPanel onChanged={load}/>
       <LocalModelsPanel onChanged={load}/>
       <SharedConnectionsPanel providers={providers} onChanged={load}/>

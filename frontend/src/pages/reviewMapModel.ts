@@ -28,7 +28,7 @@ export type PaperFilter = { query?: string; theme?: string; evidence?: string; s
 export function statusLabel(status: string, similarity?: number | null): string {
   switch (status) {
     case 'quote_verified':
-      return similarity != null && similarity < 1 ? '近似核对原文' : '已核对原文';
+      return similarity != null && similarity < 1 ? '引文近似匹配' : '引文已匹配';
     case 'number_mismatch':
       return '数字与原文不符';
     case 'quote_not_found':

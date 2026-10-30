@@ -74,25 +74,41 @@ def watch(page):
     target = dict(current)
     page.on('download', lambda file: capture_download(file, target))
 context.on('page', watch)
+
+def manual_download():
+    # Keep the same authenticated context after automatic navigation fails.
+    pid = current['paper_id']
+    emit('progress.json', {'paper_id': pid, 'phase': 'waiting_user'})
+    page = context.new_page()
+    entry = request.get('library_url') or ('https://doi.org/' + current['doi'] if current.get('doi') else 'https://ds.carsi.edu.cn/')
+    try:
+        page.goto(entry, wait_until='commit', timeout=60000)
+    except Exception:
+        pass  # A direct PDF download can abort navigation normally.
+    deadline, next_check = time.monotonic() + 900, 0
+    while pid not in captured and time.monotonic() < deadline and not (folder / 'cancel').exists():
+        if not context.pages:
+            break
+        if time.monotonic() >= next_check:
+            visible = context.pages[-1]
+            phase = 'waiting_verification' if launcher._is_challenge_page(visible) else 'waiting_user'
+            emit('progress.json', {'paper_id': pid, 'phase': phase})
+            # Browser PDF viewers often produce no download event.
+            if urlsplit(visible.url).path.lower().endswith('.pdf'):
+                body, _ = fetch_in_browser(visible, visible.url)
+                if body:
+                    path = folder / str(pid) / 'browser-download.pdf'
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(body)
+                    captured[pid] = dict(status='success', verified_match=True, doi=current.get('doi'), pdf_path=str(path))
+            next_check = time.monotonic() + 5
+        context.pages[-1].wait_for_timeout(500)
+    return captured.get(pid, {'status': 'waiting_user'})
+
 try:
     if request.get('mode') == 'manual':
         current = request['papers'][0]
-        emit('progress.json', {'paper_id': current['paper_id'], 'phase': 'waiting_user'})
-        page = context.new_page()
-        try:
-            page.goto(request.get('library_url') or 'https://ds.carsi.edu.cn/', wait_until='commit', timeout=60000)
-        except Exception:
-            pass  # A direct PDF download can abort navigation normally.
-        deadline = time.monotonic() + 900
-        next_check = 0
-        while not captured and time.monotonic() < deadline and not (folder / 'cancel').exists():
-            if time.monotonic() >= next_check:
-                visible = context.pages[-1] if context.pages else page
-                phase = 'waiting_verification' if launcher._is_challenge_page(visible) else 'waiting_user'
-                emit('progress.json', {'paper_id': current['paper_id'], 'phase': phase})
-                next_check = time.monotonic() + 5
-            page.wait_for_timeout(500)
-        emit(str(current['paper_id']) + '.json', captured.get(current['paper_id'], {'status': 'waiting_user'}))
+        emit(str(current['paper_id']) + '.json', manual_download())
         request['papers'] = []
     for current in request['papers']:
         if (folder / 'cancel').exists():
@@ -100,7 +116,7 @@ try:
         emit('progress.json', {'paper_id': current['paper_id'], 'phase': 'downloading'})
         profile = infer_publisher_profile(current.get('doi') or '')
         if not profile:
-            emit(str(current['paper_id']) + '.json', {'paper_id': current['paper_id'], 'status': 'needs_manual'})
+            emit(str(current['paper_id']) + '.json', manual_download())
             continue
         downloader = Downloader(cfg, profile=profile, institution_query=request['institution'],
             institution_aliases=tuple(x.strip() for x in request.get('aliases', '').split(';') if x.strip()),
@@ -119,6 +135,8 @@ try:
             verification = item.get('reason') in ('captcha_required', 'challenge_or_viewer_timeout')
             item['status'] = 'verification_required' if verification else {
                 'human_action': 'waiting_user', 'access_denied': 'no_permission'}.get(category, 'needs_attention')
+        if item['status'] in ('waiting_user', 'verification_required', 'needs_attention'):
+            item = manual_download()
         emit(str(current['paper_id']) + '.json', item)
         if item['status'] in ('waiting_user', 'verification_required', 'needs_attention'):
             break

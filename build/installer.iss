@@ -13,7 +13,7 @@
 
 #define MyAppName      "PaperMind"
 #ifndef MyAppVersion
-#define MyAppVersion   "0.6.32"
+#define MyAppVersion   "0.6.34"
 #endif
 #ifndef MyAppSource
 #define MyAppSource "dist\PaperMind"

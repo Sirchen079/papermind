@@ -1,5 +1,6 @@
 import {chatTurnIdentity,documentReferenceText} from './documentIdentityModel';
 import { useApi, useWorkspace } from '../workspaceContext';
+import '../research-surfaces.css';
 import { useEffect, useRef, useState } from "react";
 import { MarkdownContent } from '../components/MarkdownContent';
 import { type ChatAttachment, type ChatModel, type Source, type TopicSource, type WebSource, type Paper, type ChatMessageExtra, type Clarification, type ClarificationResponse } from "../api";
@@ -651,7 +652,7 @@ export default function Chat({
   }
 
   return (
-    <div className={`chat-workspace relative flex gap-4 ${embedded ? "chat-embedded" : "px-4 sm:px-6 lg:px-10"}`}>
+    <div className={`chat-workspace research-chat relative flex gap-4 ${embedded ? "chat-embedded" : "px-4 sm:px-6 lg:px-10"}`}>
       <ChatPaperSource sources={paperSources?.current ?? null} earlierSources={paperSources?.earlier} onClose={() => setPaperSources(null)} onOpenPaper={onOpenPaper}/>
       {savedDocumentsOpen&&<SavedDocuments onOpenPaper={(id,page)=>{setSavedDocumentsOpen(false);onOpenPaper(id,page);}} initialDocument={documentToOpen} onClose={()=>setSavedDocumentsOpen(false)} onPaperCitation={(doc,id)=>{setSavedDocumentsOpen(false);const sources=doc.sources.filter(s=>s.paper_id===id);if(sources.length)setPaperSources({current:sources,earlier:[]});else onOpenPaper(id);}} onOpenConversation={embedded?undefined:id=>{setSavedDocumentsOpen(false);setActiveConv(id);}} onUse={(doc,passage)=>{
         const text=documentReferenceText(doc)+(passage?`\n\n[待核查的研究稿选文]\n${passage}\n[选文结束]\n这段是待核查的研究稿，不是原始文献。请围绕它回读已有来源，必要时补查论文方法、实验条件或作者资源。以一段可直接替换的局部修订为主要产物，再简要说明改动和实际出处；保留有依据的内容，改正与来源不符的地方；暂时找不到依据的结论保留原意，注明待补来源。需要修改时可调用 propose_document_edit 生成对照建议卡，before 使用所读版本的精确 Markdown。保留原稿，不自动覆盖文档。`:'');
@@ -667,7 +668,8 @@ export default function Chat({
           navOpen ? "translate-x-0 visible" : "-translate-x-full invisible md:visible"
         }`}
       >
-        <div className="p-3 border-b border-[var(--border)]">
+        <div className="conversation-list-heading p-3 border-b border-[var(--border)]">
+          <p className="conversation-index-heading"><span>对话档案</span><span>{String(convs.length).padStart(2, '0')}</span></p>
           <button
             onClick={() => {
               newConv();
@@ -685,19 +687,20 @@ export default function Chat({
               还没有对话。
             </p>
           )}
-          {convs.map((c) => {
+          {convs.map((c, index) => {
             const isActive = activeConv === c.id;
             const isEditing = editingId === c.id;
             return (
               <div
                 key={c.id}
-                className="group flex items-center gap-1 rounded-lg px-1.5 transition-colors"
+                className={`conversation-entry group flex items-center gap-1 rounded-lg px-1.5 transition-colors ${isActive ? 'is-active' : ''}`}
                 style={
                   isActive
                     ? { backgroundColor: "var(--accent-soft)" }
                     : { backgroundColor: "transparent" }
                 }
               >
+                <span className="conversation-record-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
                 {isEditing ? (
                   <input
                     autoFocus
@@ -727,7 +730,7 @@ export default function Chat({
                   </button>
                 )}
                 {!isEditing && (
-                  <div className="flex shrink-0 items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                  <div className="flex shrink-0 items-center opacity-70 transition-opacity hover:opacity-100 focus-within:opacity-100">
                     <button
                       onClick={() => startRename(c)}
                       className="px-1 text-xs text-faint"
@@ -761,6 +764,10 @@ export default function Chat({
       )}
 
       <section className="chat-canvas flex min-w-0 flex-1 flex-col overflow-hidden">
+        {!embedded && <header className="chat-desk-heading">
+          <div><p className="research-surface-code">研究对话 / 问题与依据</p><h1>{convs.find(c => c.id === activeConv)?.title || '从一个研究问题开始'}</h1></div>
+          <span className="chat-desk-state"><span aria-hidden="true"/>{busy || serverPending ? '研究进行中' : '研究工作区'}</span>
+        </header>}
         {!embedded && <div className="flex items-center gap-2 p-2 md:hidden border-b border-[var(--border)]">
           <button onClick={() => setNavOpen(true)} className="btn-ghost p-1.5" aria-label="打开对话列表">
             <Menu size={16} />
@@ -787,12 +794,12 @@ export default function Chat({
               {loading && <p role="status" className="text-sm text-muted">正在加载对话…</p>}
               {loadError && <div role="alert" className="text-sm">无法加载对话：{loadError}<button className="btn-ghost ml-2" onClick={() => setLoadRevision(n => n + 1)}>重试</button>{embedded && <button className="btn-ghost" onClick={() => setActiveConv(null)}>开始新的伴读对话</button>}</div>}
               {messages.length===0&&<div className="chat-starters"><ResearchMotif icon={<MessageSquare size={24}/>}/><h2>想讨论什么研究问题？</h2><p className="text-sm text-muted">写下问题，或从一个方向开始。</p><div className="flex flex-wrap justify-center gap-2">{['一起梳理我的研究背景与目标','讨论一个研究 idea 的可行性','比较几篇论文的方法'].map(prompt=><button key={prompt} className="btn-ghost text-xs" onClick={()=>{setInput(prompt);taRef.current?.focus();}}>{prompt}</button>)}</div></div>}
-              {messages.map((m) => {const turn=chatTurnIdentity(m.role,m.documentRevision);return (
+              {messages.map((m, index) => {const turn=chatTurnIdentity(m.role,m.documentRevision);return (
                 <div
                   key={m.id}
                   className={`chat-turn ${turn.own ? "chat-turn-user text-right" : "chat-turn-assistant group/msg"}`}
                 >
-                  <div className="chat-role"><span className="chat-avatar" aria-hidden="true">{turn.avatar}</span><span>{turn.label}</span>{m.role === 'assistant' && m.model && <span className="chat-model-name">{m.model}</span>}</div>
+                  <div className="chat-role"><span className="chat-avatar" aria-hidden="true">{turn.avatar}</span><span>{turn.label}</span><span className="chat-record-id">/ {String(index + 1).padStart(2, '0')}</span>{m.role === 'assistant' && m.model && <span className="chat-model-name">{m.model}</span>}</div>
                   <div
                     className={
                       turn.own
@@ -810,7 +817,7 @@ export default function Chat({
                   >
                     {m.attachments?.length ? <div className="mb-2 flex flex-wrap gap-2 justify-end">{m.attachments.map((a, i) => <AttachmentChip key={`${draftKey}:${i}`} attachment={a} onOpenPaper={onOpenPaper} onOpenDocument={ref=>{setDocumentToOpen(ref);setSavedDocumentsOpen(true);}} />)}</div> : null}
                     {m.role === 'assistant' && m.updates?.some(u => u.content.trim() && u.content.trim() !== m.content.trim()) ? (
-                      <details open aria-label="本轮阶段记录" className="rounded-xl border border-[var(--border)] bg-[var(--surface-1)] p-4">
+                      <details open aria-label="本轮阶段记录" className="chat-stage-record rounded-xl border border-[var(--border)] bg-[var(--surface-1)] p-4">
                         <summary className="cursor-pointer text-xs text-muted">阶段记录</summary>
                         <div className="mt-3 max-h-[32rem] space-y-4 overflow-y-auto">
                           {m.updates.filter(u => u.content.trim() && u.content.trim() !== m.content.trim()).map((u, i) => (
@@ -872,7 +879,7 @@ export default function Chat({
                           <button
                             type="button"
                             onClick={() => copyMessage(m)}
-                            className="rounded px-1.5 py-0.5 text-[11px] opacity-0 transition-opacity group-hover/msg:opacity-100"
+                            className="rounded px-1.5 py-0.5 text-[11px] opacity-70 transition-opacity hover:opacity-100 focus:opacity-100"
                             style={{
                               color: copiedId === m.id ? "var(--success)" : "var(--faint)",
                               backgroundColor: "var(--surface-2)",
@@ -920,9 +927,12 @@ export default function Chat({
                         )}
                       </div>
                     )}
-                  {m.role === 'assistant' && <ChatPaperSources sources={m.sources??[]} onOpen={id=>showPaperSource(m,id)}/>}
-                  {m.role === 'assistant' && <ChatTopicSources sources={m.topic_sources ?? []} />}
-                  <ChatWebSources sources={m.web_sources ?? []}/>
+                  {!!((m.role === 'assistant' ? (m.sources?.length ?? 0) + (m.topic_sources?.length ?? 0) : 0) + (m.web_sources?.length ?? 0)) && <section className="chat-source-archive" aria-label="本轮引用材料">
+                    <p className="chat-source-heading"><BookOpen size={13}/> 本轮引用档案</p>
+                    {m.role === 'assistant' && <ChatPaperSources sources={m.sources??[]} onOpen={id=>showPaperSource(m,id)}/>}
+                    {m.role === 'assistant' && <ChatTopicSources sources={m.topic_sources ?? []} />}
+                    <ChatWebSources sources={m.web_sources ?? []}/>
+                  </section>}
                 </div>
               );})}
               <div ref={endRef} />

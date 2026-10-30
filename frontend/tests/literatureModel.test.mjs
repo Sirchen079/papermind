@@ -9,11 +9,19 @@ import {
   candidateStatusLabel,
   clampChoice,
   importActive,
+  recommendedCandidates,
   selectionWithinCap,
   surveyActive,
   surveyQueryValid,
   surveyStatusLabel,
 } from "../.tmp_graph_test_dist/literatureModel.js";
+
+test('默认仅展示有来源依据且未被否决的候选，旧记录须主动展开', () => {
+  const rows = [{source_quality:'JUFO 2',keep:true}, {source_quality:'JUFO 3',keep:null},
+    {source_quality:'JUFO 2',keep:false}, {keep:true}];
+  assert.deepEqual(recommendedCandidates(rows), rows.slice(0,2));
+  assert.deepEqual(recommendedCandidates(rows,true), rows);
+});
 
 test("survey query must be non-empty and bounded", () => {
   assert.equal(surveyQueryValid(""), false);

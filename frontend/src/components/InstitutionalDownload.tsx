@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { InstitutionalJob, InstitutionalPreferences } from '../api';
 import { useApi } from '../workspaceContext';
 import { downloadSelectionValid, institutionalLabel, retryPaperIds } from '../pages/institutionalModel';
+import { BookOpen, Wrench, ChevronDown } from '../icons';
 
 export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number[]; onAttached?:()=>void|Promise<void>}) {
   const api = useApi();
@@ -9,16 +10,16 @@ export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number
   const [preferences, setPreferences] = useState<InstitutionalPreferences>({institution:'', aliases:'', library_url:'', ready:false});
   const [job, setJob] = useState<InstitutionalJob|null>(null), [history, setHistory] = useState<InstitutionalJob[]>([]);
   const [mode, setMode] = useState<'auto'|'manual'>('auto');
+  const [environmentLoaded,setEnvironmentLoaded] = useState(false);
   const notify = useRef(onAttached);
   notify.current = onAttached;
   const active = job?.status === 'running';
   useEffect(() => {
-    if (!open) return;
     let alive = true;
     setBusy(true);
-    Promise.all([api.institutionalConfig(), api.institutionalJobs()]).then(([prefs, jobs]) => {
+    Promise.all([api.institutionalConfig(), open?api.institutionalJobs():Promise.resolve([])]).then(([prefs, jobs]) => {
       if (alive) { setPreferences(prefs); setHistory(jobs); setJob(jobs[0] ?? null); setError(''); }
-    }).catch(e => { if (alive) setError(String(e.message)); }).finally(() => { if (alive) setBusy(false); });
+    }).catch(e => { if (alive) setError(String(e.message)); }).finally(() => { if (alive) {setBusy(false);setEnvironmentLoaded(true);} });
     return () => { alive = false; };
   }, [open, api]);
   useEffect(() => {
@@ -31,7 +32,8 @@ export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number
         setJob(value);
         setHistory(current => [value, ...current.filter(row => row.id !== value.id)]);
         if (value.status !== 'running') {
-          setPreferences(current => ({...current, ready:true}));
+          const prefs = await api.institutionalConfig();
+          if (alive) setPreferences(prefs);
           if (value.results.some(r => r.status === 'attached')) await notify.current?.();
           return;
         }
@@ -42,7 +44,7 @@ export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number
     return () => { alive = false; clearTimeout(timer); };
   }, [open, job?.id, job?.status, api]);
   async function start(ids: number[], selectedMode = mode) {
-    if (!downloadSelectionValid(ids, selectedMode)) return;
+    if (!preferences.ready || !downloadSelectionValid(ids, selectedMode)) return;
     setBusy(true); setError('');
     try {
       await api.configureInstitutional(preferences);
@@ -52,9 +54,26 @@ export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
-  return <details className="w-full" onToggle={e => setOpen(e.currentTarget.open)}>
-    <summary className="btn-subtle inline-flex cursor-pointer text-xs">通过图书馆获取全文</summary>
-    {open && <section className="card mt-2 space-y-3 text-sm" aria-label="机构全文下载">
+  async function upload(paperId: number, file: File) {
+    if (!job || busy) return;
+    setBusy(true); setError('');
+    try {
+      const value = await api.attachInstitutionalPdf(job.id, paperId, file);
+      setJob(value); setHistory(current => [value, ...current.filter(row => row.id !== value.id)]);
+      await notify.current?.();
+    } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
+  }
+  return <div className="w-full">
+    <div className="flex flex-wrap items-center gap-3">
+      <button type="button" className="btn-subtle inline-flex min-h-11 items-center gap-2 border px-4 py-2 text-sm font-medium" style={{borderColor:'var(--border-strong)',background:'var(--surface-2)'}}
+        aria-expanded={open&&preferences.ready} disabled={busy||!preferences.ready} onClick={()=>setOpen(!open)}>
+        <BookOpen size={18}/>通过图书馆获取全文
+        <span className="chip">{!environmentLoaded?'检查环境中':preferences.ready?'环境已就绪':'需安装环境'}</span><ChevronDown size={16}/>
+      </button>
+      {environmentLoaded&&!preferences.ready&&<a className="btn-subtle inline-flex min-h-11 items-center gap-2 border px-4 py-2 text-sm" href="#settings?section=library-download"><Wrench size={16}/>去设置安装</a>}
+    </div>
+    {open && preferences.ready && <section className="card mt-2 space-y-3 text-sm" aria-label="机构全文下载">
       <p className="text-muted text-xs">使用本人学校或机构权限，仅获取正文 PDF。登录、验证码在打开的浏览器内完成，登录状态保存在本机。</p>
       <div className="grid gap-3 md:grid-cols-2">
         <label>学校或机构名称<input className="input mt-1 w-full" value={preferences.institution} maxLength={200} disabled={active || busy}
@@ -75,7 +94,6 @@ export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number
           catch (e) { setError((e as Error).message); }
         }}>停止当前任务</button>}
       </div>
-      {!preferences.ready && <p className="text-xs text-muted">首次使用会自动准备下载引擎和浏览器，无需输入命令。</p>}
       {mode === 'manual' && <p className="text-xs text-muted">在打开的浏览器中登录、找到目标论文并点击下载。PDF 会自动接回题录；一次处理一篇。</p>}
       {!!history.length && <label className="block text-xs">最近任务<select className="input ml-2 max-w-full" disabled={active} value={job?.id ?? ''}
         onChange={e => setJob(history.find(j => j.id === e.target.value) ?? null)}>
@@ -91,11 +109,19 @@ export function InstitutionalDownload({ paperIds, onAttached }: {paperIds:number
         {job.results.map(row => <div key={row.paper_id} className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] pt-2 text-xs">
           <span className="min-w-0 flex-1 break-words">{row.title || `论文 ${row.paper_id}`}</span><span>{institutionalLabel(row.status)}</span>
           {!active && retryPaperIds([row]).length > 0 && <button className="btn-ghost" disabled={busy} onClick={() => void start([row.paper_id], 'manual')}>浏览器下载</button>}
+          {!active && retryPaperIds([row]).length > 0 && <div className="flex w-full flex-wrap items-center gap-3">
+            {preferences.library_url && <a className="underline" href={preferences.library_url} target="_blank" rel="noreferrer">在常用浏览器打开图书馆</a>}
+            {row.doi && <a className="underline" href={`https://doi.org/${row.doi}`} target="_blank" rel="noreferrer">打开论文网页</a>}
+            <label className="btn-subtle cursor-pointer">上传已下载的正文 PDF<input type="file" accept="application/pdf,.pdf" className="sr-only" disabled={busy}
+              onChange={e => {const file=e.target.files?.[0]; e.target.value=''; if(file)void upload(row.paper_id,file);}}/></label>
+            <p className="w-full text-muted">可使用已经登录的常用浏览器下载，上传后校验并接回这条题录，无需安装下载引擎。</p>
+          </div>}
         </div>)}
         {!active && retryPaperIds(job.results).length > 0 && <button className="btn-subtle" disabled={busy}
-          onClick={() => void start(retryPaperIds(job.results), job.mode)}>继续未完成的论文</button>}
+          onClick={() => void start(retryPaperIds(job.results), job.mode)}>重试未完成的论文</button>}
       </div>}
       {error && <p role="alert" className="text-xs" style={{color:'var(--danger)'}}>{error}</p>}
     </section>}
-  </details>;
+    {error&&!open&&<p role="alert" className="mt-2 text-xs" style={{color:'var(--danger)'}}>{error}</p>}
+  </div>;
 }

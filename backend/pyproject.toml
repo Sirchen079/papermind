@@ -1,6 +1,6 @@
 [project]
 name = "papermind-backend"
-version = "0.6.32"
+version = "0.6.34"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",

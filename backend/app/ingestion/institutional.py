@@ -61,7 +61,7 @@ def configure(institution, library_url='', aliases=''):
     return config()
 
 
-def attach(session, paper_id, item, folder, expected):
+def attach(session, paper_id, item, folder, expected, *, access_mode='institutional_browser'):
     from app.config import get_settings
     from app.ingestion.service import persist_fetched
     paper = session.get(Paper, paper_id)
@@ -106,7 +106,7 @@ def attach(session, paper_id, item, folder, expected):
     paper = persist_fetched(session, fetched, root / 'pdfs', target_paper_id=paper_id)
     from app.literature.survey import _index_imported
     _index_imported(session, paper)
-    receipt = {'access_mode': 'institutional_browser', 'doi': doi,
+    receipt = {'access_mode': access_mode, 'doi': doi,
                'retrieved_at': datetime.now(timezone.utc).isoformat(),
                'source_url': 'https://doi.org/' + doi if doi else config()['library_url'],
                'engine_revision': runtime.REVISION, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}

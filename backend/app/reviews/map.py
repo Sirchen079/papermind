@@ -8,6 +8,7 @@ from app.models.base import utcnow
 from app.models.card import PaperCard
 from app.models.review import ReviewMap
 from app.reviews import service, themes
+from app.reviews.card_edits import content_fingerprint
 from app.reviews.structured import ModelUnavailable, StructuredAsker, model_window
 
 
@@ -104,7 +105,9 @@ def update_themes(session, review_id, theme_list, expected_version):
         assignments = {pid: entry for pid, entry in assignments.items()
                        if not invalid.intersection(entry.get('themes') or [])}
     fingerprint = service.digest(cleaned)
-    card_fps = {r.paper_id: r.fingerprint for r in session.exec(select(PaperCard))}
+    card_fps = {r.paper_id: content_fingerprint(r) for r in session.exec(select(PaperCard))}
+    assignments = {pid: entry for pid, entry in assignments.items()
+                   if entry.get('fingerprint') == service.digest([card_fps.get(int(pid), ''), row.themes_fingerprint])}
     for pid, entry in assignments.items():
         entry['fingerprint'] = service.digest([card_fps.get(int(pid), ''), fingerprint])
     syntheses = json.loads(row.syntheses_json or '{}')
@@ -156,6 +159,8 @@ def detail_map(session, review_id):
     assigned = sum(1 for pid in ids if assignments.get(str(pid), {}).get('themes'))
     return {
         'status': row.status, 'stage': row.stage, 'error': row.error, 'version': row.version,
+        'needs_update': any(assignments.get(str(pid), {}).get('fingerprint') !=
+                            service.digest([content_fingerprint(cards.get(pid)), row.themes_fingerprint]) for pid in ids),
         'themes': json.loads(row.themes_json or '[]'), 'assignments': assignments,
         'syntheses': json.loads(row.syntheses_json or '{}'),
         'overview': json.loads(row.overview_json or '{}'),
@@ -252,7 +257,7 @@ def run_map(engine, review_id, token):
                 select(PaperCard).where(PaperCard.paper_id.in_(ids)))}
         todo = []
         for pid in ids:
-            fingerprint = service.digest([card_rows[pid].fingerprint if pid in card_rows else '',
+            fingerprint = service.digest([content_fingerprint(card_rows.get(pid)),
                                           themes_fp])
             prior = json.loads(row.assignments_json or '{}').get(str(pid))
             if prior and prior.get('fingerprint') == fingerprint and prior.get('themes'):
@@ -337,7 +342,7 @@ def run_map(engine, review_id, token):
             stats = themes.theme_stats(member_stats)
             fingerprint = service.digest([
                 theme,
-                sorted((card_rows[pid].fingerprint if pid in card_rows else '') for pid in member_ids),
+                sorted(content_fingerprint(card_rows.get(pid)) for pid in member_ids),
                 themes.SYNTHESIZE_THEME,
             ])
             existing = syntheses.get(tid)
@@ -348,14 +353,16 @@ def run_map(engine, review_id, token):
                 card, paper = cards_by_pid.get(pid) or {}, paper_rows.get(pid)
                 meta = card.get('metadata') or {}
                 return {'paper_id': pid, 'year': meta.get('year') or (paper.year if paper else None),
-                        'title': meta.get('title') or (paper.title if paper else '')}
+                        'title': meta.get('title') or (paper.title if paper else ''),
+                        'researcher_corrections': {name: edit['value'] for name, edit in (card.get('manual_fields') or {}).items()}}
 
             def full(pid):
                 card = cards_by_pid.get(pid) or {}
 
                 def field(name):
                     item = card.get(name) or {}
-                    return {'value': item.get('value') or '', 'status': item.get('status') or ''}
+                    return {'value': item.get('value') or '', 'status': item.get('status') or '',
+                            'origin': 'researcher_correction' if item.get('researcher_edited') else 'generated'}
                 payload = brief(pid)
                 payload.update({
                     'problem': field('problem'), 'mechanism': field('mechanism'),
@@ -365,7 +372,8 @@ def run_map(engine, review_id, token):
                 })
                 return payload
 
-            ranked = sorted(member_ids, key=lambda pid: -verified_count(cards_by_pid.get(pid) or {}))
+            ranked = sorted(member_ids, key=lambda pid: (not bool(cards_by_pid[pid].get('manual_fields')),
+                                                         -verified_count(cards_by_pid[pid])))
             cards_payload = ([full(pid) for pid in ranked[:themes.SYNTH_FULL_CARDS]]
                             + [brief(pid) for pid in ranked[themes.SYNTH_FULL_CARDS:]])
             user = service.encode({'theme': theme, 'stats': stats, 'cards': cards_payload})

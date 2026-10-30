@@ -7,7 +7,7 @@ import { InstitutionalDownload } from '../components/InstitutionalDownload';
 import {
   DEFAULT_IMPORT_BATCH_CAP, MAX_RESULTS_OPTIONS, YEARS_OPTIONS,
   authorLine, canImportCandidate, candidateSourceLabel, candidateStatusLabel, candidateStatusTone,
-  clampChoice, importActive, selectionWithinCap, surveyActive, surveyQueryValid, surveyStatusLabel,
+  clampChoice, importActive, recommendedCandidates, selectionWithinCap, surveyActive, surveyQueryValid, surveyStatusLabel,
 } from './literatureModel';
 
 export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) => void }) {
@@ -19,6 +19,7 @@ export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) 
   const [years, setYears] = useState<number>(2);
   const [maxResults, setMaxResults] = useState<number>(20);
   const [screen, setScreen] = useState(true);
+  const [showOther, setShowOther] = useState(false);
   const [picked, setPicked] = useState<number[]>([]);
   const [expanded, setExpanded] = useState<number[]>([]);
   const [error, setError] = useState('');
@@ -63,7 +64,7 @@ export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) 
     setBusy(true); setError('');
     try {
       const created = await api.createLiteratureSurvey({ query: query.trim(), years, max_results: maxResults, screen });
-      if (alive.current) { setSelected(created.id); setDetail(null); setPicked([]); }
+      if (alive.current) { setSelected(created.id); setDetail(null); setPicked([]); setShowOther(false); }
     } catch (e) {
       if (alive.current) setError(e instanceof Error ? e.message : '发起调研失败');
     } finally {
@@ -96,11 +97,12 @@ export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) 
   }
 
   const cap = detail?.import_batch_cap ?? DEFAULT_IMPORT_BATCH_CAP;
-  const importable = detail?.candidates.filter(c => canImportCandidate(c.status)) ?? [];
+  const visible = recommendedCandidates(detail?.candidates ?? [], showOther);
+  const importable = visible.filter(c => canImportCandidate(c.status));
   const allPicked = importable.length > 0 && importable.every(c => picked.includes(c.id));
 
   return <Shell className="space-y-5">
-    <PageHeader title="文献调研" subtitle="描述主题，AI 检索公开文献并给出候选；你过目勾选后加入论文库。"/>
+    <PageHeader title="文献调研" subtitle="优先领域领先刊物；筛选相关研究后，由你勾选加入论文库。"/>
     <div className="grid gap-5 lg:grid-cols-[300px_minmax(0,1fr)]">
       <aside className="space-y-4 self-start">
         <form onSubmit={start} className="card space-y-3">
@@ -125,13 +127,14 @@ export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) 
           <label className="flex gap-2 text-sm"><input type="checkbox" checked={screen} onChange={e => setScreen(e.target.checked)}/>
             用 AI 扩展检索词并筛选候选（调用已配置的文本模型）</label>
           <button className="btn-primary w-full" disabled={busy || !surveyQueryValid(query)}>{busy ? '正在提交…' : '开始调研'}</button>
+          <p className="text-xs text-muted">来源门槛：JUFO 2/3、挪威期刊目录 2 或 CCF A。逐篇显示目录依据；不足时少返回，不以普通来源补数。关闭 AI 也保留来源门槛。</p>
           <p className="text-xs text-muted">检索使用 OpenAlex。添加时先获取公开全文；缺失的 PDF 可通过机构通道补充。</p>
         </form>
         <section className="card space-y-2" aria-label="历史调研">
           <h2 className="text-sm font-medium">历史调研</h2>
           {surveys.map(s => <div key={s.id} className="flex items-start gap-1">
             <button className="btn-ghost flex-1 text-left" aria-current={selected === s.id ? 'page' : undefined}
-              onClick={() => { setSelected(s.id); setDetail(null); setPicked([]); }}>
+              onClick={() => { setSelected(s.id); setDetail(null); setPicked([]); setShowOther(false); }}>
               <span className="block break-words">{s.query}</span>
               <span className="text-xs text-muted">{surveyStatusLabel(s.status)}{s.import_status === 'running' ? ' · 正在添加' : ''} · 近 {s.years} 年</span>
             </button>
@@ -154,9 +157,11 @@ export default function Literature({ onOpenPaper }: { onOpenPaper: (id: number) 
             {detail.error && <p role="alert" className="text-sm" style={{ color: 'var(--danger)' }}>{detail.error}</p>}
             {surveyActive(detail.status) && <p role="status" className="text-sm text-muted">正在检索与筛选公开文献…</p>}
             <p className="text-xs text-muted">{importable.length} 篇可添加 · 单次最多 {cap} 篇 · 逐篇串行限速</p>
+            {!surveyActive(detail.status) && visible.length === 0 && <p className="text-sm">当前没有符合来源门槛的推荐文献，可调整主题或扩大时间范围。</p>}
+            <label className="text-xs flex gap-2"><input type="checkbox" checked={showOther} onChange={e => {setShowOther(e.target.checked); setPicked([]);}}/>显示未推荐或旧调研中未经来源评估的候选</label>
           </div>
           <ul className="card divide-y divide-[var(--border)]">
-            {detail.candidates.map(candidate => <CandidateRow key={candidate.id} candidate={candidate}
+            {visible.map(candidate => <CandidateRow key={candidate.id} candidate={candidate}
               checked={picked.includes(candidate.id)}
               onToggle={() => setPicked(current => current.includes(candidate.id)
                 ? current.filter(id => id !== candidate.id)
@@ -202,6 +207,7 @@ function CandidateRow({ candidate, checked, onToggle, expanded, onExpand, onOpen
         <span className="text-xs rounded border border-[var(--border)] px-1">{candidateSourceLabel(candidate)}</span>
       </div>
       <p className="text-xs text-muted">{authorLine(candidate.authors)}</p>
+      <p className="text-xs">来源依据：{candidate.source_quality || '旧调研，尚未评估来源；建议重新调研'}</p>
       {candidate.relevance && <p className="text-xs">AI 意见：{candidate.relevance}{candidate.keep === false ? '（建议略过）' : ''}</p>}
       {candidate.abstract && <div>
         <button className="btn-ghost px-0 text-xs" aria-expanded={expanded} onClick={onExpand}>{expanded ? '收起摘要' : '展开摘要'}</button>

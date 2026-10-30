@@ -6,7 +6,8 @@ export const institutionalLabel = (value: string): string => ({
   no_permission: '当前机构没有本文权限', needs_manual: '请使用浏览器下载模式',
   unverified: '论文身份未确认，已保留文件', invalid_pdf: '未取得有效 PDF',
   identity_changed: '题录已修改，请重新选择', not_found: '论文已删除或不存在',
-  import_failed: 'PDF 已下载，入库未完成', needs_attention: '需要检查浏览器后继续',
+  import_failed: 'PDF 已下载，入库未完成', needs_attention: '下载未完成，请选择恢复方式',
+  environment_failed: '下载环境准备失败', worker_failed: '下载引擎未返回结果',
   completed: '已完成', interrupted: '任务中断，可继续', stopped: '已停止', running: '正在处理', done: '处理结束',
 }[value] ?? value);
 

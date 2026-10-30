@@ -4,6 +4,7 @@ import WorkspaceRoot from "./WorkspaceRoot";
 import "./design-tokens.css";
 import "./index.css";
 import "./workspace.css";
+import "./workbench.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

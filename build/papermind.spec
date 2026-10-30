@@ -151,6 +151,7 @@ datas += [
     (str(REPO / "THIRD_PARTY_NOTICES.md"), "."),
     (str(FRONTEND_DIST), "frontend/dist"),
     (str(SPEC_DIR / "assets" / "papermind.ico"), "desktop"),
+    (str(SPEC_DIR / "assets" / "papermind.svg"), "desktop"),
     (str(SPEC_DIR / "vendor" / "webview2"), "desktop/webview2"),
     (str(SPEC_DIR / "vendor" / "llama_cpp"), "local_runtime"),
 ]
